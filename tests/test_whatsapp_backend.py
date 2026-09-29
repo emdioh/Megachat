@@ -2655,6 +2655,96 @@ class TestWhatsAppMentionLidResolver:
         finally:
             backend.disconnect_sync()
 
+    def test_entry_vanished_before_first_recheck_is_skipped(self):
+        """Race: il jid è nel batch ``due``, ma è già sparito (rimosso da
+        un'altra chiamata) quando il loop lo riprende sotto lock subito
+        dopo — deve solo passare oltre (``continue``), mai sollevare."""
+        import time
+
+        class _VanishOnNthGet(dict):
+            def __init__(self, *a, target, vanish_at, **kw):
+                super().__init__(*a, **kw)
+                self._target = target
+                self._vanish_at = vanish_at
+                self._calls = 0
+
+            def get(self, key, default=None):
+                if key == self._target:
+                    self._calls += 1
+                    if self._calls == self._vanish_at:
+                        return None
+                return super().get(key, default)
+
+        backend = _make_backend()
+        backend._rest = MagicMock()
+        backend._rest.resolve_contact.return_value = {
+            "id": "391234567890@c.us",
+            "name": None,
+        }
+        backend._mention_lid_pending = _VanishOnNthGet(target="555@lid", vanish_at=1)
+
+        try:
+            backend._schedule_mention_lid_resolve("555@lid")
+            with backend._mention_lid_lock:
+                backend._mention_lid_pending["555@lid"]["next"] = 0
+
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline:
+                if backend._lid_lookup("555@lid"):
+                    break
+                time.sleep(0.02)
+
+            # The vanished check was skipped once; a later pass (now a
+            # normal dict lookup) still resolves it.
+            assert backend._lid_lookup("555@lid") == "391234567890"
+            backend._rest.resolve_contact.assert_called_once_with("555@lid")
+        finally:
+            backend.disconnect_sync()
+
+    def test_entry_vanished_before_second_recheck_is_skipped(self):
+        """Race: il jid sparisce tra la chiamata REST (fallita) e il
+        secondo lookup che decide retry/give-up — deve solo passare oltre,
+        senza sollevare né pianificare un retry su un'entry già rimossa."""
+        import time
+
+        class _VanishOnNthGet(dict):
+            def __init__(self, *a, target, vanish_at, **kw):
+                super().__init__(*a, **kw)
+                self._target = target
+                self._vanish_at = vanish_at
+                self._calls = 0
+
+            def get(self, key, default=None):
+                if key == self._target:
+                    self._calls += 1
+                    if self._calls == self._vanish_at:
+                        return None
+                return super().get(key, default)
+
+        backend = _make_backend()
+        backend._rest = MagicMock()
+        backend._rest.resolve_contact.return_value = None
+        # 1st get() = the due-batch recheck (must see the real entry so the
+        # REST call actually happens); 2nd get() = the post-REST-failure
+        # recheck this test targets.
+        backend._mention_lid_pending = _VanishOnNthGet(target="666@lid", vanish_at=2)
+
+        try:
+            backend._schedule_mention_lid_resolve("666@lid")
+            with backend._mention_lid_lock:
+                backend._mention_lid_pending["666@lid"]["next"] = 0
+
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline:
+                if backend._rest.resolve_contact.call_count >= 1:
+                    break
+                time.sleep(0.02)
+            time.sleep(0.1)  # let the post-failure recheck run
+
+            assert backend._rest.resolve_contact.call_count == 1
+        finally:
+            backend.disconnect_sync()
+
 
 class TestWhatsAppMediaIdentityUpdate:
     def test_does_not_overwrite_existing_attachment(self):
