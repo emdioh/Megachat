@@ -38,9 +38,9 @@ from protocols.whatsapp import (
 )
 
 
-def _msg(raw, contacts=None, lid_lookup=None):
+def _msg(raw, contacts=None, lid_lookup=None, schedule_lid_resolve=None):
     """Wrapper: returns first event from _event_from_message (now returns list)."""
-    events = _event_from_message(raw, contacts, lid_lookup)
+    events = _event_from_message(raw, contacts, lid_lookup, schedule_lid_resolve)
     return events[0] if events else None
 
 
@@ -903,6 +903,56 @@ class TestWhatsAppEvents:
         )
         assert ev is not None
         assert ev.payload["text"] == "ciao @999999999999999 come va"
+
+    def test_mention_unresolved_schedules_background_lid_resolve(self):
+        """Bug: un @mention che non è né un contatto noto né in cache
+        lid→phone deve comunque restare invariato in QUESTO messaggio, ma
+        deve far scattare la risoluzione in background (schedule_lid_resolve)
+        così i mention FUTURI della stessa persona si risolvono. Vale anche
+        per un messaggio che è SOLO il mention, senza altro testo attorno."""
+        scheduled = []
+        ev = _msg(
+            {
+                "id": "m8",
+                "from": "3912345678@c.us",
+                "timestamp": 1700000000,
+                "fromMe": False,
+                "body": "@191882160263217",
+            },
+            {},
+            lambda _jid: None,
+            scheduled.append,
+        )
+        assert ev is not None
+        assert ev.payload["text"] == "@191882160263217"
+        assert scheduled == ["191882160263217@lid"]
+
+    def test_mention_resolved_by_name_does_not_schedule(self):
+        """Se il mention si risolve già a un nome noto, non deve scattare
+        nessuna risoluzione in background (niente da risolvere)."""
+        from models import ChatContact
+
+        contacts = {
+            "111111111@lid": ChatContact(
+                id="111111111@lid", display_name="Alice", protocol=PROTOCOL_WHATSAPP
+            ),
+        }
+        scheduled = []
+        ev = _msg(
+            {
+                "id": "m9",
+                "from": "3912345678@c.us",
+                "timestamp": 1700000000,
+                "fromMe": False,
+                "body": "ciao @111111111",
+            },
+            contacts,
+            lambda _jid: None,
+            scheduled.append,
+        )
+        assert ev is not None
+        assert ev.payload["text"] == "ciao @Alice"
+        assert scheduled == []
 
     def test_direct_message_not_group(self):
         """Un messaggio diretto (@c.us) non è un gruppo."""
@@ -2394,6 +2444,84 @@ class TestWhatsAppMediaResolver:
             assert backend.poll_once() == []
         finally:
             backend.disconnect_sync()
+
+
+class TestWhatsAppMentionLidResolver:
+    """🔄 Bug: un @mention di qualcuno che non ha mai mandato un messaggio
+    (mai risolto dal warm-up dei contatti) resta un lid grezzo per sempre,
+    anche se WAHA lo risolverebbe al volo. ``_schedule_mention_lid_resolve``
+    lo risolve in background (mai bloccando l'ingest live) così i mention
+    FUTURI della stessa persona mostrano nome/numero."""
+
+    def test_schedule_deduplicates_and_resolver_populates_lid_cache(self):
+        import time
+
+        backend = _make_backend()
+        backend._rest = MagicMock()
+        backend._rest.resolve_contact.return_value = {
+            "id": "391234567890@c.us",
+            "name": "Marco",
+        }
+
+        try:
+            backend._schedule_mention_lid_resolve("999999999@lid")
+            backend._schedule_mention_lid_resolve("999999999@lid")
+            with backend._mention_lid_lock:
+                assert len(backend._mention_lid_pending) == 1
+                backend._mention_lid_pending["999999999@lid"]["next"] = 0
+
+            deadline = time.monotonic() + 2
+            while (
+                time.monotonic() < deadline
+                and "999999999@lid" in backend._mention_lid_pending
+            ):
+                time.sleep(0.02)
+
+            with backend._mention_lid_lock:
+                assert backend._mention_lid_pending == {}
+            assert backend._lid_lookup("999999999@lid") == "391234567890"
+            backend._rest.resolve_contact.assert_called_once_with("999999999@lid")
+        finally:
+            backend.disconnect_sync()
+
+    def test_resolver_gives_up_after_three_attempts(self):
+        import time
+
+        backend = _make_backend()
+        backend._rest = MagicMock()
+        backend._rest.resolve_contact.return_value = None
+
+        try:
+            backend._schedule_mention_lid_resolve("888888888@lid")
+            jid = "888888888@lid"
+            observed_attempts = -1
+            deadline = time.monotonic() + 3
+            while time.monotonic() < deadline:
+                with backend._mention_lid_lock:
+                    pending = backend._mention_lid_pending.get(jid)
+                    if pending is None:
+                        break
+                    if pending["attempts"] != observed_attempts:
+                        observed_attempts = pending["attempts"]
+                        pending["next"] = 0
+                time.sleep(0.02)
+
+            with backend._mention_lid_lock:
+                assert jid not in backend._mention_lid_pending
+            assert backend._rest.resolve_contact.call_count == 3
+        finally:
+            backend.disconnect_sync()
+
+    def test_empty_jid_and_stopped_resolver_are_noops(self):
+        backend = _make_backend()
+        backend._rest = MagicMock()
+
+        backend._schedule_mention_lid_resolve("")
+        assert backend._mention_lid_pending == {}
+
+        backend._mention_lid_resolver_stop = True
+        backend._schedule_mention_lid_resolve("777777777@lid")
+        assert backend._mention_lid_pending == {}
 
 
 class TestWhatsAppMediaIdentityUpdate:
