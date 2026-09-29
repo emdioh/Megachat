@@ -2523,6 +2523,70 @@ class TestWhatsAppMentionLidResolver:
         backend._schedule_mention_lid_resolve("777777777@lid")
         assert backend._mention_lid_pending == {}
 
+    def test_second_distinct_jid_reuses_already_running_thread(self):
+        """Un secondo jid diverso schedulato mentre il thread è già vivo
+        non ne avvia un secondo (``_start_mention_lid_resolver``'s
+        thread.is_alive() short-circuit)."""
+        import time
+
+        backend = _make_backend()
+        backend._rest = MagicMock()
+        backend._rest.resolve_contact.return_value = None
+
+        try:
+            backend._schedule_mention_lid_resolve("111@lid")
+            deadline = time.monotonic() + 2
+            while (
+                time.monotonic() < deadline
+                and backend._mention_lid_resolver_thread is None
+            ):
+                time.sleep(0.02)
+            first_thread = backend._mention_lid_resolver_thread
+            assert first_thread is not None and first_thread.is_alive()
+
+            backend._schedule_mention_lid_resolve("222@lid")
+            assert backend._mention_lid_resolver_thread is first_thread
+            with backend._mention_lid_lock:
+                assert set(backend._mention_lid_pending) == {"111@lid", "222@lid"}
+        finally:
+            backend.disconnect_sync()
+
+    def test_start_resolver_is_a_noop_once_stopped(self):
+        backend = _make_backend()
+        backend._rest = MagicMock()
+        backend._mention_lid_resolver_stop = True
+
+        backend._start_mention_lid_resolver()
+
+        assert backend._mention_lid_resolver_thread is None
+
+    def test_resolve_exception_is_swallowed_and_retried(self):
+        """``_lid_resolve_remote`` che solleva (es. errore di rete) non deve
+        far morire il thread: viene loggato e ritentato come un fallimento
+        normale."""
+        import time
+
+        backend = _make_backend()
+        backend._rest = MagicMock()
+        backend._rest.resolve_contact.side_effect = RuntimeError("boom")
+
+        try:
+            backend._schedule_mention_lid_resolve("333@lid")
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline:
+                with backend._mention_lid_lock:
+                    pending = backend._mention_lid_pending.get("333@lid")
+                    if pending is None:
+                        break
+                    pending["next"] = 0
+                time.sleep(0.02)
+
+            with backend._mention_lid_lock:
+                assert "333@lid" not in backend._mention_lid_pending
+            assert backend._rest.resolve_contact.call_count == 3
+        finally:
+            backend.disconnect_sync()
+
 
 class TestWhatsAppMediaIdentityUpdate:
     def test_does_not_overwrite_existing_attachment(self):
