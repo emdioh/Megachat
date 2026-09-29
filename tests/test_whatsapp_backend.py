@@ -2587,6 +2587,74 @@ class TestWhatsAppMentionLidResolver:
         finally:
             backend.disconnect_sync()
 
+    def test_stop_flag_mid_batch_breaks_out_without_processing_rest(self):
+        """Se ``_mention_lid_resolver_stop`` diventa True mentre il thread
+        sta processando un batch di jid dovuti, il ciclo interno si
+        interrompe subito (nessun altro jid del batch viene toccato)."""
+        import time
+
+        backend = _make_backend()
+        backend._rest = MagicMock()
+
+        def resolve_and_stop(jid):
+            backend._mention_lid_resolver_stop = True
+
+        backend._rest.resolve_contact.side_effect = resolve_and_stop
+
+        backend._schedule_mention_lid_resolve("first@lid")
+        with backend._mention_lid_lock:
+            backend._mention_lid_pending["second@lid"] = {
+                "attempts": 0,
+                "next": 0,
+            }
+
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline and not backend._mention_lid_resolver_stop:
+            time.sleep(0.02)
+        time.sleep(0.1)  # let the loop actually reach the break
+
+        assert backend._rest.resolve_contact.call_count == 1
+        with backend._mention_lid_lock:
+            # "second@lid" was never attempted: stop was hit first.
+            assert (
+                backend._mention_lid_pending.get("second@lid", {}).get("attempts") == 0
+            )
+
+    def test_unexpected_error_in_loop_body_is_swallowed(self):
+        """Un errore inatteso nel corpo del loop (non nella sola chiamata
+        REST) non deve uccidere il thread: viene loggato e il loop continua
+        al giro successivo."""
+        import time
+
+        backend = _make_backend()
+        backend._rest = MagicMock()
+        backend._rest.resolve_contact.return_value = {
+            "id": "391234567890@c.us",
+            "name": None,
+        }
+
+        class _BoomOnce(dict):
+            def items(self):
+                if not self.pop("_boomed", False):
+                    self["_boomed"] = True
+                    raise RuntimeError("boom")
+                return super().items()
+
+        backend._mention_lid_pending = _BoomOnce()
+        try:
+            backend._schedule_mention_lid_resolve("444@lid")
+            deadline = time.monotonic() + 2
+            while (
+                time.monotonic() < deadline
+                and "444@lid" in backend._mention_lid_pending
+            ):
+                time.sleep(0.02)
+
+            assert "444@lid" not in backend._mention_lid_pending
+            assert backend._lid_lookup("444@lid") == "391234567890"
+        finally:
+            backend.disconnect_sync()
+
 
 class TestWhatsAppMediaIdentityUpdate:
     def test_does_not_overwrite_existing_attachment(self):
