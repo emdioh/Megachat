@@ -6,19 +6,32 @@ import json
 import logging
 import mimetypes
 import os
+import random
 import re
 import sqlite3
 import tempfile
 import threading
 import time
+import uuid
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import quote as url_quote
 from urllib.parse import urlsplit
 
-from models import is_caption_like, is_media_quote_placeholder_composite
+from models import (
+    is_caption_like,
+    is_media_quote_placeholder_composite,
+    is_whatsapp_synthetic_media_text,
+)
 from web.bridge import push_event
+from web.retry import (
+    SEND_RETRY_MAX_ATTEMPTS,
+    classify_send_error,
+    compute_delay,
+    safe_error_text,
+)
+from web.send_registry import SendRegistry, build_fingerprint
 
 logger = logging.getLogger(__name__)
 
@@ -67,11 +80,17 @@ _AUDIO_MIME_BY_EXT: dict[str, str] = {
 }
 
 
-def _media_content_type(path: Path) -> str | None:
-    """Return deterministic audio MIME types and guess all other types."""
+def _media_content_type(path: Path, *, prefer_audio: bool = False) -> str | None:
+    """Return deterministic audio MIME types and guess all other types.
+
+    ``.webm`` è ambiguo (video o audio): ``prefer_audio`` lo serve come
+    ``audio/webm`` quando il messaggio lo classifica come audio.
+    """
     ext = path.suffix.lower()
     if ext in _AUDIO_MIME_BY_EXT:
         return _AUDIO_MIME_BY_EXT[ext]
+    if prefer_audio and ext == ".webm":
+        return "audio/webm"
     return mimetypes.guess_type(path.name)[0]
 
 
@@ -128,21 +147,12 @@ def _infer_attachment_type(attachment_id: str, content_type: str | None) -> str 
 
 
 def _is_whatsapp_synthetic_text(text: str | None) -> bool:
-    stripped = (text or "").strip()
-    if not stripped.lower().startswith("media:"):
-        return False
+    """Alias locale del predicato canonico ``models.is_whatsapp_synthetic_media_text``.
 
-    media_identity = stripped[len("media:") :].strip()
-    if not media_identity:
-        return False
-    return bool(
-        re.fullmatch(r"https?://\S+", media_identity, re.IGNORECASE)
-        or re.fullmatch(
-            r"(?:false|true)_[^\s@]*@[^\s@]+", media_identity, re.IGNORECASE
-        )
-        or re.fullmatch(r"\d+:\d+", media_identity)
-        or re.fullmatch(r"\S+", media_identity)
-    )
+    Il predicato vive in ``models`` così ingest backend, dedup SQLite e web
+    condividono una sola definizione.
+    """
+    return is_whatsapp_synthetic_media_text(text)
 
 
 def _unread_counts() -> dict[tuple[str, str], int]:
@@ -918,6 +928,29 @@ def _attachment_content_type(proto: str, attachment_id: str) -> str | None:
     return row[0] or ("image/*" if row[1] == "image" else None)
 
 
+def _attachment_media_kind(proto: str, attachment_id: str) -> str | None:
+    import protocols.db as backend
+    from protocols.db import _DB_LOCK
+
+    with _DB_LOCK:
+        try:
+            connection = sqlite3.connect(backend.DB_FILE)
+            try:
+                row = connection.execute(
+                    "SELECT media_kind FROM messages "
+                    "WHERE protocol = ? AND attachment_id = ? "
+                    "ORDER BY id DESC LIMIT 1",
+                    (proto, attachment_id),
+                ).fetchone()
+            finally:
+                connection.close()
+        except sqlite3.Error:
+            return None
+    if not row:
+        return None
+    return row[0]
+
+
 def _is_thumbnail_candidate(path: Path, proto: str, attachment_id: str) -> bool:
     content_type = (_attachment_content_type(proto, attachment_id) or "").lower()
     suffix = path.suffix.lower()
@@ -936,6 +969,12 @@ def _is_thumbnail_candidate(path: Path, proto: str, attachment_id: str) -> bool:
 
 def _is_video_candidate(path: Path, proto: str, attachment_id: str) -> bool:
     content_type = (_attachment_content_type(proto, attachment_id) or "").lower()
+    # Un audio (es. voice webm/m4a) non deve mai passare per la pipeline
+    # thumbnail video, anche quando l'estensione `.webm` è nella lista video.
+    if content_type.startswith("audio/"):
+        return False
+    if not content_type and _attachment_media_kind(proto, attachment_id) == "audio":
+        return False
     return content_type.startswith("video/") or path.suffix.lower() in _VIDEO_EXTENSIONS
 
 
@@ -1029,11 +1068,14 @@ def _quoted_sender(proto: str, contact_id: str, quote_ts: Any) -> str | None:
 def _group_sender_resolver(manager: Any, proto: str):
     """Risolvi il sender (JID/numero) al nome della rubrica, come la TUI.
 
-    Mappa una volta la rubrica aggregata (id/phone → display_name), poi per
-    ogni sender: nome diretto, @lid→phone (WA), @c.us→numero, numero nudo.
+    Mappa una volta la rubrica aggregata (id/phone/lid → display_name), poi per
+    ogni sender: nome diretto, @lid→nome (alias rubrica), @lid→phone cache del
+    backend → nome, @lid/numero locale → nome, @c.us → numero → nome.  Il
+    fallback resta un numero leggibile (mai il JID grezzo con ``@lid``/``@c.us``).
     """
     phone_to_name: dict[str, str] = {}
     id_to_name: dict[str, str] = {}
+    lid_to_name: dict[str, str] = {}
     try:
         book = manager.list_address_book_sync(protocols={proto}, force=False)
     except Exception:  # noqa: BLE001 — rubrica best-effort
@@ -1044,32 +1086,57 @@ def _group_sender_resolver(manager: Any, proto: str):
             continue
         cid = str(contact.id or "")
         phone = str(contact.phone or "")
+        extras = contact.extras if isinstance(contact.extras, dict) else {}
         if cid:
             id_to_name[cid] = name
+            # A merged active chat keeps its ``@lid`` as id: that IS the alias a
+            # group participant shows up with.
+            if cid.endswith("@lid"):
+                lid_to_name[cid] = name
         if phone:
             phone_to_name[phone] = name
+        lid = str(extras.get("lid") or "")
+        if lid:
+            lid_to_name[lid] = name
+
+    backend = None
+    try:
+        backend = manager.get(proto)
+    except Exception:  # noqa: BLE001 — backend opzionale
+        backend = None
 
     def resolve(sender: str) -> str:
         if not sender:
             return sender
         if sender in id_to_name:
             return id_to_name[sender]
-        is_jid = sender.endswith(("@lid", "@c.us"))
+        if sender in lid_to_name:
+            return lid_to_name[sender]
         local = sender.split("@", 1)[0]
+
         if sender.endswith("@lid"):
+            # 1) @lid → phone via cache backend (solo memoria), poi phone → nome.
+            phone = ""
             try:
-                phone = str(manager.get(proto)._jid_to_phone(sender) or "")
-            except Exception:  # noqa: BLE001
+                phone = str(backend._jid_to_phone(sender) or "")
+            except Exception:  # noqa: BLE001 — backend vecchi/mock senza il metodo
                 phone = ""
-            if phone in phone_to_name:
+            if phone and phone in phone_to_name:
                 return phone_to_name[phone]
+            # 2) Rubrica WAHA che espone la riga @lid: numero = cifre del lid.
+            if local in phone_to_name:
+                return phone_to_name[local]
+            # 3) Rubrica dove l'id è il numero reale: ``<lid>@c.us``.
+            if f"{local}@c.us" in id_to_name:
+                return id_to_name[f"{local}@c.us"]
+            # 4) Ultima spiaggia: il numero risolto (meglio del lid grezzo).
             if phone:
                 return phone
         if sender.endswith("@c.us") and local in phone_to_name:
             return phone_to_name[local]
         if sender in phone_to_name:
             return phone_to_name[sender]
-        if is_jid:
+        if sender.endswith(("@lid", "@c.us")):
             # Fallback leggibile: numero senza @lid/@c.us (mai il JID grezzo).
             return local
         return sender
@@ -1084,6 +1151,9 @@ def create_api_router() -> Any:
     from starlette.exceptions import HTTPException as StarletteHTTPException
 
     router = APIRouter(prefix="/api")
+    # Registry di idempotenza in-memory, scoped al processo (§8). Applicato
+    # SOLO al ramo testo: gli allegati restano legacy e non deduplicati.
+    registry = SendRegistry()
 
     @router.get("/emoji")
     def emojis() -> JSONResponse:
@@ -1174,6 +1244,17 @@ def create_api_router() -> Any:
         if any(not hasattr(upload_file, "read") for upload_file in upload_files):
             raise HTTPException(status_code=400, detail="Invalid request")
 
+        # client_msg_id: opzionale con fallback server (client vecchi/tooling).
+        client_msg_id_raw = payload.get("client_msg_id")
+        if (
+            isinstance(client_msg_id_raw, str)
+            and client_msg_id_raw.strip()
+            and len(client_msg_id_raw) <= 128
+        ):
+            client_msg_id = client_msg_id_raw.strip()
+        else:
+            client_msg_id = str(uuid.uuid4())
+
         quote_timestamp = payload.get("quote_timestamp")
         quote_author = payload.get("quote_author")
         quote_message = payload.get("quote_message")
@@ -1252,12 +1333,23 @@ def create_api_router() -> Any:
         backend = manager.get(protocol)
         if backend is None:
             raise HTTPException(status_code=404, detail="Not Found")
-        known_contact = any(
-            str(contact.id) == contact_id and str(contact.protocol) == protocol
-            for contact in manager.list_contacts()
-        )
-        if not known_contact:
+
+        contact = backend.find_contact(contact_id)
+        if contact is None:
             raise HTTPException(status_code=404, detail="Not Found")
+
+        # Contatto book-only (non ancora in self.contacts): registralo prima
+        # del send così gli eventi successivi lo risolvono.  Il backend
+        # WhatsApp crea da sé l'alias @lid → contatto @c.us.
+        is_known = any(str(c.id) == contact.id for c in backend.contacts)
+        if not is_known:
+            contact.extras["ghost"] = True
+            backend.register_contact(contact)
+        elif contact.extras.get("ghost"):
+            # Ghost book-only già registrato: ritenta l'alias @lid.  Il primo
+            # invio può averlo saltato se la cache LID era vuota; la cache può
+            # popolarsi dopo.  Idempotente (setdefault), zero rete.
+            backend.register_contact(contact)
 
         quote_attachments = None
         if protocol == "signal" and quote_attachment_id is not None:
@@ -1288,7 +1380,40 @@ def create_api_router() -> Any:
             kwargs["quote_attachments"] = quote_attachments
         if protocol in {"whatsapp", "telegram"} and reply_to_message_id is not None:
             kwargs["reply_to_message_id"] = reply_to_message_id
+
+        # Idempotenza (solo ramo testo, N7): claim atomico scoped al contatto.
+        request.app.state.send_registry = registry
+        registry_key: tuple[str, str, str] | None = None
+        registry_token: str | None = None
+        if not upload_files:
+            registry_key = (protocol, contact_id, client_msg_id)
+            fingerprint = build_fingerprint(
+                protocol=protocol,
+                contact_id=contact_id,
+                text=text,
+                quote_timestamp=quote_timestamp,
+                quote_author=quote_author,
+                quote_message=quote_message,
+                reply_to_message_id=reply_to_message_id,
+                quote_content_type=quote_content_type,
+                quote_attachment_id=quote_attachment_id,
+            )
+            outcome, value = registry.claim_or_lookup(registry_key, fingerprint)
+            if outcome == "sent":
+                if value.get("fingerprint") != fingerprint:
+                    raise HTTPException(
+                        status_code=422, detail="Client message id conflict"
+                    )
+                return {"ok": True, "duplicate": True}
+            if outcome == "inflight":
+                # Un altro handler sta inviando: retryable lato client.  Nessuna
+                # mutazione del registry (N2).
+                raise HTTPException(status_code=409, detail="Send in progress")
+            registry_token = value
+
         uploads: list[Any] = []
+        succeeded = False
+        message_id: str | None = None
         try:
             if upload_files:
                 from web.uploads import (
@@ -1340,14 +1465,65 @@ def create_api_router() -> Any:
                     filenames=[upload.filename for upload in uploads],
                     **kwargs,
                 )
+                succeeded = True
             else:
-                await asyncio.to_thread(
-                    manager.send_message_sync,
-                    protocol,
-                    contact_id,
-                    text,
-                    **kwargs,
-                )
+                # Ramo TESTO: retry con backoff esponenziale + jitter.
+                # Nessun timeout aggiuntivo: i backend hanno timeout interni propri.
+                rng = random.Random()
+                for attempt in range(1, SEND_RETRY_MAX_ATTEMPTS + 1):
+                    try:
+                        result = await asyncio.to_thread(
+                            manager.send_message_sync,
+                            protocol,
+                            contact_id,
+                            text,
+                            **kwargs,
+                        )
+                        if result is not None:
+                            message_id = str(result)
+                        succeeded = True
+                        break
+                    except Exception as exc:
+                        classification = classify_send_error(protocol, exc)
+                        if classification == "terminal":
+                            logger.exception(
+                                "Terminal send error, no retry: protocol=%s contact=%s",
+                                protocol,
+                                contact_id,
+                            )
+                            break
+                        if attempt == SEND_RETRY_MAX_ATTEMPTS:
+                            logger.exception(
+                                "Send failed after %d attempts: protocol=%s contact=%s",
+                                SEND_RETRY_MAX_ATTEMPTS,
+                                protocol,
+                                contact_id,
+                            )
+                            break
+                        delay = compute_delay(attempt, rng)
+                        logger.info(
+                            "Send retry %d/%d in %.1fs: protocol=%s contact=%s error=%s",
+                            attempt + 1,
+                            SEND_RETRY_MAX_ATTEMPTS,
+                            delay,
+                            protocol,
+                            contact_id,
+                            exc,
+                        )
+                        push_event(
+                            {
+                                "type": "send_retry",
+                                "payload": {
+                                    "client_msg_id": client_msg_id,
+                                    "protocol": protocol,
+                                    "contact_id": contact_id,
+                                    "attempt": attempt + 1,
+                                    "max_attempts": SEND_RETRY_MAX_ATTEMPTS,
+                                    "error": safe_error_text(exc),
+                                },
+                            }
+                        )
+                        await asyncio.sleep(delay)
         except HTTPException:
             raise
         except NotImplementedError:
@@ -1367,6 +1543,18 @@ def create_api_router() -> Any:
         finally:
             for upload in uploads:
                 upload.cleanup()
+            # B3/N2: mark_sent solo su successo, release in tutti gli altri casi
+            # (incluso il 502 dopo i 3 tentativi), sempre vincolato al token.
+            if registry_token is not None and registry_key is not None:
+                if succeeded:
+                    registry.mark_sent(
+                        registry_key, registry_token, message_id, int(time.time())
+                    )
+                else:
+                    registry.release(registry_key, registry_token)
+
+        if not succeeded:
+            raise HTTPException(status_code=502, detail="Message send failed")
 
         push_event(
             {
@@ -1873,7 +2061,12 @@ def create_api_router() -> Any:
                     media_type="image/jpeg",
                     headers={"Cache-Control": "private, max-age=31536000, immutable"},
                 )
-        media_type = _media_content_type(path)
+        # R7: `.webm` è ambiguo; il media_kind persistito decide audio vs video.
+        prefer_audio = (
+            path.suffix.lower() == ".webm"
+            and _attachment_media_kind(proto, attachment_id) == "audio"
+        )
+        media_type = _media_content_type(path, prefer_audio=prefer_audio)
         return FileResponse(
             path,
             media_type=media_type,

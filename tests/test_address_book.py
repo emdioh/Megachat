@@ -165,7 +165,7 @@ class TestRegisterContact:
         backend = _MinimalBackend()
         contact = _contact()
 
-        backend.register_contact(contact)
+        assert backend.register_contact(contact) is True
 
         assert backend.contacts == [contact]
 
@@ -173,9 +173,21 @@ class TestRegisterContact:
         contact = _contact()
         backend = _MinimalBackend([contact])
 
-        backend.register_contact(contact)
+        assert backend.register_contact(contact) is False
 
         assert len(backend.contacts) == 1
+
+    def test_dedup_uses_cache_key_not_dataclass_eq(self):
+        first = _contact()
+        first.extras["copy"] = 1
+        second = _contact()
+        second.extras["copy"] = 2
+        backend = _MinimalBackend([first])
+
+        assert second != first  # __eq__ includes extras
+        assert backend.register_contact(second) is False
+
+        assert backend.contacts == [first]
 
 
 # ─── Config getters ──────────────────────────────────────────────────────────
@@ -355,6 +367,57 @@ class TestWADedup:
             {"phone": "393331234567", "name": "Mario", "pushname": None}
         ]
 
+    def test_lid_row_uses_explicit_number_and_keeps_lid_alias(self):
+        """Una riga ``@lid`` con ``number`` è chiavata sul telefono reale + lid."""
+        raw = [
+            {
+                "id": "220988985864200@lid",
+                "number": "393331234567",
+                "name": "Mario Rossi",
+                "pushname": None,
+            }
+        ]
+        assert _dedup_book_contacts(raw) == [
+            {
+                "phone": "393331234567",
+                "name": "Mario Rossi",
+                "pushname": None,
+                "lid": "220988985864200@lid",
+            }
+        ]
+
+    def test_lid_row_without_number_keeps_digits_and_lid(self):
+        """Senza ``number`` si usano le cifre del lid (risoluzione per nome)."""
+        raw = [{"id": "220988985864200@lid", "name": "Mario", "pushname": None}]
+        assert _dedup_book_contacts(raw) == [
+            {
+                "phone": "220988985864200",
+                "name": "Mario",
+                "pushname": None,
+                "lid": "220988985864200@lid",
+            }
+        ]
+
+    def test_lid_and_c_us_same_number_collapse_and_keep_lid(self):
+        """La riga @c.us vince il tiebreak ma non perde l'alias lid."""
+        raw = [
+            {
+                "id": "220988985864200@lid",
+                "number": "393331234567",
+                "name": "Mario",
+                "pushname": None,
+            },
+            {"id": "393331234567@c.us", "name": "Mario", "pushname": None},
+        ]
+        assert _dedup_book_contacts(raw) == [
+            {
+                "phone": "393331234567",
+                "name": "Mario",
+                "pushname": None,
+                "lid": "220988985864200@lid",
+            }
+        ]
+
 
 class TestWARestAddressBook:
     """🔌 Nuovi metodi REST del client WhatsApp."""
@@ -424,6 +487,24 @@ class TestWARestAddressBook:
         client = WhatsAppRESTClient("http://api.test")
         with patch("urllib.request.urlopen", _boom):
             assert client.check_number_exists("393331234567") is None
+
+    def test_list_lids_returns_rows(self):
+        client = WhatsAppRESTClient("http://api.test")
+        payload = [{"lid": "123@lid", "pn": "456@c.us"}]
+        with patch("urllib.request.urlopen", _json_response(payload)):
+            assert client.list_lids() == payload
+
+    def test_list_lids_unwraps_nested_data(self):
+        client = WhatsAppRESTClient("http://api.test")
+        with patch(
+            "urllib.request.urlopen", _json_response({"data": [{"lid": "1@lid"}]})
+        ):
+            assert client.list_lids() == [{"lid": "1@lid"}]
+
+    def test_list_lids_error_returns_none(self):
+        client = WhatsAppRESTClient("http://api.test")
+        with patch("urllib.request.urlopen", _boom):
+            assert client.list_lids() is None
 
 
 class TestWALidCache:
@@ -504,6 +585,66 @@ class TestWALidCache:
         backend._rest.resolve_contact.assert_not_called()
 
 
+class TestWAJidToPhone:
+    """📞 ``_jid_to_phone``: hook usato dal resolver web dei sender di gruppo."""
+
+    def test_c_us_and_s_whatsapp_net(self):
+        backend = _wa_backend()
+        assert backend._jid_to_phone("393331234567@c.us") == "393331234567"
+        assert backend._jid_to_phone("393331234567@s.whatsapp.net") == "393331234567"
+
+    def test_lid_from_cache(self):
+        backend = _wa_backend()
+        backend._lid_cache_load()
+        with backend._lid_lock:
+            backend._lid_map["220988985864200@lid"] = {
+                "phone": "393331234567",
+                "name": "Mario",
+                "resolved_at": int(time.time()),
+            }
+        assert backend._jid_to_phone("220988985864200@lid") == "393331234567"
+
+    def test_group_and_unknown_return_empty(self):
+        backend = _wa_backend()
+        assert backend._jid_to_phone("123456789@g.us") == ""
+        assert backend._jid_to_phone("not-a-jid") == ""
+        assert backend._jid_to_phone("") == ""
+        assert backend._jid_to_phone("999@lid") == ""
+
+
+class TestWABulkLidImport:
+    """📥 Import massivo della tabella ``/lids`` (copre i partecipanti di gruppo)."""
+
+    def test_imports_valid_pairs(self, monkeypatch, tmp_path):
+        import protocols.db as backend_mod
+
+        monkeypatch.setattr(backend_mod, "CACHE_DIR", tmp_path)
+        backend = _wa_backend()
+        backend._rest.list_lids.return_value = [
+            {"lid": "220988985864200@lid", "pn": "393331234567@c.us"},
+            {"lid": "278255131766315@lid", "pn": "393339999999@c.us"},
+            {"lid": "no-pn@lid", "pn": None},
+            {"lid": "bad", "pn": "393331111111@c.us"},
+        ]
+
+        changed = backend._lid_bulk_import()
+
+        assert changed == 2
+        assert backend._jid_to_phone("220988985864200@lid") == "393331234567"
+        assert backend._jid_to_phone("278255131766315@lid") == "393339999999"
+        # Save debounced una sola volta a fine import.
+        assert (tmp_path / "wa_lid_map.json").exists()
+
+    def test_non_list_response_is_ignored(self):
+        backend = _wa_backend()  # _rest è un MagicMock: list_lids() non-list
+        assert backend._lid_bulk_import() == 0
+
+    def test_error_is_swallowed(self):
+        backend = _wa_backend()
+        backend._rest.list_lids.side_effect = RuntimeError("boom")
+        assert backend._lid_bulk_import() == 0
+
+
 class TestWAMerge:
     """🧩 Merge rubrica ∪ chat attive in ``list_address_book_sync``."""
 
@@ -526,6 +667,27 @@ class TestWAMerge:
         assert contact.extras["source"] == "wa_book"
         assert contact.last_message_ts == 12345
         assert contact.display_name == "Mario Rossi"
+
+    def test_book_lid_row_keeps_lid_alias(self):
+        """Una riga di rubrica @lid conserva l'alias per il resolver dei sender."""
+        backend = _wa_backend()
+        backend.start_lid_resolver = MagicMock()
+        backend._rest.list_all_contacts.return_value = [
+            {
+                "id": "220988985864200@lid",
+                "number": "393331234567",
+                "name": "Mario Rossi",
+                "pushname": None,
+            }
+        ]
+        backend.contacts = []
+
+        result = backend.list_address_book_sync()
+
+        assert len(result) == 1
+        assert result[0].extras["lid"] == "220988985864200@lid"
+        assert result[0].extras["phone"] == "393331234567"
+        assert result[0].extras["source"] == "wa_book"
 
     def test_c_us_not_in_book_extra(self):
         backend = _wa_backend()
@@ -690,7 +852,123 @@ class TestWALidResolver:
 
         assert backend._rest.resolve_contact.call_count == 30
         mock_save.assert_called_once()
-        assert backend._address_book is None
+        assert backend._address_book is not None
+        assert "stale" not in backend._address_book
+
+    def test_lid_resolver_run_does_not_restart_resolver(self, monkeypatch, tmp_path):
+        import protocols.db as backend_mod
+
+        monkeypatch.setattr(backend_mod, "CACHE_DIR", tmp_path)
+        backend = _wa_backend()
+        backend.contacts = [_chat(f"{i}@lid", ts=i) for i in range(35)]
+        backend._rest.resolve_contact.return_value = {
+            "id": "391234567890@c.us",
+            "name": "X",
+        }
+        backend._rest.list_all_contacts.return_value = []
+
+        with (
+            patch("time.sleep"),
+            patch.object(backend, "start_lid_resolver") as mock_start,
+        ):
+            backend._lid_resolver_run()
+
+        assert backend._rest.resolve_contact.call_count == 30
+        mock_start.assert_not_called()
+        assert backend._lid_resolver_started is False
+
+    def test_lid_resolver_run_bulk_only_does_not_restart_resolver(
+        self, monkeypatch, tmp_path
+    ):
+        import protocols.db as backend_mod
+
+        monkeypatch.setattr(backend_mod, "CACHE_DIR", tmp_path)
+        backend = _wa_backend()
+        backend._rest.list_lids.return_value = [{"lid": "111@lid", "pn": "39333@c.us"}]
+        backend._rest.list_all_contacts.return_value = [
+            {"id": "39333@c.us", "name": "Mario", "pushname": None}
+        ]
+        chat = _chat("39333@c.us")
+        chat.extras["phone"] = "39333"
+        backend.contacts = [chat]
+
+        with patch.object(backend, "start_lid_resolver") as mock_start:
+            backend._lid_resolver_run()
+
+        mock_start.assert_not_called()
+        assert backend._lid_resolver_started is False
+        assert backend.contacts[0].display_name == "Mario"
+
+    def test_lid_resolver_run_emits_warmup_done_once_bulk_only(
+        self, monkeypatch, tmp_path
+    ):
+        """Il resolver notifica una sola volta, anche sul ramo ``not candidates``."""
+        import protocols.db as backend_mod
+
+        monkeypatch.setattr(backend_mod, "CACHE_DIR", tmp_path)
+        backend = _wa_backend()
+        backend._rest.list_lids.return_value = []
+        backend.contacts = []
+
+        with patch("web.bridge.push_event") as mock_push:
+            backend._lid_resolver_run()
+
+        mock_push.assert_called_once()
+        event = mock_push.call_args.args[0]
+        assert event["type"] == "lid_warmup_done"
+        assert event["payload"]["protocol"] == "whatsapp"
+
+    def test_lid_resolver_run_emits_warmup_done_on_error(self, monkeypatch, tmp_path):
+        """Il ``finally`` notifica anche quando il corpo del resolver solleva."""
+        import protocols.db as backend_mod
+
+        monkeypatch.setattr(backend_mod, "CACHE_DIR", tmp_path)
+        backend = _wa_backend()
+        backend._lid_cache_load = MagicMock(side_effect=RuntimeError("boom"))
+
+        with patch("web.bridge.push_event") as mock_push:
+            backend._lid_resolver_run()
+
+        mock_push.assert_called_once()
+        event = mock_push.call_args.args[0]
+        assert event["type"] == "lid_warmup_done"
+        assert event["payload"]["protocol"] == "whatsapp"
+
+    def test_lid_resolver_run_emits_warmup_done_once_with_candidates(
+        self, monkeypatch, tmp_path
+    ):
+        """Anche il ramo con ``candidates`` emette una sola volta, payload esatto."""
+        import protocols.db as backend_mod
+
+        monkeypatch.setattr(backend_mod, "CACHE_DIR", tmp_path)
+        backend = _wa_backend()
+        backend._lid_map = {}
+        backend.contacts = [_chat("111@lid")]
+        backend._rest.resolve_contact.return_value = {
+            "id": "391234567890@c.us",
+            "name": "X",
+        }
+        backend._rest.list_lids.return_value = []
+        backend.list_address_book_sync = MagicMock(return_value=[])
+
+        with patch("time.sleep"), patch("web.bridge.push_event") as mock_push:
+            backend._lid_resolver_run()
+
+        mock_push.assert_called_once_with(
+            {"type": "lid_warmup_done", "payload": {"protocol": "whatsapp"}}
+        )
+
+    def test_lid_resolver_run_swallows_push_event_failure(self, monkeypatch, tmp_path):
+        """Un errore del bridge non deve propagare fuori dal resolver."""
+        import protocols.db as backend_mod
+
+        monkeypatch.setattr(backend_mod, "CACHE_DIR", tmp_path)
+        backend = _wa_backend()
+        backend._rest.list_lids.return_value = []
+        backend.contacts = []
+
+        with patch("web.bridge.push_event", side_effect=RuntimeError("boom")):
+            backend._lid_resolver_run()  # non deve sollevare
 
 
 # ─── Telegram rubrica (milestone 3) ───────────────────────────────────────────

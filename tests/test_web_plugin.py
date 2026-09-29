@@ -26,6 +26,36 @@ TOKEN = "correct-secret"
 AUTH = {"Authorization": f"Bearer {TOKEN}"}
 
 
+class _FakeBackend:
+    """Backend stub exposing the send-lookup surface used by ``/api/send``.
+
+    Reads the manager's live ``contacts`` list so reassigning
+    ``manager.contacts`` after the fixture is created still resolves.
+    """
+
+    media_dir = None
+
+    def __init__(self, manager, protocol):
+        self._manager = manager
+        self._protocol = protocol
+
+    @property
+    def contacts(self):
+        return self._manager.contacts
+
+    def find_contact(self, contact_id):
+        for contact in self._manager.contacts:
+            if (
+                str(contact.id) == contact_id
+                and str(contact.protocol) == self._protocol
+            ):
+                return contact
+        return None
+
+    def register_contact(self, contact):
+        return False
+
+
 class FakeManager:
     def __init__(self, contacts=(), paths=None):
         self.contacts = list(contacts)
@@ -41,7 +71,7 @@ class FakeManager:
         return self.paths.get((proto, attachment_id))
 
     def get(self, proto):
-        return SimpleNamespace(media_dir=None)
+        return _FakeBackend(self, proto)
 
     def send_message_sync(self, protocol, contact_id, text, **kwargs):
         self.send_calls.append((protocol, contact_id, text, kwargs))
@@ -2494,8 +2524,10 @@ def test_clean_start_and_stop_web_server():
     assert not handle.thread.is_alive()
 
 
-def test_start_web_server_requires_token_by_default():
+def test_start_web_server_requires_token_by_default(monkeypatch: pytest.MonkeyPatch):
     from web.server import start_web_server
+
+    monkeypatch.delenv("SIGNAL_TUI_WEB_TOKEN", raising=False)
 
     probe = socket.socket()
     probe.bind(("127.0.0.1", 0))
@@ -2552,3 +2584,39 @@ def test_default_tui_import_does_not_import_optional_web_package():
         [sys.executable, "-c", code], capture_output=True, text=True, check=False
     )
     assert completed.returncode == 0, completed.stderr
+
+
+def test_web_send_text_dedup_but_attachments_stay_legacy(web_client):
+    """Il registry idempotenza copre solo il testo (N7)."""
+    client, manager, _ = web_client
+    manager.contacts = [ChatContact("alice", "Alice", "signal")]
+    payload = {
+        "protocol": "signal",
+        "contact_id": "alice",
+        "text": "Ciao",
+        "client_msg_id": "cid-plugin-dup",
+    }
+
+    first = client.post("/api/send", json=payload, headers=AUTH)
+    second = client.post("/api/send", json=payload, headers=AUTH)
+
+    assert first.status_code == 200
+    assert first.json() == {"ok": True}
+    assert second.status_code == 200
+    assert second.json() == {"ok": True, "duplicate": True}
+    assert len(manager.send_calls) == 1
+
+    for _ in range(2):
+        response = client.post(
+            "/api/send",
+            data={
+                "protocol": "signal",
+                "contact_id": "alice",
+                "text": "",
+                "client_msg_id": "cid-plugin-att",
+            },
+            files={"file": ("clipboard.png", _PNG_1X1, "image/png")},
+            headers=AUTH,
+        )
+        assert response.status_code == 200
+    assert len(manager.attachments_calls) == 2

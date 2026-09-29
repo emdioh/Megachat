@@ -65,9 +65,17 @@ const state = {
   optimisticSequence: 0,
   readTimers: new Map(),
   sending: 0, // conteggio invii /api/send in corso: piu' invii possono essere in volo insieme
+  outbox: null, // store outbox (web/static/outbox.js); null = percorso legacy
+  outboxFlushing: false,
+  outboxFlushPending: false,
+  outboxFlushTimer: null,
   editing: null,
   editSending: false,
   stagedAttachments: [],
+  attachmentSending: false,
+  voiceRecorder: null,
+  voiceStarting: false,
+  voiceGeneration: 0,
   replyTo: null,
   emojiData: null,
   emojiRequest: null,
@@ -121,6 +129,7 @@ const elements = {
   emojiGrid: document.querySelector("#emoji-grid"),
   attachButton: document.querySelector("#attach-button"),
   fileInput: document.querySelector("#file-input"),
+  voiceRecord: document.querySelector("#voice-record"),
 };
 
 function showError(message) {
@@ -1286,7 +1295,13 @@ function buildMessageNode(item, protocol, stickToBottom) {
   if (item.optimisticStatus) {
     const status = document.createElement("span");
     status.className = `message-status ${item.optimisticStatus}`;
-    status.textContent = item.optimisticStatus === "failed" ? " · fallito" : item.optimisticStatus === "sent" ? " · inviato" : " · invio…";
+    let statusText = " · invio…";
+    if (item.optimisticStatus === "failed") statusText = " · fallito";
+    else if (item.optimisticStatus === "sent") statusText = " · inviato";
+    else if (item.optimisticStatus === "retrying") statusText = ` · riprova ${item.retryAttempt}/${item.retryMax}…`;
+    else if (item.optimisticStatus === "queued") statusText = " · in attesa";
+    else if (item.optimisticStatus === "confirm") statusText = " · da confermare";
+    status.textContent = statusText;
     time.append(status);
   } else {
     if (item.edited) {
@@ -1335,6 +1350,35 @@ function buildMessageNode(item, protocol, stickToBottom) {
     edit.title = "Modifica";
     edit.addEventListener("click", () => startEdit(item));
     actions.append(edit);
+  }
+  if (
+    item.optimistic_id
+    && (item.optimisticStatus === "failed" || item.optimisticStatus === "confirm")
+  ) {
+    const outboxId = item.outbox_id || `out-${item.client_msg_id}`;
+    const retry = document.createElement("button");
+    retry.type = "button";
+    retry.className = "message-retry";
+    retry.textContent = item.optimisticStatus === "confirm" ? "Rispedisci" : "Riprova";
+    retry.setAttribute("aria-label", retry.textContent);
+    retry.title = retry.textContent;
+    retry.addEventListener("click", () => {
+      if (
+        item.optimisticStatus === "confirm"
+        && !window.confirm("Il messaggio potrebbe essere già stato inviato. Rispedire?")
+      ) return;
+      window.retryOutboxItem?.(outboxId);
+    });
+    actions.append(retry);
+
+    const discard = document.createElement("button");
+    discard.type = "button";
+    discard.className = "message-discard";
+    discard.textContent = "Scarta";
+    discard.setAttribute("aria-label", "Scarta messaggio");
+    discard.title = "Scarta";
+    discard.addEventListener("click", () => window.discardOutboxItem?.(outboxId));
+    actions.append(discard);
   }
   if (actions.childElementCount) message.append(actions);
   return { el: message, textEl, timeEl: time, tickEl, reactionsEl };
@@ -1407,6 +1451,8 @@ function renderMessages(messages, protocol) {
   }
   const nextNodes = new Map();
   const orderedEls = [];
+  // true se almeno un nodo è stato ricostruito (fingerprint cambiato).
+  let rebuilt = false;
   for (const item of displayed) {
     const key = messageNodeKey(item);
     // Fingerprint del contenuto: se identico a quello con cui il nodo
@@ -1421,6 +1467,7 @@ function renderMessages(messages, protocol) {
     if (existing && existing.fingerprint === fingerprint) {
       nodeEntry = existing;
     } else {
+      rebuilt = true;
       const built = buildMessageNode(item, protocol, stickToBottom);
       nodeEntry = {
         el: built.el,
@@ -1440,13 +1487,73 @@ function renderMessages(messages, protocol) {
     nextNodes.set(key, nodeEntry);
     orderedEls.push(nodeEntry.el);
   }
-  // replaceChildren con nodi già esistenti li sposta (detach+reattach),
-  // non li ricrea: i nodi riusati (fingerprint invariato) restano gli stessi
-  // elementi DOM, quindi niente re-fetch di immagini/quote né spinner.
-  elements.messages.replaceChildren(...orderedEls);
+  // Il patch al DOM deve essere il minimo indispensabile: replaceChildren su
+  // tutta la lista riattacca (detach+reattach) ogni nodo e sulle chat lunghe
+  // blocca il main thread. Scegliamo quindi la strategia meno invasiva.
+  const prevKeys = [...previousNodes.keys()];
+  const nextKeys = [...nextNodes.keys()];
+  const currentChildren = [...elements.messages.children];
+  const prevEls = prevKeys.map((key) => previousNodes.get(key).el);
+  // Il DOM corrisponde davvero ai nodi del render precedente?
+  const domInSync =
+    currentChildren.length === prevEls.length
+    && currentChildren.every((el, i) => el === prevEls[i]);
+  const sameSequence =
+    currentChildren.length === orderedEls.length
+    && currentChildren.every((el, i) => el === orderedEls[i]);
+  // Gli stub DOM dei test possono non implementare replaceWith: se un nodo è
+  // stato ricostruito e replaceWith manca, ripieghiamo sul replaceChildren.
+  const supportsReplaceWith =
+    !rebuilt || typeof prevEls[0]?.replaceWith === "function";
+
+  let domChanged = false;
+  if (sameSequence) {
+    // Nulla è cambiato: nessuna scrittura DOM (evita il reflow che causava il jank).
+  } else if (supportsReplaceWith && domInSync && prevKeys.length === nextKeys.length
+             && isPositionalReplacement(prevKeys, nextKeys)) {
+    // Stesse posizioni, alcune chiavi sostituite (es. optimistic opt:X -> id
+    // confermato): sostituisci in place solo i nodi diversi.
+    domChanged = true;
+    for (let i = 0; i < orderedEls.length; i += 1) {
+      if (currentChildren[i] !== orderedEls[i]) currentChildren[i].replaceWith(orderedEls[i]);
+    }
+  } else if (supportsReplaceWith && domInSync && prevKeys.length < nextKeys.length
+             && prevKeys.every((key, i) => key === nextKeys[i])) {
+    // Append-only (caso comune: nuovi messaggi/ottimistico in coda): sostituisci
+    // in place gli eventuali nodi ricostruiti nel prefisso e appendi i nuovi.
+    domChanged = true;
+    for (const key of nextKeys) {
+      const entry = nextNodes.get(key);
+      const prev = previousNodes.get(key);
+      if (prev && prev.el !== entry.el) prev.el.replaceWith(entry.el);
+    }
+    for (let i = prevKeys.length; i < nextKeys.length; i += 1) {
+      elements.messages.append(nextNodes.get(nextKeys[i]).el);
+    }
+  } else {
+    // Riordino/rimozioni/dubbi sulla corrispondenza col DOM: fallback sicuro.
+    domChanged = true;
+    elements.messages.replaceChildren(...orderedEls);
+  }
+
   state.messageNodes = nextNodes;
-  if (wasAtBottom) scrollThreadToBottom();
-  else elements.messages.scrollTop = Math.min(prevScrollTop, elements.messages.scrollHeight);
+  if (domChanged) {
+    if (wasAtBottom) scrollThreadToBottom();
+    else elements.messages.scrollTop = Math.min(prevScrollTop, elements.messages.scrollHeight);
+  }
+}
+
+function isPositionalReplacement(prevKeys, nextKeys) {
+  // true se le differenze sono solo sostituzioni nella stessa posizione (una
+  // chiave esce e una nuova entra), non riordini. O(n) con due Set.
+  if (prevKeys.length !== nextKeys.length) return false;
+  const prevSet = new Set(prevKeys);
+  const nextSet = new Set(nextKeys);
+  for (let i = 0; i < prevKeys.length; i += 1) {
+    if (prevKeys[i] === nextKeys[i]) continue;
+    if (nextSet.has(prevKeys[i]) || prevSet.has(nextKeys[i])) return false;
+  }
+  return true;
 }
 
 function copyReactions(reactions) {
@@ -1641,6 +1748,7 @@ function cancelEdit() {
 function startEdit(item) {
   if (!state.active || !item.edit_id || item.optimistic_id) return;
   cancelReply();
+  if (typeof cancelVoiceRecording === "function") cancelVoiceRecording();
   state.editing = {
     edit_id: String(item.edit_id),
     id: item.id,
@@ -1874,6 +1982,7 @@ function openThread(contact) {
   closeEmojiPicker({ focus: false });
   closeReactionPicker();
   cancelReply();
+  if (typeof cancelVoiceRecording === "function") cancelVoiceRecording();
   if (state.editing) cancelEdit();
   state.active = contact;
   state.userScrolledUp = false;
@@ -1950,7 +2059,14 @@ function insertEmoji(char) {
   const end = input.selectionEnd ?? start;
   input.setRangeText(char, start, end, "end");
   input.dispatchEvent(new Event("input", { bubbles: true }));
-  input.focus();
+  if (isMobile()) {
+    // Su mobile la tastiera si apre solo con un tap esplicito nel campo:
+    // manteniamo il cursore dopo l'emoji così se ne possono inserire più di
+    // seguito senza che compaia la tastiera.
+    input.selectionStart = input.selectionEnd = start + char.length;
+  } else {
+    input.focus();
+  }
 }
 
 function renderEmojiGrid() {
@@ -2018,7 +2134,8 @@ function closeEmojiPicker({ focus = true } = {}) {
   elements.emojiPicker.hidden = true;
   elements.emojiToggle.setAttribute("aria-expanded", "false");
   elements.emojiToggle.setAttribute("aria-label", "Apri selettore emoji");
-  if (focus) elements.messageInput.focus();
+  // Su mobile il focus del campo avviene solo con un tap esplicito.
+  if (focus && !isMobile()) elements.messageInput.focus();
 }
 
 async function toggleEmojiPicker() {
@@ -2026,6 +2143,7 @@ async function toggleEmojiPicker() {
     closeEmojiPicker();
     return;
   }
+  closeComposerMenu();
   try {
     await loadEmojiData();
   } catch (error) {
@@ -2038,7 +2156,15 @@ async function toggleEmojiPicker() {
   elements.emojiPicker.hidden = false;
   elements.emojiToggle.setAttribute("aria-expanded", "true");
   elements.emojiToggle.setAttribute("aria-label", "Chiudi selettore emoji");
-  elements.emojiSearch.focus();
+  if (isMobile()) {
+    // Su mobile l'apertura delle emoji deve chiudere la tastiera, non aprire
+    // quella del campo di ricerca: togliamo il focus dagli input.
+    elements.emojiSearch.blur();
+    elements.messageInput.blur();
+    if (document.activeElement instanceof HTMLElement) document.activeElement?.blur?.();
+  } else {
+    elements.emojiSearch.focus();
+  }
 }
 
 function resizeComposer() {
@@ -2058,8 +2184,14 @@ function updateComposer() {
   // (state.sending > 0) NON blocca piu' nulla: l'utente deve poter scrivere
   // e inviare il messaggio successivo senza aspettare che il precedente
   // arrivi a destinazione (ogni invio ha un optimistic_id indipendente).
-  const busy = state.editSending;
-  const spinning = busy || state.sending > 0;
+  const busy = state.editSending || state.voiceStarting || Boolean(state.voiceRecorder) || state.attachmentSending;
+  // L'outbox non incrementa state.sending: guardiamo anche gli optimistic della
+  // chat attiva in stato "sending", così lo spinner appare anche per i testi.
+  const activeSending = state.optimistic.some((item) =>
+    item.optimisticStatus === "sending"
+    && item.protocol === state.active?.protocol
+    && item.contactId === state.active?.id);
+  const spinning = busy || state.sending > 0 || activeSending;
   elements.sendMessage.disabled = busy || (!elements.messageInput.value.trim() && !state.stagedAttachments.length);
   elements.messageInput.disabled = busy;
   elements.cancelReply.disabled = busy;
@@ -2245,12 +2377,423 @@ async function stageOneAttachment(file) {
   if (previewUrl) cacheMedia(attachmentId, previewUrl, previewWidth, previewHeight);
 }
 
+// ── Registrazione vocale (mobile) ───────────────────────────────────────────
+// Tap-per-registrare/tap-per-fermare: il file viene accodato come allegato
+// audio generico (non PTT). Cap 5 minuti, niente waveform/trascrizione.
+
+const VOICE_MAX_DURATION_MS = 5 * 60 * 1000;
+
+function isMobile() {
+  return window.matchMedia("(max-width: 700px)").matches;
+}
+
+function _selectVoiceMime() {
+  if (typeof MediaRecorder !== "function" || typeof MediaRecorder.isTypeSupported !== "function") return "";
+  for (const type of ["audio/mp4", "audio/webm"]) {
+    if (MediaRecorder.isTypeSupported(type)) return type;
+  }
+  return "";
+}
+
+function mimeTypeToExtension(mime) {
+  return String(mime || "").toLowerCase().split(";", 1)[0].trim() === "audio/mp4" ? "m4a" : "webm";
+}
+
+function formatVoiceDuration(ms) {
+  const t = Math.floor(ms / 1000);
+  return `${String(Math.floor(t / 60)).padStart(2, "0")}:${String(t % 60).padStart(2, "0")}`;
+}
+
+function safeStopMediaRecorder(mr) {
+  if (!mr || mr.state === "inactive") return;
+  try {
+    mr.stop();
+  } catch {
+    /* già fermo */
+  }
+}
+
+function renderVoiceRecorder(recorderState) {
+  let panel = document.querySelector("#voice-recorder");
+  if (!panel) {
+    panel = document.createElement("div");
+    panel.id = "voice-recorder";
+    panel.className = "voice-recorder";
+    elements.attachmentsPreview.before(panel);
+  }
+  if (!recorderState) {
+    panel.replaceChildren();
+    panel.hidden = true;
+    return;
+  }
+  panel.hidden = false;
+  panel.innerHTML = `
+    <div id="voice-recorder-timer" class="voice-recorder-timer">${formatVoiceDuration(Date.now() - recorderState.startTime)}</div>
+    <div class="voice-recorder-actions">
+      <button type="button" class="voice-recorder-btn stop" aria-label="Ferma registrazione">⏹️</button>
+      <button type="button" class="voice-recorder-btn cancel" aria-label="Annulla registrazione">🗑️</button>
+    </div>`;
+  panel.querySelector(".voice-recorder-btn.stop").addEventListener("click", (event) => {
+    event.preventDefault();
+    stopVoiceRecording();
+  });
+  panel.querySelector(".voice-recorder-btn.cancel").addEventListener("click", (event) => {
+    event.preventDefault();
+    cancelVoiceRecording();
+  });
+}
+
+function stopVoiceRecording() {
+  const rec = state.voiceRecorder;
+  if (rec) safeStopMediaRecorder(rec.mediaRecorder);
+}
+
+function cancelVoiceRecording() {
+  const rec = state.voiceRecorder;
+  if (!rec) {
+    // getUserMedia ancora in volo: invalida la generazione così il post-await
+    // non avvia la registrazione dopo che l'utente ha annullato/cambiato chat.
+    if (state.voiceStarting) {
+      state.voiceGeneration += 1;
+      state.voiceStarting = false;
+      updateComposer();
+    }
+    return;
+  }
+  rec.discarded = true;
+  clearInterval(rec.timerInterval);
+  rec.stream.getTracks().forEach((track) => track.stop());
+  rec.mediaRecorder.ondataavailable = null;
+  rec.mediaRecorder.onstop = null;
+  rec.mediaRecorder.onerror = null;
+  safeStopMediaRecorder(rec.mediaRecorder);
+  state.voiceRecorder = null;
+  state.voiceStarting = false;
+  renderVoiceRecorder(null);
+  updateComposer();
+}
+
+async function startVoiceRecording() {
+  if (!isMobile()) return;
+  if (state.voiceStarting || state.voiceRecorder) return;
+  if (state.editing || state.editSending || state.sending > 0) return;
+  if (!navigator.mediaDevices?.getUserMedia) {
+    showError("Registrazione vocale non disponibile: serve una connessione sicura (HTTPS).");
+    return;
+  }
+  const generation = ++state.voiceGeneration;
+  state.voiceStarting = true;
+  updateComposer();
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch {
+    state.voiceStarting = false;
+    if (generation !== state.voiceGeneration) return;
+    showError("Impossibile accedere al microfono.");
+    updateComposer();
+    return;
+  }
+  if (generation !== state.voiceGeneration) {
+    stream.getTracks().forEach((track) => track.stop());
+    state.voiceStarting = false;
+    return;
+  }
+  const mimeType = _selectVoiceMime();
+  let mediaRecorder;
+  try {
+    mediaRecorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+  } catch {
+    stream.getTracks().forEach((track) => track.stop());
+    state.voiceStarting = false;
+    showError("Impossibile avviare la registrazione.");
+    updateComposer();
+    return;
+  }
+  const chunks = [];
+  const startTime = Date.now();
+  const rec = {
+    stream,
+    mediaRecorder,
+    chunks,
+    startTime,
+    timerInterval: null,
+    generation,
+    discarded: false,
+  };
+  // SOLO property handler: addEventListener duplicherebbe i callback a ogni
+  // registrazione concorrente sullo stesso oggetto.
+  mediaRecorder.ondataavailable = (event) => {
+    if (event.data && event.data.size > 0) chunks.push(event.data);
+  };
+  mediaRecorder.onerror = () => {
+    clearInterval(rec.timerInterval);
+    stream.getTracks().forEach((track) => track.stop());
+    if (generation !== state.voiceGeneration) return;
+    state.voiceRecorder = null;
+    state.voiceStarting = false;
+    renderVoiceRecorder(null);
+    updateComposer();
+    showError("Errore durante la registrazione.");
+  };
+  mediaRecorder.onstop = () => {
+    clearInterval(rec.timerInterval);
+    stream.getTracks().forEach((track) => track.stop());
+    // R5: la generazione invalidata (chat cambiata/annullo) scarta il blob
+    // prima di qualunque accesso a `rec`.
+    if (generation !== state.voiceGeneration) return;
+    const captured = state.voiceRecorder;
+    if (!captured || captured.discarded) {
+      state.voiceRecorder = null;
+      state.voiceStarting = false;
+      renderVoiceRecorder(null);
+      updateComposer();
+      return;
+    }
+    const actualMime = mediaRecorder.mimeType
+      || (chunks.length ? new Blob(chunks).type : "")
+      || "audio/webm";
+    const extension = mimeTypeToExtension(actualMime);
+    const filename = `voice-${startTime}.${extension}`;
+    const chunkCount = chunks.length;
+    state.voiceRecorder = null;
+    state.voiceStarting = false;
+    renderVoiceRecorder(null);
+    updateComposer();
+    if (!chunkCount) {
+      showError("Registrazione vuota.");
+      return;
+    }
+    const file = new File(
+      [new Blob(chunks, { type: actualMime })],
+      filename,
+      { type: actualMime, lastModified: startTime },
+    );
+    void stageAttachments([file]);
+  };
+  rec.timerInterval = setInterval(() => {
+    const elapsed = Date.now() - startTime;
+    const timerEl = document.querySelector("#voice-recorder-timer");
+    if (timerEl) timerEl.textContent = formatVoiceDuration(elapsed);
+    if (elapsed >= VOICE_MAX_DURATION_MS && mediaRecorder.state === "recording") {
+      showError("Registrazione fermata automaticamente dopo 5 minuti.");
+      safeStopMediaRecorder(mediaRecorder);
+    }
+  }, 250);
+  state.voiceRecorder = rec;
+  state.voiceStarting = false;
+  try {
+    mediaRecorder.start(1000);
+  } catch {
+    cancelVoiceRecording();
+    showError("Impossibile avviare la registrazione.");
+    return;
+  }
+  renderVoiceRecorder(rec);
+  updateComposer();
+  closeComposerMenu();
+}
+
+// ── Outbox: retry testo che sopravvive alla disconnessione ──────────────────
+// Vedi docs/DESIGN_WEB_SEND_RETRY_DISCONNECTION.md §7.  `state.outbox` è null
+// quando outbox.js non è caricato (fallback legacy sincrono) oppure quando lo
+// store non è disponibile: in quel caso submitMessage non passa dall'outbox.
+
+function outboxModule() {
+  return (typeof window !== "undefined" && window.SignalTuiOutbox) || null;
+}
+
+// Ricostruisce i campi display della quote per la bolla ripristinata al boot.
+function recordQuoteFields(record) {
+  const fields = {};
+  const quote = record.quote;
+  if (!quote) return fields;
+  fields.quote_timestamp = quote.quote_timestamp;
+  fields.quote_author = quote.quote_author;
+  fields.quote_message = quote.quote_message;
+  fields.quote_text = quote.quote_message;
+  if (quote.quote_content_type) fields.quote_content_type = quote.quote_content_type;
+  const mediaType = String(quote.quote_content_type || "").startsWith("video/")
+    ? "video"
+    : String(quote.quote_content_type || "").startsWith("image/")
+      ? "image"
+      : null;
+  if (mediaType && record.protocol !== "signal") fields.quote_media_type = mediaType;
+  if (quote.quote_attachment_id) {
+    const attachmentId = String(quote.quote_attachment_id).split("/").map(encodeURIComponent).join("/");
+    fields.quote_thumb_url = `/api/media/${record.protocol}/${attachmentId}?w=96`;
+    fields.quote_media_placeholder = !quote.quote_message;
+  }
+  return fields;
+}
+
+function recordToOptimistic(record) {
+  return {
+    optimistic_id: record.optimistic_id || `out-${record.client_msg_id}`,
+    outbox_id: record.id,
+    client_msg_id: record.client_msg_id,
+    protocol: record.protocol,
+    contactId: record.contact_id,
+    text: record.text,
+    direction: "out",
+    timestamp: record.timestamp,
+    // N5: niente ricalcolo di known_message_ids (l'eco del già inviato
+    // produrrebbe una doppia bolla).  `restored` abilita il vincolo temporale
+    // di pairing (riga.timestamp >= item.timestamp) in reconcile.js.
+    known_message_ids: [],
+    restored: true,
+    optimisticStatus: record.status === "sending" ? "queued" : record.status,
+    ...recordQuoteFields(record),
+  };
+}
+
+function sendOutboxRecord(record) {
+  const module = outboxModule();
+  const active = { protocol: record.protocol, id: record.contact_id };
+  const payload = module.buildSendPayload(active, record.text, record.quote);
+  payload.client_msg_id = record.client_msg_id;
+  return apiFetch("/api/send", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+function onOutboxUpdate(record) {
+  if (!record || !state.outbox) return;
+  const status = record.status === "sent" ? "sent" : record.status;
+  let changed = false;
+  for (const item of state.optimistic) {
+    if (item.client_msg_id !== record.client_msg_id) continue;
+    if (record.optimistic_id && item.optimistic_id !== record.optimistic_id) continue;
+    item.outbox_id = record.id;
+    if (status === "sending") item.optimisticStatus = "sending";
+    else item.optimisticStatus = status;
+    changed = true;
+  }
+  if (changed && state.active) {
+    renderMessages(state.messages, state.active.protocol);
+    updateComposer();
+  }
+}
+
+function scheduleOutboxFlush(delayMs) {
+  window.clearTimeout(state.outboxFlushTimer);
+  state.outboxFlushTimer = window.setTimeout(() => {
+    state.outboxFlushTimer = null;
+    flushOutbox();
+  }, Math.max(0, delayMs));
+}
+
+function flushOutbox() {
+  const store = state.outbox;
+  if (!store || !state.token) return;
+  // Un flush già in corso non vede i record reincodati dopo la sua lettura:
+  // memorizza la richiesta e rilancia un flush al termine (Riprova manuale).
+  if (state.outboxFlushing) {
+    state.outboxFlushPending = true;
+    return;
+  }
+  state.outboxFlushing = true;
+  state.outboxFlushPending = false;
+  store
+    .flush({ send: sendOutboxRecord, onUpdate: onOutboxUpdate })
+    .then((result) => {
+      if (result && result.nextAttemptAt) {
+        scheduleOutboxFlush(result.nextAttemptAt - Date.now());
+      }
+    })
+    .catch((error) => console.debug("[web] outbox flush failed", error))
+    .finally(() => {
+      state.outboxFlushing = false;
+      if (state.outboxFlushPending) {
+        state.outboxFlushPending = false;
+        flushOutbox();
+      }
+    });
+}
+
+async function retryOutboxRecord(id) {
+  const store = state.outbox;
+  if (!store || !id) return;
+  const record = await store.retry(id);
+  if (record) onOutboxUpdate(record);
+  flushOutbox();
+}
+
+async function discardOutboxRecord(id) {
+  const store = state.outbox;
+  if (!store || !id) return;
+  await store.remove(id);
+  state.optimistic = state.optimistic.filter((item) => item.outbox_id !== id);
+  if (state.active) renderMessages(state.messages, state.active.protocol);
+}
+
+async function initOutbox() {
+  const module = outboxModule();
+  if (!module) return;
+  let store = null;
+  try {
+    store = module.openOutbox();
+  } catch (error) {
+    console.debug("[web] outbox open failed, using in-memory", error);
+  }
+  let records = [];
+  if (store) {
+    try {
+      await store.recover();
+      records = await store.list();
+    } catch (error) {
+      console.debug("[web] outbox IDB unusable, using in-memory", error);
+      store = null;
+    }
+  }
+  // R-C/§11: se IDB non è utilizzabile non lasciare uno store morto: degrada
+  // all'outbox in-memory asincrono con lo stesso contratto.
+  if (!store) {
+    store = module.openOutbox({ backend: module.createMemoryBackend() });
+  }
+  state.outbox = store;
+  for (const record of records) state.optimistic.push(recordToOptimistic(record));
+  if (records.length && state.active) {
+    renderMessages(state.messages, state.active.protocol);
+  }
+  store.subscribe?.((message) => {
+    if (message && (message.type === "enqueue" || message.type === "retry")) flushOutbox();
+  });
+  flushOutbox();
+}
+
+async function clearOutbox() {
+  const store = state.outbox;
+  state.optimistic = state.optimistic.filter((item) => item.outbox_id === undefined);
+  if (state.active) renderMessages(state.messages, state.active.protocol);
+  if (!store) return;
+  try {
+    await store.clear();
+  } catch (error) {
+    console.debug("[web] outbox clear failed", error);
+  }
+}
+
+if (typeof window !== "undefined") {
+  window.retryOutboxItem = (id) => { void retryOutboxRecord(id); };
+  window.discardOutboxItem = (id) => { void discardOutboxRecord(id); };
+}
+
 async function submitMessage() {
   if (!state.active) return;
+  // R2: l'invio allegati trattiene lo staging fino all'esito della fetch: il
+  // flag blocca un secondo submit e il composer, così nessun doppio invio.
+  if (state.voiceRecorder || state.voiceStarting) return;
+  if (state.attachmentSending) return;
   const text = elements.messageInput.value;
   const attachments = [...state.stagedAttachments];
   const reply = state.replyTo ? { ...state.replyTo } : null;
   if (!text.trim() && !attachments.length) return;
+  // Mantiene la tastiera aperta sui dispositivi touch anche quando il percorso
+  // outbox ritorna presto (senza attendere la fetch) o il send e' asincrono.
+  elements.messageInput.focus({ preventScroll: true });
   // Il banner "Rispondendo a..." si chiude subito, non ad invio riuscito:
   // con piu' invii in volo insieme un secondo messaggio composto mentre il
   // primo (con citazione) e' ancora in corso non deve erediare la stessa
@@ -2258,6 +2801,7 @@ async function submitMessage() {
   if (reply) cancelReply();
   const active = { ...state.active };
   const timestamp = Date.now();
+  const clientMsgId = `${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
   const knownMessageIds = state.messages.map(window.SignalTuiReconcile.messageIdentity);
   const quoteFields = {};
   if (reply) {
@@ -2282,6 +2826,8 @@ async function submitMessage() {
       }
     }
   }
+  const outboxStore = state.outbox || null;
+  const useOutbox = Boolean(outboxStore) && attachments.length === 0;
   // batch_id solo per il multi-allegato (design §6.3): il singolo resta il
   // percorso legacy, senza batch_id, cosi' signature e reconciliation del
   // single-attachment non cambiano.
@@ -2293,6 +2839,7 @@ async function submitMessage() {
         optimistic_id: batchId ? `${batchId}-att${index}` : `${timestamp}-${++state.optimisticSequence}`,
         batch_id: batchId,
         batch_index: batchId ? index : null,
+        client_msg_id: clientMsgId,
         protocol: active.protocol,
         contactId: active.id,
         // La caption accompagna solo il primo allegato, come le righe reali
@@ -2323,21 +2870,59 @@ async function submitMessage() {
   } else {
     optimisticItems.push({
       optimistic_id: `${timestamp}-${++state.optimisticSequence}`,
+      client_msg_id: clientMsgId,
       protocol: active.protocol,
       contactId: active.id,
       text,
       direction: "out",
       timestamp,
-      optimisticStatus: "sending",
+      optimisticStatus: useOutbox ? "queued" : "sending",
       known_message_ids: knownMessageIds,
       ...quoteFields,
     });
   }
   console.debug("[web] optimistic", { protocol: active.protocol, optimistic_ids: optimisticItems.map((item) => item.optimistic_id), attachments: attachments.length, hasPreview: optimisticItems.some((item) => item.localPreviewUrl) });
   state.optimistic.push(...optimisticItems);
+  if (useOutbox) {
+    const record = {
+      id: `out-${clientMsgId}`,
+      client_msg_id: clientMsgId,
+      optimistic_id: optimisticItems[0].optimistic_id,
+      protocol: active.protocol,
+      contact_id: active.id,
+      text,
+      timestamp,
+      quote: window.SignalTuiOutbox.replyToQuoteRecord(reply, active.protocol),
+      batch_id: null,
+      attachments: [],
+      status: "queued",
+      attempts: 0,
+      dispatched: false,
+      last_attempt_at: 0,
+      next_attempt_at: 0,
+      created_at: Date.now(),
+      updated_at: Date.now(),
+    };
+    for (const item of optimisticItems) item.outbox_id = record.id;
+    try {
+      // Composer svuotato solo DOPO l'accodamento persistente (§7.3).
+      await outboxStore.enqueue(record);
+      elements.messageInput.value = "";
+      resizeComposer();
+      updateComposer();
+      if (state.active?.id === active.id && state.active?.protocol === active.protocol) {
+        renderMessages(state.messages, active.protocol);
+      }
+      flushOutbox();
+    } catch (error) {
+      for (const item of optimisticItems) item.optimisticStatus = "failed";
+      showError("Impossibile accodare il messaggio.");
+    }
+    return;
+  }
   state.sending += 1;
+  if (attachments.length) state.attachmentSending = true;
   elements.messageInput.value = "";
-  if (attachments.length) clearStagedAttachments({ revoke: false });
   resizeComposer();
   updateComposer();
   if (state.active?.id === active.id && state.active?.protocol === active.protocol) renderMessages(state.messages, active.protocol);
@@ -2358,6 +2943,7 @@ async function submitMessage() {
       body.set("protocol", active.protocol);
       body.set("contact_id", active.id);
       body.set("text", text);
+      body.set("client_msg_id", clientMsgId);
       if (batchId) body.set("batch_id", batchId);
       for (const [key, value] of Object.entries(quotePayload)) body.set(key, String(value));
       // append (non set): il campo "file" e' ripetuto per ciascun allegato.
@@ -2367,14 +2953,18 @@ async function submitMessage() {
       await apiFetch("/api/send", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ protocol: active.protocol, contact_id: active.id, text, ...quotePayload }),
+        body: JSON.stringify({ protocol: active.protocol, contact_id: active.id, text, client_msg_id: clientMsgId, ...quotePayload }),
       });
     }
     for (const optimistic of optimisticItems) optimistic.optimisticStatus = "sent";
+    // R2: lo staging viene svuotato solo a invio riuscito; su errore gli
+    // allegati restano disponibili per il retry manuale.
+    if (attachments.length) clearStagedAttachments({ revoke: false });
   } catch (error) {
     for (const optimistic of optimisticItems) optimistic.optimisticStatus = "failed";
     if (error.message !== "unauthorized") showError("Impossibile inviare il messaggio.");
   } finally {
+    state.attachmentSending = false;
     state.sending -= 1;
     updateComposer();
     // Non spostare il focus se nel frattempo l'utente ha cambiato chat:
@@ -2497,6 +3087,7 @@ function connectSocket() {
     setDotColor(COLOR_GREEN);
     elements.connection.textContent = "live";
     if (state.active) loadMessages();
+    flushOutbox();
   };
   socket.onmessage = (event) => {
     state.lastWsActivity = Date.now();
@@ -2522,6 +3113,11 @@ function connectSocket() {
           }
           break;
         }
+        case "lid_warmup_done":
+          if (state.active?.protocol === "whatsapp" && state.active?.id?.endsWith("@g.us")) {
+            loadMessages();
+          }
+          break;
         case "receipt":
           applyReceiptUpdates(update.payload);
           break;
@@ -2534,6 +3130,23 @@ function connectSocket() {
         case "typing":
           handleTyping(update.payload);
           break;
+        case "send_retry": {
+          const { client_msg_id, attempt, max_attempts } = update.payload;
+          let updated = false;
+          for (const item of state.optimistic) {
+            if (item.client_msg_id === client_msg_id &&
+                (item.optimisticStatus === "sending" || item.optimisticStatus === "retrying" || item.optimisticStatus === "queued")) {
+              item.optimisticStatus = "retrying";
+              item.retryAttempt = attempt;
+              item.retryMax = max_attempts;
+              updated = true;
+            }
+          }
+          if (updated && state.active) {
+            renderMessages(state.messages, state.active.protocol);
+          }
+          break;
+        }
       }
     } catch {
       showError("Aggiornamento live non valido ricevuto dal server.");
@@ -2563,7 +3176,55 @@ document.addEventListener("visibilitychange", () => {
     markRead(state.active.protocol, state.active.id);
     loadContacts({ quiet: true });
   }
+  if (document.visibilityState === "visible") flushOutbox();
+  if (document.visibilityState === "hidden") cancelVoiceRecording();
 });
+window.addEventListener("pagehide", () => cancelVoiceRecording());
+window.addEventListener("online", () => flushOutbox());
+// Gating mobile unico: `.is-mobile` guida la UI vocale con la STESSA media
+// query usata da JS e CSS (nessuna divergenza a 700px).
+const mobileMq = window.matchMedia("(max-width: 700px)");
+const syncMobileClass = () => document.documentElement.classList.toggle("is-mobile", mobileMq.matches);
+if (mobileMq.addEventListener) mobileMq.addEventListener("change", syncMobileClass);
+syncMobileClass();
+const vv = window.visualViewport;
+if (vv) {
+  let vvFrame = 0;
+  const applyViewport = () => {
+    if (vvFrame) return;
+    vvFrame = requestAnimationFrame(() => {
+      vvFrame = 0;
+      if (window.matchMedia("(max-width: 700px)").matches) {
+        document.documentElement.style.setProperty("--vvh", `${vv.height}px`);
+        document.documentElement.style.setProperty("--vv-top", `${vv.offsetTop}px`);
+        // In PWA standalone iOS l'inset di safe-area inferiore (home indicator)
+        // resta applicato anche con la tastiera aperta: aggiunge una fascia
+        // vuota sotto il composer. Con la tastiera aperta la azzeriamo.
+        const keyboardOpen = vv.offsetTop > 0 || vv.height < window.screen.height - 150;
+        document.documentElement.classList.toggle("kb-open", keyboardOpen);
+        // Il guscio si accorcia quando appare la tastiera: senza ri-ancorare,
+        // l'ultimo messaggio finisce sotto la tastiera. Ripinna al fondo, a
+        // layout aggiornato, solo se l'utente non stava leggendo la cronologia.
+        requestAnimationFrame(() => {
+          if (!state.userScrolledUp) scrollThreadToBottom();
+        });
+      } else {
+        document.documentElement.style.removeProperty("--vvh");
+        document.documentElement.style.removeProperty("--vv-top");
+        document.documentElement.classList.remove("kb-open");
+      }
+    });
+  };
+  // iOS anima la tastiera: il valore finale del visual viewport puo' arrivare
+  // dopo l'ultimo evento resize. Rimisura anche a tastiera assestata.
+  const applyViewportSettled = () => {
+    applyViewport();
+    for (const delay of [50, 150, 300, 500]) window.setTimeout(applyViewport, delay);
+  };
+  vv.addEventListener("resize", applyViewportSettled);
+  vv.addEventListener("scroll", applyViewport);
+  applyViewportSettled();
+}
 elements.saveOpenaiKey.addEventListener("click", saveOpenaiKey);
 elements.changeOpenaiKey.addEventListener("click", enableOpenaiKeyEdit);
 
@@ -2587,7 +3248,12 @@ document.querySelector("#back-button").addEventListener("click", () => {
 window.addEventListener("popstate", () => {
   if (elements.app.classList.contains("thread-open")) closeThreadView();
 });
-document.querySelector("#dismiss-error").addEventListener("click", () => { elements.errorBanner.hidden = true; });
+document.querySelector("#dismiss-error").addEventListener("click", () => {
+  elements.errorBanner.hidden = true;
+  // Un fallimento emoji transitorio non deve restare permanente fino al
+  // reload: chiudendo il banner si abilita il retry al prossimo tap.
+  state.emojiFailed = false;
+});
 elements.messages.addEventListener("scroll", () => {
   state.userScrolledUp = (
     elements.messages.scrollHeight
@@ -2595,9 +3261,56 @@ elements.messages.addEventListener("scroll", () => {
     - elements.messages.clientHeight
   ) > 80;
 });
+// Chiude la tastiera solo su un VERO tap nella lista messaggi, non all'inizio
+// di un gesto di scroll: altrimenti ogni scroll-up farebbe blur + reflow.
+let messageTapStart = null;
+elements.messages.addEventListener("pointerdown", (event) => {
+  if (!window.matchMedia("(max-width: 700px)").matches) return;
+  messageTapStart = { x: event.clientX, y: event.clientY, t: Date.now() };
+});
+elements.messages.addEventListener("pointerup", (event) => {
+  if (!window.matchMedia("(max-width: 700px)").matches) return;
+  const start = messageTapStart;
+  messageTapStart = null;
+  if (!start) return;
+  const moved = Math.hypot(event.clientX - start.x, event.clientY - start.y);
+  if (moved > 10 || Date.now() - start.t > 600) return; // era uno scroll, non un tap
+  const interactive = event.target.closest(
+    "button, a, input, textarea, [contenteditable], .attachment, .transcript-box"
+  );
+  if (!interactive) elements.messageInput.blur();
+});
 elements.composer.addEventListener("submit", (event) => {
   event.preventDefault();
   state.editing ? submitEdit() : submitMessage();
+});
+if (window.matchMedia("(pointer: coarse)").matches) {
+  for (const btn of document.querySelectorAll(".composer-controls button")) {
+    btn.addEventListener("pointerdown", (event) => event.preventDefault());
+  }
+}
+const composerMore = document.querySelector("#composer-more");
+const composerMenu = document.querySelector("#composer-menu");
+function closeComposerMenu() {
+  if (!composerMenu || composerMenu.hidden) return;
+  composerMenu.hidden = true;
+  composerMore.setAttribute("aria-expanded", "false");
+}
+function toggleComposerMenu() {
+  if (!composerMenu) return;
+  const willOpen = composerMenu.hidden;
+  composerMenu.hidden = !willOpen;
+  composerMore.setAttribute("aria-expanded", willOpen ? "true" : "false");
+}
+if (composerMore) composerMore.addEventListener("click", toggleComposerMenu);
+// Chiudi dopo le azioni e su click fuori / Escape.
+document.addEventListener("click", (event) => {
+  if (!composerMenu || composerMenu.hidden) return;
+  if (event.target.closest("#composer-menu, #composer-more")) return;
+  closeComposerMenu();
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") closeComposerMenu();
 });
 elements.messageInput.addEventListener("input", () => {
   resizeComposer();
@@ -2695,9 +3408,17 @@ elements.composer.addEventListener("paste", (event) => {
   void stageAttachments([item.getAsFile()]);
 });
 elements.attachButton.addEventListener("click", () => {
+  cancelVoiceRecording();
+  closeComposerMenu();
   elements.fileInput.value = "";
   elements.fileInput.click();
 });
+if (elements.voiceRecord) {
+  elements.voiceRecord.addEventListener("click", () => {
+    closeComposerMenu();
+    void startVoiceRecording();
+  });
+}
 elements.fileInput.addEventListener("change", () => {
   const files = [...(elements.fileInput.files || [])];
   elements.fileInput.value = "";
@@ -2784,11 +3505,15 @@ elements.saveToken.addEventListener("click", () => {
     elements.tokenError.hidden = false;
     return;
   }
+  const previousToken = state.token;
   state.token = token;
   localStorage.setItem(TOKEN_KEY, token);
   elements.tokenError.hidden = true;
   elements.linkDialog.close();
   updateTelegramRefreshTimer();
+  // Rotazione token deliberata → clear dell'outbox (D6). Il login iniziale
+  // (nessun token precedente) non cancella nulla perché la coda è vuota.
+  if (previousToken && previousToken !== token) void clearOutbox();
   loadContacts();
   connectSocket();
 });
@@ -2824,5 +3549,6 @@ async function boot() {
   } else {
     requestToken();
   }
+  void initOutbox();
 }
 boot();
