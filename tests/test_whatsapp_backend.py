@@ -4758,3 +4758,365 @@ def test_mark_read_uses_send_seen_and_404_still_marks_local(caplog):
     records = [r for r in caplog.records if "path=/api/sendSeen" in r.getMessage()]
     assert len(records) == 1
     assert records[0].levelno == logging.DEBUG
+
+
+class TestWhatsAppVoiceAutoTranscribe:
+    """Incoming voice notes (ptt) are auto-transcribed and replied to in-chat,
+    mirroring the mention-lid/media resolver background pattern."""
+
+    @pytest.fixture(autouse=True)
+    def _isolated_store(self, tmp_path, monkeypatch):
+        import protocols.db as db_backend
+
+        monkeypatch.setattr(db_backend, "DB_FILE", tmp_path / "protocols.db")
+        monkeypatch.setattr(db_backend, "CACHE_DIR", tmp_path)
+
+    @pytest.fixture(autouse=True)
+    def _enabled_config(self, monkeypatch):
+        monkeypatch.setattr(
+            "transcription.config.get_openai_api_key", lambda: "sk-test"
+        )
+        monkeypatch.setattr(
+            "transcription.config.get_transcription_enabled", lambda: True
+        )
+
+    def test_schedule_is_noop_when_transcription_disabled(self, monkeypatch):
+        monkeypatch.setattr(
+            "transcription.config.get_transcription_enabled", lambda: False
+        )
+        backend = _make_backend()
+        backend._schedule_voice_transcribe("123@c.us", "msg-1", "att-1")
+        assert backend._voice_transcribe_pending == {}
+
+    def test_schedule_empty_args_and_stopped_resolver_are_noops(self):
+        backend = _make_backend()
+        backend._schedule_voice_transcribe("", "msg-1", "att-1")
+        assert backend._voice_transcribe_pending == {}
+
+        backend._voice_transcribe_stop = True
+        backend._schedule_voice_transcribe("123@c.us", "msg-1", "att-1")
+        assert backend._voice_transcribe_pending == {}
+
+    def test_schedule_deduplicates_by_attachment_id(self):
+        backend = _make_backend()
+        try:
+            backend._schedule_voice_transcribe("123@c.us", "msg-1", "att-1")
+            backend._schedule_voice_transcribe("123@c.us", "msg-1", "att-1")
+            with backend._voice_transcribe_lock:
+                assert len(backend._voice_transcribe_pending) == 1
+        finally:
+            backend.disconnect_sync()
+
+    def test_start_resolver_is_a_noop_once_stopped(self):
+        backend = _make_backend()
+        backend._voice_transcribe_stop = True
+        backend._start_voice_transcriber()
+        assert backend._voice_transcribe_thread is None
+
+    def test_transcribes_downloads_and_replies_in_chat(self, tmp_path):
+        """End-to-end: media downloads, gets transcribed, and the text is
+        sent back into the chat as a quoted reply to the voice note."""
+        import time
+
+        media = tmp_path / "media"
+        media.mkdir()
+        backend = _make_backend(media_dir=str(media))
+        backend._rest = MagicMock()
+        backend._rest.download_media.return_value = b"audio-bytes"
+        backend._rest.send_message.return_value = {"id": "reply-1"}
+
+        fake_client = MagicMock()
+        fake_client.model = "gpt-transcribe"
+        fake_client.transcribe.return_value = "ciao come stai"
+
+        try:
+            with patch(
+                "transcription.client.CloudTranscriptionClient",
+                return_value=fake_client,
+            ):
+                backend._schedule_voice_transcribe("123@c.us", "msg-1", "att-1")
+                deadline = time.monotonic() + 2
+                while (
+                    time.monotonic() < deadline
+                    and "att-1" in backend._voice_transcribe_pending
+                ):
+                    time.sleep(0.02)
+
+            with backend._voice_transcribe_lock:
+                assert backend._voice_transcribe_pending == {}
+            fake_client.transcribe.assert_called_once()
+            backend._rest.send_message.assert_called_once()
+            args, kwargs = backend._rest.send_message.call_args
+            assert args[0] == "123@c.us"
+            assert args[1] == "ciao come stai"
+            assert kwargs.get("reply_to_message_id") == "msg-1"
+
+            from transcription import store as transcription_store
+
+            cached = transcription_store.get(PROTOCOL_WHATSAPP, "att-1")
+            assert cached is not None
+            assert cached["status"] == "ok"
+            assert cached["text"] == "ciao come stai"
+        finally:
+            backend.disconnect_sync()
+
+    def test_reuses_already_cached_transcription_without_recalling_client(
+        self, tmp_path
+    ):
+        """A manual "Trascrivi" transcription that wins the race is reused
+        here instead of re-billed, and still triggers the in-chat reply."""
+        import time
+
+        from transcription import store as transcription_store
+
+        transcription_store.set(
+            PROTOCOL_WHATSAPP, "att-2", status="ok", text="già trascritto"
+        )
+
+        backend = _make_backend(media_dir=str(tmp_path / "media"))
+        backend._rest = MagicMock()
+        backend._rest.send_message.return_value = {"id": "reply-2"}
+
+        try:
+            with patch(
+                "transcription.client.CloudTranscriptionClient"
+            ) as client_cls:
+                backend._schedule_voice_transcribe("456@c.us", "msg-2", "att-2")
+                deadline = time.monotonic() + 2
+                while (
+                    time.monotonic() < deadline
+                    and "att-2" in backend._voice_transcribe_pending
+                ):
+                    time.sleep(0.02)
+            client_cls.assert_not_called()
+            backend._rest.download_media.assert_not_called()
+            backend._rest.send_message.assert_called_once()
+            args, _ = backend._rest.send_message.call_args
+            assert args[1] == "già trascritto"
+        finally:
+            backend.disconnect_sync()
+
+    def test_retries_while_media_not_yet_downloadable_then_gives_up(self, tmp_path):
+        """``get_attachment_path`` returning ``None`` (download not ready
+        yet) is retried with backoff up to 3 attempts, then dropped."""
+        import time
+
+        backend = _make_backend(media_dir=str(tmp_path / "media"))
+        backend._rest = MagicMock()
+        backend._rest.download_media.return_value = None
+
+        try:
+            with patch(
+                "protocols.whatsapp._resolve_wa_media_chat_id",
+                return_value=(None, None),
+            ):
+                backend._schedule_voice_transcribe("789@c.us", "msg-3", "att-3")
+                deadline = time.monotonic() + 3
+                observed_attempts = -1
+                while time.monotonic() < deadline:
+                    with backend._voice_transcribe_lock:
+                        pending = backend._voice_transcribe_pending.get("att-3")
+                        if pending is None:
+                            break
+                        if pending["attempts"] != observed_attempts:
+                            observed_attempts = pending["attempts"]
+                            pending["next"] = 0
+                    time.sleep(0.02)
+
+            with backend._voice_transcribe_lock:
+                assert "att-3" not in backend._voice_transcribe_pending
+            assert backend._rest.download_media.call_count == 3
+            backend._rest.send_message.assert_not_called()
+        finally:
+            backend.disconnect_sync()
+
+    def test_transcription_failure_is_terminal_not_retried(self, tmp_path):
+        """A real transcription error (bad audio, API rejects it) settles
+        immediately instead of retrying 3 times like a not-ready download."""
+        import time
+
+        from transcription.client import TranscriptionError
+
+        media = tmp_path / "media"
+        media.mkdir()
+        backend = _make_backend(media_dir=str(media))
+        backend._rest = MagicMock()
+        backend._rest.download_media.return_value = b"audio-bytes"
+
+        fake_client = MagicMock()
+        fake_client.model = "gpt-transcribe"
+        fake_client.transcribe.side_effect = TranscriptionError("bad audio")
+
+        try:
+            with patch(
+                "transcription.client.CloudTranscriptionClient",
+                return_value=fake_client,
+            ):
+                backend._schedule_voice_transcribe("999@c.us", "msg-4", "att-4")
+                deadline = time.monotonic() + 2
+                while (
+                    time.monotonic() < deadline
+                    and "att-4" in backend._voice_transcribe_pending
+                ):
+                    time.sleep(0.02)
+
+            with backend._voice_transcribe_lock:
+                assert backend._voice_transcribe_pending == {}
+            assert fake_client.transcribe.call_count == 1
+            backend._rest.send_message.assert_not_called()
+
+            from transcription import store as transcription_store
+
+            cached = transcription_store.get(PROTOCOL_WHATSAPP, "att-4")
+            assert cached is not None and cached["status"] == "failed"
+        finally:
+            backend.disconnect_sync()
+
+    def test_live_incoming_voice_note_schedules_transcription(self):
+        """The poll-consumer hook (tui/events.py) schedules transcription
+        right after a live incoming voice note is newly ingested."""
+        from models import ChatEvent
+        from tui.events import EventHandlingMixin
+
+        backend = _make_backend()
+        backend.ingest_message = MagicMock(return_value=True)
+        scheduled = MagicMock()
+        backend._schedule_voice_transcribe = scheduled
+
+        class _Manager:
+            def get(self, protocol):
+                return backend
+
+        class _Harness(EventHandlingMixin):
+            def __init__(self):
+                self.manager = _Manager()
+                self.contacts = []
+                self.selected_contact = None
+                self._contact_list_dirty = False
+                self._dirty_contact_keys = set()
+                self._cache = {}
+                self._typing_contacts = {}
+                self._typing_mumbling = {}
+                self._TYPING_MUMBLING_DURATION = 100
+                self._seen_timestamps = set()
+                self._seen_message_ids = set()
+
+        harness = _Harness()
+        event = ChatEvent(
+            type="message",
+            protocol=PROTOCOL_WHATSAPP,
+            contact_id="111@c.us",
+            payload={
+                "id": "msg-9",
+                "text": "Media: att-9",
+                "is_mine": False,
+                "sender": "Marco",
+                "timestamp": 1000,
+                "msg_type": "attachment",
+                "attachment_id": "att-9",
+                "media_kind": "voice",
+                "content_type": "audio/ogg",
+            },
+        )
+
+        assert harness._handle_message_event(event) is True
+        scheduled.assert_called_once_with("111@c.us", "msg-9", "att-9")
+
+    def test_live_incoming_non_voice_media_does_not_schedule(self):
+        """Only ``media_kind == "voice"`` triggers auto-transcription — a
+        plain audio file attachment (not a ptt voice note) does not."""
+        from models import ChatEvent
+        from tui.events import EventHandlingMixin
+
+        backend = _make_backend()
+        backend.ingest_message = MagicMock(return_value=True)
+        scheduled = MagicMock()
+        backend._schedule_voice_transcribe = scheduled
+
+        class _Manager:
+            def get(self, protocol):
+                return backend
+
+        class _Harness(EventHandlingMixin):
+            def __init__(self):
+                self.manager = _Manager()
+                self.contacts = []
+                self.selected_contact = None
+                self._contact_list_dirty = False
+                self._dirty_contact_keys = set()
+                self._cache = {}
+                self._typing_contacts = {}
+                self._typing_mumbling = {}
+                self._TYPING_MUMBLING_DURATION = 100
+                self._seen_timestamps = set()
+                self._seen_message_ids = set()
+
+        harness = _Harness()
+        event = ChatEvent(
+            type="message",
+            protocol=PROTOCOL_WHATSAPP,
+            contact_id="111@c.us",
+            payload={
+                "id": "msg-10",
+                "text": "Media: att-10",
+                "is_mine": False,
+                "sender": "Marco",
+                "timestamp": 1000,
+                "msg_type": "attachment",
+                "attachment_id": "att-10",
+                "media_kind": "audio",
+                "content_type": "audio/mpeg",
+            },
+        )
+
+        assert harness._handle_message_event(event) is True
+        scheduled.assert_not_called()
+
+    def test_live_outgoing_voice_note_does_not_schedule(self):
+        """Only incoming (``is_mine=False``) voice notes are auto-transcribed."""
+        from models import ChatEvent
+        from tui.events import EventHandlingMixin
+
+        backend = _make_backend()
+        backend.ingest_message = MagicMock(return_value=True)
+        scheduled = MagicMock()
+        backend._schedule_voice_transcribe = scheduled
+
+        class _Manager:
+            def get(self, protocol):
+                return backend
+
+        class _Harness(EventHandlingMixin):
+            def __init__(self):
+                self.manager = _Manager()
+                self.contacts = []
+                self.selected_contact = None
+                self._contact_list_dirty = False
+                self._dirty_contact_keys = set()
+                self._cache = {}
+                self._typing_contacts = {}
+                self._typing_mumbling = {}
+                self._TYPING_MUMBLING_DURATION = 100
+                self._seen_timestamps = set()
+                self._seen_message_ids = set()
+
+        harness = _Harness()
+        event = ChatEvent(
+            type="message",
+            protocol=PROTOCOL_WHATSAPP,
+            contact_id="111@c.us",
+            payload={
+                "id": "msg-11",
+                "text": "Media: att-11",
+                "is_mine": True,
+                "sender": "You",
+                "timestamp": 1000,
+                "msg_type": "attachment",
+                "attachment_id": "att-11",
+                "media_kind": "voice",
+                "content_type": "audio/ogg",
+            },
+        )
+
+        assert harness._handle_message_event(event) is True
+        scheduled.assert_not_called()

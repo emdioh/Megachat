@@ -181,6 +181,24 @@ class EventHandlingMixin:
         added = ingest_result is True
         changed = ingest_result == "changed"
 
+        if (
+            added
+            and event.protocol == PROTOCOL_WHATSAPP
+            and not is_mine
+            and event.payload.get("media_kind") == "voice"
+            and event.payload.get("attachment_id")
+            and event.payload.get("id")
+        ):
+            schedule_voice_transcribe = getattr(
+                backend, "_schedule_voice_transcribe", None
+            )
+            if schedule_voice_transcribe is not None:
+                schedule_voice_transcribe(
+                    contact.id,
+                    str(event.payload["id"]),
+                    str(event.payload["attachment_id"]),
+                )
+
         if (added or changed) and getattr(self, "_web_enabled", False):
             logger.debug(
                 "events: push type=%s added=%s changed=%s protocol=%s contact=%s id=%s",

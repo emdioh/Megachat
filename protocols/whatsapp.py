@@ -298,6 +298,12 @@ class WhatsAppBackend(ChatBackend):
         self._mention_lid_lock = threading.Lock()
         self._mention_lid_resolver_thread: threading.Thread | None = None
         self._mention_lid_resolver_stop = False
+        #: Incoming WhatsApp voice notes (ptt) awaiting auto-transcription,
+        #: keyed by attachment id (see _schedule_voice_transcribe).
+        self._voice_transcribe_pending: dict[str, dict] = {}
+        self._voice_transcribe_lock = threading.Lock()
+        self._voice_transcribe_thread: threading.Thread | None = None
+        self._voice_transcribe_stop = False
 
         # ── Address book (rubrica completa) ────────────────────────────
         self._address_book: list[ChatContact] | None = None
@@ -772,6 +778,10 @@ class WhatsAppBackend(ChatBackend):
             and mention_thread is not threading.current_thread()
         ):
             mention_thread.join(timeout=2)
+        self._voice_transcribe_stop = True
+        voice_thread = self._voice_transcribe_thread
+        if voice_thread is not None and voice_thread is not threading.current_thread():
+            voice_thread.join(timeout=2)
 
     # ─── Contacts / active chats (one-shot discovery, no polling) ────
     # La ricezione degli eventi è tutta PUSH via webhook (handle_webhook).  I
@@ -2274,6 +2284,172 @@ class WhatsAppBackend(ChatBackend):
                             )
             except Exception:
                 logger.debug("WhatsApp mention lid resolver loop failed", exc_info=True)
+            time.sleep(0.5)
+
+    def _schedule_voice_transcribe(
+        self, contact_id: str, msg_id: str, attachment_id: str
+    ) -> None:
+        """Schedule auto-transcription of one incoming WhatsApp voice note.
+
+        Called by the poll consumer (``tui/events.py``) right after a live
+        voice note (``media_kind == "voice"``) is newly ingested.  A no-op
+        when cloud transcription isn't configured, so the resolver thread
+        never starts on an install without an OpenAI key.
+        """
+        if not contact_id or not msg_id or not attachment_id:
+            return
+        if self._voice_transcribe_stop:
+            return
+        from transcription.config import get_transcription_enabled
+
+        if not get_transcription_enabled():
+            return
+        with self._voice_transcribe_lock:
+            if attachment_id in self._voice_transcribe_pending:
+                return
+            self._voice_transcribe_pending[attachment_id] = {
+                "contact_id": contact_id,
+                "msg_id": msg_id,
+                "attempts": 0,
+                "next": time.time(),
+            }
+        self._start_voice_transcriber()
+
+    def _start_voice_transcriber(self) -> None:
+        """Start the voice-note auto-transcription thread once."""
+        with self._voice_transcribe_lock:
+            if self._voice_transcribe_stop:
+                return
+            thread = self._voice_transcribe_thread
+            if thread is not None and thread.is_alive():
+                return
+            thread = threading.Thread(
+                target=self._voice_transcribe_loop,
+                name="wa-voice-transcriber",
+                daemon=True,
+            )
+            self._voice_transcribe_thread = thread
+            thread.start()
+
+    def _transcribe_and_reply_voice(
+        self, contact_id: str, msg_id: str, attachment_id: str
+    ) -> bool:
+        """Transcribe one voice note and reply in-chat with the text.
+
+        Returns ``True`` when the attempt is settled (transcribed and
+        replied, already cached, or permanently failed/disabled — no more
+        retries needed) and ``False`` when it should be retried (e.g. the
+        media isn't downloadable yet).  Reuses the same cloud client/config
+        and SQLite ``transcriptions`` store as the manual "Trascrivi" button
+        in the web UI: a transcript produced here is instantly available
+        there too, and a manual transcription that wins the race is reused
+        here instead of re-billed.
+        """
+        from transcription import store as transcription_store
+        from transcription.client import CloudTranscriptionClient, TranscriptionError
+        from transcription.config import (
+            get_openai_api_key,
+            get_transcription_base_url,
+            get_transcription_language,
+            get_transcription_model,
+            get_transcription_timeout,
+        )
+
+        cached = transcription_store.get(PROTOCOL_WHATSAPP, attachment_id)
+        if cached is not None and cached.get("status") == "ok":
+            text = str(cached.get("text") or "")
+        else:
+            api_key = get_openai_api_key()
+            if not api_key:
+                return True
+            path = self.get_attachment_path(attachment_id)
+            if path is None:
+                return False
+            client = CloudTranscriptionClient(
+                api_key,
+                base_url=get_transcription_base_url(),
+                model=get_transcription_model(),
+                language=get_transcription_language(),
+                timeout=get_transcription_timeout(),
+            )
+            try:
+                text = client.transcribe(path)
+            except TranscriptionError as exc:
+                transcription_store.set(
+                    PROTOCOL_WHATSAPP, attachment_id, status="failed", error=str(exc)
+                )
+                return True
+            transcription_store.set(
+                PROTOCOL_WHATSAPP,
+                attachment_id,
+                status="ok",
+                text=text,
+                model=client.model,
+            )
+
+        if not text.strip():
+            return True
+        self.send_message_sync(contact_id, text, reply_to_message_id=msg_id)
+        return True
+
+    def _voice_transcribe_loop(self) -> None:
+        """Auto-transcribe pending voice notes without blocking ingestion."""
+        delays = (2.0, 5.0, 15.0)
+        while not self._voice_transcribe_stop:
+            try:
+                now = time.time()
+                with self._voice_transcribe_lock:
+                    due = [
+                        key
+                        for key, pending in self._voice_transcribe_pending.items()
+                        if pending["next"] <= now
+                    ]
+                for attachment_id in due:
+                    if self._voice_transcribe_stop:
+                        break
+                    with self._voice_transcribe_lock:
+                        pending = self._voice_transcribe_pending.get(attachment_id)
+                        if pending is None or pending["next"] > time.time():
+                            continue
+                        pending["attempts"] += 1
+                        attempts = pending["attempts"]
+                        contact_id = pending["contact_id"]
+                        msg_id = pending["msg_id"]
+
+                    settled = False
+                    try:
+                        settled = self._transcribe_and_reply_voice(
+                            contact_id, msg_id, attachment_id
+                        )
+                    except Exception:
+                        logger.debug(
+                            "WhatsApp voice transcribe failed: chat=%s id=%s attempt=%s",
+                            contact_id,
+                            msg_id,
+                            attempts,
+                            exc_info=True,
+                        )
+
+                    if settled:
+                        with self._voice_transcribe_lock:
+                            self._voice_transcribe_pending.pop(attachment_id, None)
+                        continue
+
+                    with self._voice_transcribe_lock:
+                        pending = self._voice_transcribe_pending.get(attachment_id)
+                        if pending is None:
+                            continue
+                        if attempts < 3:
+                            pending["next"] = time.time() + delays[attempts - 1]
+                        else:
+                            self._voice_transcribe_pending.pop(attachment_id, None)
+                            logger.debug(
+                                "WhatsApp voice transcribe give up: chat=%s id=%s",
+                                contact_id,
+                                msg_id,
+                            )
+            except Exception:
+                logger.debug("WhatsApp voice transcriber loop failed", exc_info=True)
             time.sleep(0.5)
 
     # ─── Event consumption (for the TUI poll worker) ──────────────────
