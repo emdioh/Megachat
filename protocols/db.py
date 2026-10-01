@@ -391,6 +391,15 @@ def _init_db():
                     PRIMARY KEY (protocol, attachment_id)
                 )
             """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS voice_transcribe_settings (
+                    protocol TEXT NOT NULL,
+                    scope TEXT NOT NULL,
+                    enabled INTEGER NOT NULL,
+                    updated_at REAL NOT NULL,
+                    PRIMARY KEY (protocol, scope)
+                )
+            """)
             reaction_indexes = {
                 row[0]
                 for row in conn.execute(
@@ -1086,6 +1095,54 @@ def _prune_cache(limit: int | None = None, *, now_ms: int | None = None) -> int:
     except Exception:
         logger.debug("Media prune failed", exc_info=True)
     return deleted
+
+
+#: Scope key for the global (all-chats) voice-transcribe default, as opposed
+#: to a per-chat override keyed by the chat's own contact id.
+VOICE_TRANSCRIBE_GLOBAL_SCOPE = "*"
+
+
+def get_voice_transcribe_setting(protocol: str, scope: str) -> bool | None:
+    """Return the stored on/off toggle for *scope*, or ``None`` if unset.
+
+    *scope* is either ``VOICE_TRANSCRIBE_GLOBAL_SCOPE`` (the global default)
+    or a chat's contact id (a per-chat override set via the in-chat
+    ``!transcribe on/off`` command).
+    """
+    _init_db()
+    with _DB_LOCK:
+        conn = sqlite3.connect(DB_FILE)
+        try:
+            row = conn.execute(
+                "SELECT enabled FROM voice_transcribe_settings "
+                "WHERE protocol = ? AND scope = ?",
+                (protocol, scope),
+            ).fetchone()
+        finally:
+            conn.close()
+    return bool(row[0]) if row is not None else None
+
+
+def set_voice_transcribe_setting(protocol: str, scope: str, enabled: bool) -> None:
+    """Persist the on/off toggle for *scope* (see ``get_voice_transcribe_setting``)."""
+    _init_db()
+    with _DB_LOCK:
+        conn = sqlite3.connect(DB_FILE)
+        try:
+            conn.execute(
+                """
+                INSERT INTO voice_transcribe_settings (
+                    protocol, scope, enabled, updated_at
+                ) VALUES (?, ?, ?, ?)
+                ON CONFLICT(protocol, scope) DO UPDATE SET
+                    enabled = excluded.enabled,
+                    updated_at = excluded.updated_at
+                """,
+                (protocol, scope, int(enabled), time.time()),
+            )
+            conn.commit()
+        finally:
+            conn.close()
 
 
 def _mark_as_read(contact_number: str, protocol: str = "signal"):

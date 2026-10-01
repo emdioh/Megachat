@@ -65,6 +65,14 @@ logger = logging.getLogger(__name__)
 
 _FETCHABLE_JID_RE = re.compile(r"^[0-9][0-9-]*@(c\.us|lid|g\.us)$")
 
+#: ``!transcribe on|off|status [global]`` — in-chat command (sent by the
+#: account owner, i.e. echoed with ``is_mine=True``) toggling voice-note
+#: auto-transcription per chat or globally.  See
+#: ``WhatsAppBackend._maybe_handle_voice_transcribe_command``.
+_TRANSCRIBE_COMMAND_RE = re.compile(
+    r"^!transcribe\s+(on|off|status)(?:\s+(global))?\s*$", re.IGNORECASE
+)
+
 
 def _is_fetchable_jid(jid: str) -> bool:
     return bool(_FETCHABLE_JID_RE.fullmatch(jid))
@@ -2286,6 +2294,91 @@ class WhatsAppBackend(ChatBackend):
                 logger.debug("WhatsApp mention lid resolver loop failed", exc_info=True)
             time.sleep(0.5)
 
+    def _voice_transcribe_enabled_for(self, contact_id: str) -> bool:
+        """Whether voice-note auto-transcription is active for *contact_id*.
+
+        Cloud transcription must be configured (an OpenAI key present) —
+        this is the install-wide kill switch.  On top of that, a per-chat
+        override (``!transcribe on/off`` sent in that chat) wins over the
+        global default (``!transcribe on/off global``), which defaults to
+        enabled when nothing has been set yet.
+        """
+        from transcription.config import get_transcription_enabled
+
+        if not get_transcription_enabled():
+            return False
+        from protocols.db import (
+            VOICE_TRANSCRIBE_GLOBAL_SCOPE,
+            get_voice_transcribe_setting,
+        )
+
+        chat_override = get_voice_transcribe_setting(PROTOCOL_WHATSAPP, contact_id)
+        if chat_override is not None:
+            return chat_override
+        global_setting = get_voice_transcribe_setting(
+            PROTOCOL_WHATSAPP, VOICE_TRANSCRIBE_GLOBAL_SCOPE
+        )
+        return True if global_setting is None else global_setting
+
+    def _maybe_handle_voice_transcribe_command(
+        self, contact_id: str, text: str
+    ) -> bool:
+        """Handle an in-chat ``!transcribe on|off|status [global]`` command.
+
+        Lets the account owner toggle voice-note auto-transcription per chat
+        or globally by typing the command into WhatsApp itself (it arrives
+        here as an outgoing echo, ``is_mine=True``) — mirroring botty's
+        command-driven toggle, no web UI needed.  Returns ``True`` if *text*
+        matched the command (and a confirmation reply was sent), ``False``
+        otherwise so the caller falls through to normal message handling.
+        """
+        if not contact_id or not text:
+            return False
+        match = _TRANSCRIBE_COMMAND_RE.match(text.strip())
+        if match is None:
+            return False
+
+        from protocols.db import (
+            VOICE_TRANSCRIBE_GLOBAL_SCOPE,
+            get_voice_transcribe_setting,
+            set_voice_transcribe_setting,
+        )
+
+        action = match.group(1).lower()
+        is_global = match.group(2) is not None
+        if action == "status":
+            global_setting = get_voice_transcribe_setting(
+                PROTOCOL_WHATSAPP, VOICE_TRANSCRIBE_GLOBAL_SCOPE
+            )
+            global_enabled = True if global_setting is None else global_setting
+            chat_override = get_voice_transcribe_setting(PROTOCOL_WHATSAPP, contact_id)
+            effective = global_enabled if chat_override is None else chat_override
+            lines = [
+                f"Trascrizione vocali qui: {'ON' if effective else 'OFF'}",
+                f"Globale: {'ON' if global_enabled else 'OFF'}",
+            ]
+            if chat_override is not None:
+                lines.append(f"(override locale: {'ON' if chat_override else 'OFF'})")
+            reply = "\n".join(lines)
+        else:
+            enabled = action == "on"
+            scope = VOICE_TRANSCRIBE_GLOBAL_SCOPE if is_global else contact_id
+            set_voice_transcribe_setting(PROTOCOL_WHATSAPP, scope, enabled)
+            where = "globalmente" if is_global else "in questa chat"
+            reply = (
+                f"Trascrizione vocali {'attivata' if enabled else 'disattivata'} "
+                f"{where}."
+            )
+        try:
+            self.send_message_sync(contact_id, reply)
+        except Exception:
+            logger.debug(
+                "WhatsApp transcribe command reply failed: chat=%s",
+                contact_id,
+                exc_info=True,
+            )
+        return True
+
     def _schedule_voice_transcribe(
         self, contact_id: str, msg_id: str, attachment_id: str
     ) -> None:
@@ -2293,16 +2386,14 @@ class WhatsAppBackend(ChatBackend):
 
         Called by the poll consumer (``tui/events.py``) right after a live
         voice note (``media_kind == "voice"``) is newly ingested.  A no-op
-        when cloud transcription isn't configured, so the resolver thread
-        never starts on an install without an OpenAI key.
+        when cloud transcription isn't configured or has been toggled off
+        for this chat/globally (see ``_voice_transcribe_enabled_for``).
         """
         if not contact_id or not msg_id or not attachment_id:
             return
         if self._voice_transcribe_stop:
             return
-        from transcription.config import get_transcription_enabled
-
-        if not get_transcription_enabled():
+        if not self._voice_transcribe_enabled_for(contact_id):
             return
         with self._voice_transcribe_lock:
             if attachment_id in self._voice_transcribe_pending:

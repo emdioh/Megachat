@@ -5120,3 +5120,313 @@ class TestWhatsAppVoiceAutoTranscribe:
 
         assert harness._handle_message_event(event) is True
         scheduled.assert_not_called()
+
+
+class TestWhatsAppVoiceTranscribeToggle:
+    """Global/per-chat enable-disable for voice auto-transcription, driven
+    by an in-chat ``!transcribe on|off|status [global]`` command (botty-style
+    toggle, no web UI needed)."""
+
+    @pytest.fixture(autouse=True)
+    def _isolated_store(self, tmp_path, monkeypatch):
+        import protocols.db as db_backend
+
+        monkeypatch.setattr(db_backend, "DB_FILE", tmp_path / "protocols.db")
+        monkeypatch.setattr(db_backend, "CACHE_DIR", tmp_path)
+
+    @pytest.fixture(autouse=True)
+    def _enabled_config(self, monkeypatch):
+        monkeypatch.setattr(
+            "transcription.config.get_openai_api_key", lambda: "sk-test"
+        )
+        monkeypatch.setattr(
+            "transcription.config.get_transcription_enabled", lambda: True
+        )
+
+    # ─── _voice_transcribe_enabled_for layering ────────────────────────
+
+    def test_enabled_by_default_with_no_settings(self):
+        backend = _make_backend()
+        assert backend._voice_transcribe_enabled_for("123@c.us") is True
+
+    def test_disabled_when_transcription_not_configured(self, monkeypatch):
+        monkeypatch.setattr(
+            "transcription.config.get_transcription_enabled", lambda: False
+        )
+        backend = _make_backend()
+        assert backend._voice_transcribe_enabled_for("123@c.us") is False
+
+    def test_global_off_disables_every_chat_without_an_override(self):
+        from protocols.db import (
+            VOICE_TRANSCRIBE_GLOBAL_SCOPE,
+            set_voice_transcribe_setting,
+        )
+
+        set_voice_transcribe_setting(
+            PROTOCOL_WHATSAPP, VOICE_TRANSCRIBE_GLOBAL_SCOPE, False
+        )
+        backend = _make_backend()
+        assert backend._voice_transcribe_enabled_for("123@c.us") is False
+
+    def test_per_chat_override_on_wins_over_global_off(self):
+        from protocols.db import (
+            VOICE_TRANSCRIBE_GLOBAL_SCOPE,
+            set_voice_transcribe_setting,
+        )
+
+        set_voice_transcribe_setting(
+            PROTOCOL_WHATSAPP, VOICE_TRANSCRIBE_GLOBAL_SCOPE, False
+        )
+        set_voice_transcribe_setting(PROTOCOL_WHATSAPP, "123@c.us", True)
+        backend = _make_backend()
+        assert backend._voice_transcribe_enabled_for("123@c.us") is True
+        # A different chat, with no override, stays off.
+        assert backend._voice_transcribe_enabled_for("999@c.us") is False
+
+    def test_per_chat_override_off_wins_over_global_on_default(self):
+        from protocols.db import set_voice_transcribe_setting
+
+        set_voice_transcribe_setting(PROTOCOL_WHATSAPP, "123@c.us", False)
+        backend = _make_backend()
+        assert backend._voice_transcribe_enabled_for("123@c.us") is False
+        assert backend._voice_transcribe_enabled_for("999@c.us") is True
+
+    def test_schedule_voice_transcribe_respects_disabled_chat(self):
+        from protocols.db import set_voice_transcribe_setting
+
+        set_voice_transcribe_setting(PROTOCOL_WHATSAPP, "123@c.us", False)
+        backend = _make_backend()
+        backend._schedule_voice_transcribe("123@c.us", "msg-1", "att-1")
+        assert backend._voice_transcribe_pending == {}
+
+    # ─── !transcribe command parsing/handling ──────────────────────────
+
+    def test_non_command_text_is_ignored(self):
+        backend = _make_backend()
+        backend._rest = MagicMock()
+        assert (
+            backend._maybe_handle_voice_transcribe_command(
+                "123@c.us", "ciao come stai"
+            )
+            is False
+        )
+        backend._rest.send_message.assert_not_called()
+
+    def test_malformed_command_is_ignored(self):
+        backend = _make_backend()
+        backend._rest = MagicMock()
+        assert (
+            backend._maybe_handle_voice_transcribe_command("123@c.us", "!transcribe")
+            is False
+        )
+        assert (
+            backend._maybe_handle_voice_transcribe_command(
+                "123@c.us", "!transcribe maybe"
+            )
+            is False
+        )
+        backend._rest.send_message.assert_not_called()
+
+    def test_off_command_sets_per_chat_override_and_replies(self):
+        from protocols.db import get_voice_transcribe_setting
+
+        backend = _make_backend()
+        backend._rest = MagicMock()
+        backend._rest.send_message.return_value = {"id": "reply-1"}
+
+        handled = backend._maybe_handle_voice_transcribe_command(
+            "123@c.us", "!transcribe off"
+        )
+
+        assert handled is True
+        assert get_voice_transcribe_setting(PROTOCOL_WHATSAPP, "123@c.us") is False
+        backend._rest.send_message.assert_called_once()
+        args, _ = backend._rest.send_message.call_args
+        assert args[0] == "123@c.us"
+        assert "disattivata" in args[1]
+        assert "in questa chat" in args[1]
+
+    def test_on_command_is_case_insensitive_and_tolerates_whitespace(self):
+        from protocols.db import get_voice_transcribe_setting
+
+        backend = _make_backend()
+        backend._rest = MagicMock()
+
+        handled = backend._maybe_handle_voice_transcribe_command(
+            "123@c.us", "  !TRANSCRIBE   ON  "
+        )
+
+        assert handled is True
+        assert get_voice_transcribe_setting(PROTOCOL_WHATSAPP, "123@c.us") is True
+
+    def test_global_command_sets_global_scope_not_this_chat(self):
+        from protocols.db import (
+            VOICE_TRANSCRIBE_GLOBAL_SCOPE,
+            get_voice_transcribe_setting,
+        )
+
+        backend = _make_backend()
+        backend._rest = MagicMock()
+
+        handled = backend._maybe_handle_voice_transcribe_command(
+            "123@c.us", "!transcribe off global"
+        )
+
+        assert handled is True
+        assert (
+            get_voice_transcribe_setting(
+                PROTOCOL_WHATSAPP, VOICE_TRANSCRIBE_GLOBAL_SCOPE
+            )
+            is False
+        )
+        assert get_voice_transcribe_setting(PROTOCOL_WHATSAPP, "123@c.us") is None
+        args, _ = backend._rest.send_message.call_args
+        assert "globalmente" in args[1]
+
+    def test_status_command_reports_effective_and_global_state(self):
+        from protocols.db import (
+            VOICE_TRANSCRIBE_GLOBAL_SCOPE,
+            set_voice_transcribe_setting,
+        )
+
+        set_voice_transcribe_setting(
+            PROTOCOL_WHATSAPP, VOICE_TRANSCRIBE_GLOBAL_SCOPE, False
+        )
+        set_voice_transcribe_setting(PROTOCOL_WHATSAPP, "123@c.us", True)
+        backend = _make_backend()
+        backend._rest = MagicMock()
+
+        handled = backend._maybe_handle_voice_transcribe_command(
+            "123@c.us", "!transcribe status"
+        )
+
+        assert handled is True
+        args, _ = backend._rest.send_message.call_args
+        reply = args[1]
+        assert "ON" in reply  # effective (per-chat override)
+        assert "Globale: OFF" in reply
+        assert "override locale: ON" in reply
+
+    def test_command_reply_failure_is_swallowed(self):
+        """Sending the confirmation can fail (API down); the command is
+        still considered handled and the setting is still persisted."""
+        from protocols.db import get_voice_transcribe_setting
+
+        backend = _make_backend()
+        backend._rest = MagicMock()
+        backend._rest.send_message.side_effect = RuntimeError("boom")
+
+        handled = backend._maybe_handle_voice_transcribe_command(
+            "123@c.us", "!transcribe off"
+        )
+
+        assert handled is True
+        assert get_voice_transcribe_setting(PROTOCOL_WHATSAPP, "123@c.us") is False
+
+    def test_empty_contact_or_text_is_a_noop(self):
+        backend = _make_backend()
+        assert (
+            backend._maybe_handle_voice_transcribe_command("", "!transcribe off")
+            is False
+        )
+        assert (
+            backend._maybe_handle_voice_transcribe_command("123@c.us", "") is False
+        )
+
+    # ─── live hook (tui/events.py) ──────────────────────────────────────
+
+    def test_live_outgoing_text_command_is_dispatched_to_backend(self):
+        """The poll-consumer hook dispatches an is_mine text message to the
+        backend's command handler (the owner typing the command from their
+        own phone arrives as an outgoing echo)."""
+        from models import ChatEvent
+        from tui.events import EventHandlingMixin
+
+        backend = _make_backend()
+        backend.ingest_message = MagicMock(return_value=True)
+        handled = MagicMock()
+        backend._maybe_handle_voice_transcribe_command = handled
+
+        class _Manager:
+            def get(self, protocol):
+                return backend
+
+        class _Harness(EventHandlingMixin):
+            def __init__(self):
+                self.manager = _Manager()
+                self.contacts = []
+                self.selected_contact = None
+                self._contact_list_dirty = False
+                self._dirty_contact_keys = set()
+                self._cache = {}
+                self._typing_contacts = {}
+                self._typing_mumbling = {}
+                self._TYPING_MUMBLING_DURATION = 100
+                self._seen_timestamps = set()
+                self._seen_message_ids = set()
+
+        harness = _Harness()
+        event = ChatEvent(
+            type="message",
+            protocol=PROTOCOL_WHATSAPP,
+            contact_id="123@c.us",
+            payload={
+                "id": "msg-20",
+                "text": "!transcribe off",
+                "is_mine": True,
+                "sender": "You",
+                "timestamp": 1000,
+                "msg_type": "text",
+            },
+        )
+
+        assert harness._handle_message_event(event) is True
+        handled.assert_called_once_with("123@c.us", "!transcribe off")
+
+    def test_live_incoming_text_does_not_dispatch_command(self):
+        """Only the account owner's own (is_mine=True) messages are treated
+        as commands — a contact typing "!transcribe off" at you is just
+        text."""
+        from models import ChatEvent
+        from tui.events import EventHandlingMixin
+
+        backend = _make_backend()
+        backend.ingest_message = MagicMock(return_value=True)
+        handled = MagicMock()
+        backend._maybe_handle_voice_transcribe_command = handled
+
+        class _Manager:
+            def get(self, protocol):
+                return backend
+
+        class _Harness(EventHandlingMixin):
+            def __init__(self):
+                self.manager = _Manager()
+                self.contacts = []
+                self.selected_contact = None
+                self._contact_list_dirty = False
+                self._dirty_contact_keys = set()
+                self._cache = {}
+                self._typing_contacts = {}
+                self._typing_mumbling = {}
+                self._TYPING_MUMBLING_DURATION = 100
+                self._seen_timestamps = set()
+                self._seen_message_ids = set()
+
+        harness = _Harness()
+        event = ChatEvent(
+            type="message",
+            protocol=PROTOCOL_WHATSAPP,
+            contact_id="123@c.us",
+            payload={
+                "id": "msg-21",
+                "text": "!transcribe off",
+                "is_mine": False,
+                "sender": "Marco",
+                "timestamp": 1000,
+                "msg_type": "text",
+            },
+        )
+
+        assert harness._handle_message_event(event) is True
+        handled.assert_not_called()

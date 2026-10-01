@@ -199,6 +199,20 @@ class EventHandlingMixin:
                     str(event.payload["attachment_id"]),
                 )
 
+        if (
+            added
+            and event.protocol == PROTOCOL_WHATSAPP
+            and is_mine
+            and event.payload.get("msg_type") == "text"
+        ):
+            handle_transcribe_command = getattr(
+                backend, "_maybe_handle_voice_transcribe_command", None
+            )
+            if handle_transcribe_command is not None:
+                handle_transcribe_command(
+                    contact.id, str(event.payload.get("text") or "")
+                )
+
         if (added or changed) and getattr(self, "_web_enabled", False):
             logger.debug(
                 "events: push type=%s added=%s changed=%s protocol=%s contact=%s id=%s",
