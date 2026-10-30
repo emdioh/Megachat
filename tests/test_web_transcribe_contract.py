@@ -162,7 +162,7 @@ def test_openai_key_save_and_init_failures(tmp_path, monkeypatch):
 
 
 def test_host_init_without_key_leaves_no_service(monkeypatch):
-    monkeypatch.setattr("transcription.config.get_openai_api_key", lambda: None)
+    monkeypatch.setattr("transcription.config.get_api_key", lambda provider=None: None)
     _client, api = make(service=MagicMock())
     assert api.transcription.init() is None
     assert api.transcription.service is None

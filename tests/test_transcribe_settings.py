@@ -20,7 +20,18 @@ TOKEN = "settings-secret"
 AUTH = {"Authorization": f"Bearer {TOKEN}"}
 SECRET = "sk-super-secret-key"
 ENVS = (
+    "AI_PROVIDER",
     "OPENAI_API_KEY",
+    "OPENAI_TRANSCRIPTION_MODEL",
+    "OPENROUTER_API_KEY",
+    "OPENROUTER_BASE_URL",
+    "OPENROUTER_TRANSCRIPTION_MODEL",
+    "OPENROUTER_HTTP_REFERER",
+    "OPENROUTER_APP_TITLE",
+    "GEMINI_API_KEY",
+    "GOOGLE_API_KEY",
+    "GEMINI_BASE_URL",
+    "GEMINI_TRANSCRIPTION_MODEL",
     "TRANSCRIPTION_MODEL",
     "TRANSCRIPTION_LANGUAGE",
     "TRANSCRIPTION_BASE_URL",
@@ -55,7 +66,28 @@ def stored(cfg: Path) -> dict:
 
 def test_defaults(api):
     out = api.call_json("transcribe.settings", {})
+    providers = out.pop("providers")
+    assert providers == {
+        "openai": {
+            "api_key_set": False,
+            "model": "gpt-transcribe",
+            "base_url": "https://api.openai.com/v1",
+        },
+        "openrouter": {
+            "api_key_set": False,
+            "model": "openai/whisper-large-v3",
+            "base_url": "https://openrouter.ai/api/v1",
+            "http_referer": "",
+            "app_title": "",
+        },
+        "gemini": {
+            "api_key_set": False,
+            "model": "gemini-flash-latest",
+            "base_url": "https://generativelanguage.googleapis.com/v1beta",
+        },
+    }
     assert out == {
+        "provider": "openai",
         "configured": False,
         "api_key_set": False,
         "model": "gpt-transcribe",
@@ -78,7 +110,7 @@ def test_partial_update_and_reset(api, isolated_config):
     assert out["base_url"] == "https://api.openai.com/v1"
     assert stored(isolated_config) == {
         "other": 1,
-        "transcription_model": "whisper-1",
+        "openai_transcription_model": "whisper-1",
         "transcription_language": "it",
         "transcription_timeout": 30,
     }
@@ -95,7 +127,7 @@ def test_partial_update_and_reset(api, isolated_config):
     data = stored(isolated_config)
     assert "transcription_language" not in data
     assert "transcription_base_url" not in data
-    assert data["other"] == 1 and data["transcription_model"] == "whisper-1"
+    assert data["other"] == 1 and data["openai_transcription_model"] == "whisper-1"
 
     # empty request changes nothing
     assert api.call_json("transcribe.set_settings", {}) == api.call_json(
@@ -154,13 +186,13 @@ def test_env_overrides_reported(api, monkeypatch):
     monkeypatch.setenv("TRANSCRIPTION_MODEL", "env-model")
     monkeypatch.setenv("TRANSCRIPTION_TIMEOUT", "99")
     out = api.call_json("transcribe.set_settings", {"model": "saved", "language": "de"})
-    assert out["env_overrides"] == ["model", "timeout"]
+    assert out["env_overrides"] == ["timeout", "openai.model"]
     assert out["model"] == "env-model"  # env still wins
     assert out["timeout"] == 99
     assert out["language"] == "de"
     assert api.call_json("transcribe.settings", {})["env_overrides"] == [
-        "model",
         "timeout",
+        "openai.model",
     ]
 
 

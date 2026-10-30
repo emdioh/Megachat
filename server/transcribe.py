@@ -1,8 +1,8 @@
 """The cloud transcription service as core state.
 
 The service (one worker thread plus the on-disk store) belongs to the core,
-not to an adapter: ``ChatCore.start`` creates it from the configured OpenAI
-key, ``ChatCore.shutdown`` stops it, and the ``transcribe.*`` /
+not to an adapter: ``ChatCore.start`` creates it from the selected provider's
+API key, ``ChatCore.shutdown`` stops it, and the ``transcribe.*`` /
 ``config.set_openai_key`` operations reach it through ``ChatAPI.transcription``.
 """
 
@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 class TranscriptionHost:
     """Holds the (optional) :class:`~transcription.service.TranscriptionService`.
 
-    ``service`` is ``None`` while no OpenAI key is configured.  :meth:`init` is
+    ``service`` is ``None`` while the selected provider has no API key.  :meth:`init` is
     idempotent in the sense that it always stops the previous service before it
     builds the next one (a changed key replaces the client).
     """
@@ -36,12 +36,14 @@ class TranscriptionHost:
     def init(self) -> Any:
         """(Re)build the service from the current configuration."""
         from transcription import store
-        from transcription.client import CloudTranscriptionClient
+        from transcription.client import build_client
         from transcription.config import (
-            get_openai_api_key,
-            get_transcription_base_url,
+            get_api_key,
+            get_openrouter_headers,
+            get_provider_base_url,
+            get_provider_model,
             get_transcription_language,
-            get_transcription_model,
+            get_transcription_provider,
             get_transcription_timeout,
         )
         from transcription.service import TranscriptionService
@@ -52,22 +54,29 @@ class TranscriptionHost:
                 current.stop()
             self.service = None
 
-            api_key = get_openai_api_key()
+            provider = get_transcription_provider()
+            api_key = get_api_key(provider)
             if not api_key:
-                logger.info("Trascrizione cloud OpenAI disattivata")
+                logger.info(
+                    "Trascrizione cloud disattivata (%s senza chiave)", provider
+                )
                 return None
 
-            client = CloudTranscriptionClient(
+            client = build_client(
+                provider,
                 api_key,
-                base_url=get_transcription_base_url(),
-                model=get_transcription_model(),
+                base_url=get_provider_base_url(provider),
+                model=get_provider_model(provider),
                 language=get_transcription_language(),
                 timeout=get_transcription_timeout(),
+                extra_headers=(
+                    get_openrouter_headers() if provider == "openrouter" else None
+                ),
             )
             self.service = TranscriptionService(
                 client, store, on_done=self._dispatch_done
             )
-            logger.info("Trascrizione cloud OpenAI attiva")
+            logger.info("Trascrizione cloud attiva (%s)", provider)
             return self.service
 
     def _dispatch_done(self, protocol: str, attachment_id: str, row: dict) -> None:

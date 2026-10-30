@@ -176,14 +176,18 @@ const elements = {
   linkStatusSignal: document.querySelector("#link-status-signal"),
   linkStatusWhatsapp: document.querySelector("#link-status-whatsapp"),
   linkStatusTelegram: document.querySelector("#link-status-telegram"),
-  openaiKeyInput: document.querySelector("#openai-key-input"),
-  saveOpenaiKey: document.querySelector("#save-openai-key"),
-  changeOpenaiKey: document.querySelector("#change-openai-key"),
-  openaiKeyStatus: document.querySelector("#openai-key-status"),
+  transcriptionProvider: document.querySelector("#transcription-provider"),
+  transcriptionKeyLabel: document.querySelector("#transcription-key-label"),
+  transcriptionKeyInput: document.querySelector("#transcription-key-input"),
+  saveTranscriptionKey: document.querySelector("#save-transcription-key"),
+  changeTranscriptionKey: document.querySelector("#change-transcription-key"),
+  transcriptionKeyStatus: document.querySelector("#transcription-key-status"),
   transcriptionForm: document.querySelector("#transcription-settings"),
   transcriptionModel: document.querySelector("#transcription-model"),
   transcriptionLanguage: document.querySelector("#transcription-language"),
   transcriptionBaseUrl: document.querySelector("#transcription-base-url"),
+  transcriptionReferer: document.querySelector("#transcription-referer"),
+  transcriptionAppTitle: document.querySelector("#transcription-app-title"),
   transcriptionTimeout: document.querySelector("#transcription-timeout"),
   transcriptionStatus: document.querySelector("#transcription-settings-status"),
   saveTranscriptionSettings: document.querySelector("#save-transcription-settings"),
@@ -637,39 +641,40 @@ async function updateBackendStatuses() {
   }
 }
 
+// --- Impostazioni del servizio di trascrizione (provider, chiavi, modello, endpoint, lingua, timeout) ---
+const TRANSCRIPTION_PROVIDERS = {
+  openai: { label: "OpenAI", keyPlaceholder: "sk-...", model: "gpt-transcribe", baseUrl: "https://api.openai.com/v1" },
+  openrouter: { label: "OpenRouter", keyPlaceholder: "sk-or-...", model: "openai/whisper-large-v3", baseUrl: "https://openrouter.ai/api/v1" },
+  gemini: { label: "Gemini", keyPlaceholder: "AIza...", model: "gemini-flash-latest", baseUrl: "https://generativelanguage.googleapis.com/v1beta" },
+};
+// Impostazioni lette dal server e modifiche non ancora salvate per provider.
+const transcriptionUi = { settings: null, shown: "openai", drafts: {} };
+
 async function loadTranscriptionConfig() {
+  // Lo stato della chiave arriva da api/transcribe/settings (per provider).
   if (!state.token) {
-    elements.openaiKeyStatus.textContent = "Non configurata";
+    elements.transcriptionKeyStatus.textContent = "Non configurata";
     return;
   }
-  elements.openaiKeyStatus.textContent = "Verifica configurazione…";
-  try {
-    const response = await apiFetch("api/transcribe/config");
-    const config = await response.json();
-    const enabled = config.enabled === true;
-    remoteLog("[transcribe-config]", { enabled, hasToken: Boolean(state.token) });
-    elements.openaiKeyStatus.textContent = enabled
-      ? "Trascrizione attiva"
-      : "Non configurata";
-    elements.openaiKeyInput.disabled = enabled;
-    elements.saveOpenaiKey.disabled = enabled;
-    elements.saveOpenaiKey.hidden = enabled;
-    elements.changeOpenaiKey.hidden = !enabled;
-  } catch (error) {
-    elements.openaiKeyStatus.textContent = error.message === "unauthorized"
-      ? "Autenticazione richiesta"
-      : "Impossibile verificare la configurazione";
-  }
+  elements.transcriptionKeyStatus.textContent = "Verifica configurazione…";
+  await loadTranscriptionSettings();
 }
 
-// --- Impostazioni del servizio di trascrizione (modello, lingua, endpoint, timeout) ---
 function transcriptionFields() {
   return {
     model: elements.transcriptionModel,
     language: elements.transcriptionLanguage,
     base_url: elements.transcriptionBaseUrl,
+    http_referer: elements.transcriptionReferer,
+    app_title: elements.transcriptionAppTitle,
     timeout: elements.transcriptionTimeout,
   };
+}
+
+// Nome dell'override d'ambiente di un campo, per il provider mostrato.
+function transcriptionEnvName(field, provider) {
+  if (field === "language" || field === "timeout") return field;
+  return `${provider}.${field}`;
 }
 
 function setTranscriptionFeedback(message, kind = "") {
@@ -678,22 +683,59 @@ function setTranscriptionFeedback(message, kind = "") {
   elements.transcriptionStatus.classList.toggle("is-error", kind === "error");
 }
 
-function renderTranscriptionSettings(settings) {
+const PROVIDER_FIELDS = ["model", "base_url", "http_referer", "app_title"];
+
+// Salva nelle bozze i valori dei campi del provider attualmente mostrato.
+function stashTranscriptionDraft() {
+  const fields = transcriptionFields();
+  const draft = {};
+  for (const name of PROVIDER_FIELDS) {
+    if (!fields[name].disabled && !fields[name].closest("[hidden]")) draft[name] = fields[name].value.trim();
+  }
+  transcriptionUi.drafts[transcriptionUi.shown] = draft;
+}
+
+function renderTranscriptionProvider(provider) {
+  const settings = transcriptionUi.settings;
+  if (!settings || !TRANSCRIPTION_PROVIDERS[provider]) return;
+  const meta = TRANSCRIPTION_PROVIDERS[provider];
+  const values = { ...(settings.providers?.[provider] || {}), ...(transcriptionUi.drafts[provider] || {}) };
   const fields = transcriptionFields();
   const forced = new Set(settings.env_overrides || []);
-  const language = settings.language || "";
-  // Una lingua fuori elenco (es. da config.json) resta visibile e selezionata.
-  if (language && !Array.from(fields.language.options).some((o) => o.value === language)) {
-    fields.language.add(new Option(language, language));
-  }
-  fields.model.value = settings.model ?? "";
-  fields.language.value = language;
+  transcriptionUi.shown = provider;
+  elements.transcriptionProvider.value = provider;
+
+  fields.model.placeholder = meta.model;
+  fields.base_url.placeholder = meta.baseUrl;
+  fields.model.value = values.model ?? "";
   // Il valore predefinito resta nel segnaposto: il campo vuoto significa "predefinito".
-  fields.base_url.value = settings.base_url === fields.base_url.placeholder ? "" : (settings.base_url ?? "");
-  fields.timeout.value = settings.timeout ?? "";
+  fields.base_url.value = values.base_url === meta.baseUrl ? "" : (values.base_url ?? "");
+  fields.http_referer.value = values.http_referer ?? "";
+  fields.app_title.value = values.app_title ?? "";
+  for (const row of elements.transcriptionForm.querySelectorAll("[data-provider-only]")) {
+    row.hidden = row.dataset.providerOnly !== provider;
+  }
+
+  // Chiave API del provider mostrato.
+  const keySet = settings.providers?.[provider]?.api_key_set === true;
+  elements.transcriptionKeyLabel.textContent = `Chiave ${meta.label}`;
+  elements.transcriptionKeyInput.placeholder = meta.keyPlaceholder;
+  elements.transcriptionKeyInput.value = "";
+  elements.transcriptionKeyInput.disabled = keySet;
+  elements.saveTranscriptionKey.disabled = keySet;
+  elements.saveTranscriptionKey.hidden = keySet;
+  elements.changeTranscriptionKey.hidden = !keySet;
+  elements.transcriptionKeyStatus.textContent = keySet ? "Configurata" : "Non configurata";
+
+  elements.transcriptionProvider.disabled = forced.has("provider");
+  const disabledByEnv = [];
   for (const [name, input] of Object.entries(fields)) {
-    const isForced = forced.has(name);
+    const isForced = forced.has(transcriptionEnvName(name, provider));
     input.disabled = isForced;
+    if (isForced) disabledByEnv.push(name);
+  }
+  for (const [name, input] of [...Object.entries(fields), ["provider", elements.transcriptionProvider]]) {
+    const isForced = name === "provider" ? forced.has("provider") : fields[name].disabled;
     const note = input.parentElement.querySelector(".transcription-env-note");
     if (isForced && !note) {
       const text = document.createElement("span");
@@ -707,7 +749,25 @@ function renderTranscriptionSettings(settings) {
       input.removeAttribute("aria-describedby");
     }
   }
-  elements.saveTranscriptionSettings.disabled = forced.size === Object.keys(fields).length;
+}
+
+function renderTranscriptionSettings(settings) {
+  const fields = transcriptionFields();
+  transcriptionUi.settings = settings;
+  transcriptionUi.drafts = {};
+  const language = settings.language || "";
+  // Una lingua fuori elenco (es. da config.json) resta visibile e selezionata.
+  if (language && !Array.from(fields.language.options).some((o) => o.value === language)) {
+    fields.language.add(new Option(language, language));
+  }
+  fields.language.value = language;
+  fields.timeout.value = settings.timeout ?? "";
+  renderTranscriptionProvider(TRANSCRIPTION_PROVIDERS[settings.provider] ? settings.provider : "openai");
+  const forced = new Set(settings.env_overrides || []);
+  const provider = transcriptionUi.shown;
+  const allForced = forced.has("provider")
+    && Object.keys(fields).every((name) => forced.has(transcriptionEnvName(name, provider)));
+  elements.saveTranscriptionSettings.disabled = allForced;
 }
 
 async function loadTranscriptionSettings() {
@@ -716,28 +776,56 @@ async function loadTranscriptionSettings() {
     renderTranscriptionSettings(await autotranscribeJson("api/transcribe/settings"));
     setTranscriptionFeedback("");
   } catch (error) {
-    if (error.message !== "unauthorized") {
+    if (error.message === "unauthorized") {
+      elements.transcriptionKeyStatus.textContent = "Autenticazione richiesta";
+    } else {
+      elements.transcriptionKeyStatus.textContent = "Impossibile verificare la configurazione";
       setTranscriptionFeedback("Impossibile leggere le impostazioni.", "error");
     }
   }
 }
 
+// Cambiare provider aggiorna i campi senza salvare.
+function onTranscriptionProviderChange() {
+  if (!transcriptionUi.settings) return;
+  stashTranscriptionDraft();
+  renderTranscriptionProvider(elements.transcriptionProvider.value);
+  setTranscriptionFeedback("");
+}
+
 async function saveTranscriptionSettings(event) {
   event.preventDefault();
   const fields = transcriptionFields();
+  stashTranscriptionDraft();
   const body = {};
-  for (const [name, input] of Object.entries(fields)) {
-    if (input.disabled) continue;
-    body[name] = name === "timeout" ? (input.value.trim() === "" ? null : Number(input.value)) : input.value.trim();
+  if (!elements.transcriptionProvider.disabled) body.provider = elements.transcriptionProvider.value;
+  const providers = {};
+  for (const [provider, draft] of Object.entries(transcriptionUi.drafts)) {
+    // Solo i campi cambiati rispetto a quanto letto dal server.
+    const loaded = transcriptionUi.settings?.providers?.[provider] || {};
+    const changed = {};
+    for (const [name, value] of Object.entries(draft)) {
+      let current = loaded[name] ?? "";
+      if (name === "base_url" && current === TRANSCRIPTION_PROVIDERS[provider].baseUrl) current = "";
+      if (value !== current) changed[name] = value;
+    }
+    if (Object.keys(changed).length) providers[provider] = changed;
+  }
+  if (Object.keys(providers).length) body.providers = providers;
+  if (!fields.language.disabled) body.language = fields.language.value.trim();
+  if (!fields.timeout.disabled) {
+    body.timeout = fields.timeout.value.trim() === "" ? null : Number(fields.timeout.value);
   }
   // Timeout vuoto: valore non valido (non esiste "predefinito" nel campo), segnalalo prima.
   if ("timeout" in body && (body.timeout === null || !Number.isInteger(body.timeout) || body.timeout < 5 || body.timeout > 600)) {
     setTranscriptionFeedback("Timeout non valido: da 5 a 600 secondi.", "error");
     return;
   }
-  if ("model" in body && !body.model) {
-    setTranscriptionFeedback("Modello non valido.", "error");
-    return;
+  for (const draft of Object.values(providers)) {
+    if ("model" in draft && !draft.model) {
+      setTranscriptionFeedback("Modello non valido.", "error");
+      return;
+    }
   }
   elements.saveTranscriptionSettings.disabled = true;
   setTranscriptionFeedback("Salvataggio…");
@@ -748,6 +836,7 @@ async function saveTranscriptionSettings(event) {
       body: JSON.stringify(body),
     });
     renderTranscriptionSettings(settings);
+    loadAutoTranscribeConfig();
     setTranscriptionFeedback("Salvato.", "ok");
   } catch (error) {
     if (error.message === "unauthorized") return;
@@ -768,6 +857,7 @@ async function saveTranscriptionSettings(event) {
 
 if (elements.transcriptionForm) {
   elements.transcriptionForm.addEventListener("submit", saveTranscriptionSettings);
+  elements.transcriptionProvider.addEventListener("change", onTranscriptionProviderChange);
 }
 
 // --- Trascrizione automatica (impostazioni globali e override per chat) ---
@@ -815,7 +905,7 @@ function renderAutoTranscribeSettings() {
   elements.autotranscribeToggles.replaceChildren(...nodes);
   elements.autotranscribeStatus.textContent = config.configured
     ? "Trascrive le note vocali e risponde in chat."
-    : "Trascrizione non configurata: inserisci la chiave OpenAI per attivarla.";
+    : "Trascrizione non configurata: inserisci la chiave API del provider selezionato per attivarla.";
 }
 
 async function saveAutoTranscribeGlobal(protocol, input) {
@@ -920,42 +1010,45 @@ async function saveAutoTranscribeChat(value) {
   updateAutoTranscribeControl();
 }
 
-function enableOpenaiKeyEdit() {
-  elements.openaiKeyInput.disabled = false;
-  elements.saveOpenaiKey.disabled = false;
-  elements.saveOpenaiKey.hidden = false;
-  elements.changeOpenaiKey.hidden = true;
-  elements.openaiKeyStatus.textContent = "Inserisci la nuova chiave";
-  elements.openaiKeyInput.focus();
+function enableTranscriptionKeyEdit() {
+  elements.transcriptionKeyInput.disabled = false;
+  elements.saveTranscriptionKey.disabled = false;
+  elements.saveTranscriptionKey.hidden = false;
+  elements.changeTranscriptionKey.hidden = true;
+  elements.transcriptionKeyStatus.textContent = "Inserisci la nuova chiave";
+  elements.transcriptionKeyInput.focus();
 }
 
-async function saveOpenaiKey() {
-  const apiKey = elements.openaiKeyInput.value.trim();
-  elements.saveOpenaiKey.disabled = true;
-  elements.openaiKeyStatus.textContent = "Salvataggio…";
+async function saveTranscriptionKey() {
+  const apiKey = elements.transcriptionKeyInput.value.trim();
+  const provider = elements.transcriptionProvider.value;
+  elements.saveTranscriptionKey.disabled = true;
+  elements.transcriptionKeyStatus.textContent = "Salvataggio…";
   let saved = false;
   try {
-    await apiFetch("api/config/openai-key", {
-      method: "POST",
+    await apiFetch("api/transcribe/api-key", {
+      method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ api_key: apiKey }),
+      body: JSON.stringify({ provider, api_key: apiKey }),
     });
     saved = true;
-    elements.openaiKeyInput.value = "";
-    elements.openaiKeyInput.disabled = true;
-    elements.openaiKeyStatus.textContent = "Chiave salvata, trascrizione attiva";
-    elements.saveOpenaiKey.hidden = true;
-    elements.changeOpenaiKey.hidden = false;
+    elements.transcriptionKeyInput.value = "";
     loadAutoTranscribeConfig();
-    loadTranscriptionSettings();
+    stashTranscriptionDraft();
+    const drafts = transcriptionUi.drafts;
+    await loadTranscriptionSettings();
+    // Le modifiche non salvate agli altri campi restano.
+    transcriptionUi.drafts = drafts;
+    if (transcriptionUi.settings) renderTranscriptionProvider(provider);
+    elements.transcriptionKeyStatus.textContent = "Chiave salvata";
   } catch (error) {
-    elements.openaiKeyStatus.textContent = error.status === 400
+    elements.transcriptionKeyStatus.textContent = error.status === 400
       ? "Chiave non valida"
       : error.message === "unauthorized"
         ? "Autenticazione richiesta"
         : "Errore di salvataggio";
   } finally {
-    if (!saved) elements.saveOpenaiKey.disabled = false;
+    if (!saved) elements.saveTranscriptionKey.disabled = false;
   }
 }
 
@@ -4741,8 +4834,8 @@ if (vv) {
   vv.addEventListener("scroll", applyViewport);
   applyViewportSettled();
 }
-elements.saveOpenaiKey.addEventListener("click", saveOpenaiKey);
-elements.changeOpenaiKey.addEventListener("click", enableOpenaiKeyEdit);
+elements.saveTranscriptionKey.addEventListener("click", saveTranscriptionKey);
+elements.changeTranscriptionKey.addEventListener("click", enableTranscriptionKeyEdit);
 
 function closeThreadView() {
   clearTelegramRefreshTimer();

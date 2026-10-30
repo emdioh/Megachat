@@ -310,11 +310,28 @@ def create_api_router() -> Any:
     async def transcription_set_settings(
         request: Request, payload: dict[str, Any]
     ) -> dict[str, Any]:
-        allowed = ("model", "language", "base_url", "timeout")
+        allowed = (
+            "provider",
+            "providers",
+            "model",
+            "language",
+            "base_url",
+            "timeout",
+        )
         return await call_op(
             request,
             "transcribe.set_settings",
             {key: payload[key] for key in allowed if key in payload},
+        )
+
+    @router.put("/transcribe/api-key")
+    async def transcription_set_api_key(
+        request: Request, payload: dict[str, Any]
+    ) -> dict[str, str]:
+        return await call_op(
+            request,
+            "transcribe.set_api_key",
+            {"provider": payload.get("provider"), "api_key": payload.get("api_key")},
         )
 
     @router.get("/autotranscribe")

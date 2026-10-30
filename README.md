@@ -599,7 +599,7 @@ Implementation: `contact_picker.py`; design notes in `docs/DESIGN_CTRLS_RUBRICA.
 
 ### Automatic voice-note transcription
 
-With an OpenAI key configured, the core can transcribe voice notes (incoming and your
+With an API key configured for the selected provider (OpenAI, OpenRouter or Gemini), the core can transcribe voice notes (incoming and your
 own) on WhatsApp, Signal and Telegram and post the text in the same chat as a quoted
 reply from your account (`🎤 Trascrizione: ...`). The voice note is never marked as read.
 It is off by default and only handles recent messages (last 10 minutes).
@@ -615,19 +615,43 @@ Config keys in `config.json`: `auto_transcribe` (`{"whatsapp": false, "signal": 
 "telegram": false}`) and `auto_transcribe_chats` (`{"<protocol>:<contact_id>": true|false}`).
 The same settings are exposed as the `autotranscribe.*` server operations.
 In the web UI the global switches are in **Impostazioni** ("Trascrizione automatica", next to the
-OpenAI key; one toggle per connected protocol), and each Signal/WhatsApp/Telegram chat has a
+provider API key; one toggle per connected protocol), and each Signal/WhatsApp/Telegram chat has a
 header selector (*Predefinito* / *Attiva* / *Disattiva*) for the per-chat override. REST:
 `GET /api/autotranscribe`, `PUT /api/autotranscribe/global/{protocol}`,
 `GET|PUT /api/autotranscribe/chat?proto=&contact_id=`.
 
-The transcription service itself (model, language, API base URL, timeout) can also be edited in
-the web UI under **Impostazioni → Trascrizione** (ops `transcribe.settings` /
-`transcribe.set_settings`, REST `GET|PUT /api/transcribe/settings`). Values are saved to
-`config.json` (`transcription_model`, `transcription_language`, `transcription_base_url`,
-`transcription_timeout`); fields forced by `TRANSCRIPTION_*` environment variables are shown
-disabled. The API key is never returned.
+The transcription service itself is edited in the web UI under **Impostazioni → Trascrizione**
+(ops `transcribe.settings` / `transcribe.set_settings` / `transcribe.set_api_key`, REST
+`GET|PUT /api/transcribe/settings`, `PUT /api/transcribe/api-key`). API keys are never returned
+(only a "configured" flag per provider). Precedence is always environment variable >
+`config.json` > default; fields forced by an environment variable are shown disabled.
 
-Design notes in `docs/DESIGN_AUTO_TRANSCRIBE.md`.
+Providers (`AI_PROVIDER` / `ai_provider`, default `openai`). Transcription is enabled when the
+selected provider has an API key. DeepSeek is not supported (its API has no audio input), nor
+Google Cloud Speech.
+
+| Setting | Environment variable | `config.json` key | Default |
+|---|---|---|---|
+| Provider | `AI_PROVIDER` (`openai`\|`openrouter`\|`gemini`) | `ai_provider` | `openai` |
+| OpenAI key | `OPENAI_API_KEY` | `openai_api_key` | |
+| OpenAI model | `OPENAI_TRANSCRIPTION_MODEL`, then `TRANSCRIPTION_MODEL` | `openai_transcription_model`, then `transcription_model` | `gpt-transcribe` |
+| OpenAI base URL | `TRANSCRIPTION_BASE_URL` | `transcription_base_url` | `https://api.openai.com/v1` |
+| OpenRouter key | `OPENROUTER_API_KEY` | `openrouter_api_key` | |
+| OpenRouter model | `OPENROUTER_TRANSCRIPTION_MODEL` | `openrouter_transcription_model` | `openai/whisper-large-v3` |
+| OpenRouter base URL | `OPENROUTER_BASE_URL` | `openrouter_base_url` | `https://openrouter.ai/api/v1` |
+| OpenRouter attribution | `OPENROUTER_HTTP_REFERER`, `OPENROUTER_APP_TITLE` | `openrouter_http_referer`, `openrouter_app_title` | unset (headers `HTTP-Referer` / `X-OpenRouter-Title` only when set) |
+| Gemini key | `GEMINI_API_KEY` (fallback `GOOGLE_API_KEY`) | `gemini_api_key` | |
+| Gemini model | `GEMINI_TRANSCRIPTION_MODEL` | `gemini_transcription_model` | `gemini-flash-latest` |
+| Gemini base URL | `GEMINI_BASE_URL` | `gemini_base_url` | `https://generativelanguage.googleapis.com/v1beta` |
+| Language (shared) | `TRANSCRIPTION_LANGUAGE` | `transcription_language` | automatic |
+| Timeout, seconds (shared) | `TRANSCRIPTION_TIMEOUT` | `transcription_timeout` | `120` |
+
+The settings use the same names as the sibling project botty. OpenAI and OpenRouter use the
+OpenAI-compatible multipart `POST {base}/audio/transcriptions`; Gemini uses the native
+`models/{model}:generateContent` with the audio inline (max about 15 MB, formats WAV, MP3,
+AIFF, AAC, OGG, FLAC; anything else is transcoded to MP3 with ffmpeg).
+
+Design notes in `docs/DESIGN_AUTO_TRANSCRIBE.md` and `docs/DESIGN_TRANSCRIPTION_PROVIDERS.md`.
 
 ### Message editing
 
