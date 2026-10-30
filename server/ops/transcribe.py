@@ -14,6 +14,9 @@ from typing import Any
 
 from server.api import ApiError, ChatAPI, operation
 from server.models_api import (
+    AutoTranscribeChatRequest,
+    AutoTranscribeSetChatRequest,
+    AutoTranscribeSetGlobalRequest,
     EmptyRequest,
     OpenAIKeyRequest,
     StatusOut,
@@ -122,3 +125,79 @@ def config_set_openai_key(api: ChatAPI, req: OpenAIKeyRequest) -> StatusOut:
         logger.exception("Impossibile inizializzare la trascrizione OpenAI")
         raise ApiError("internal", "Errore di inizializzazione") from None
     return StatusOut(status="ok")
+
+
+# -- automatic transcription settings (shared with the "!" chat commands) --------
+
+
+def _auto_globals() -> dict[str, bool]:
+    from transcription.config import get_auto_transcribe_globals
+
+    return get_auto_transcribe_globals()
+
+
+def _auto_chat(protocol: str, contact_id: str) -> dict[str, Any]:
+    from transcription import config as tconfig
+
+    return {
+        "global": tconfig.get_auto_transcribe_global(protocol),
+        "override": tconfig.get_auto_transcribe_chat(protocol, contact_id),
+        "effective": tconfig.auto_transcribe_effective(protocol, contact_id),
+    }
+
+
+def _save(action: Any, *args: Any) -> None:
+    try:
+        action(*args)
+    except OSError:
+        logger.exception("Impossibile salvare la configurazione di trascrizione")
+        raise ApiError("internal", "Errore di salvataggio") from None
+
+
+@operation("autotranscribe.config", request=EmptyRequest, response=dict[str, Any])
+def autotranscribe_config(api: ChatAPI, req: EmptyRequest) -> dict[str, Any]:
+    """Per-protocol global switches and whether transcription is configured."""
+    return {
+        "configured": api.transcription.service is not None,
+        "globals": _auto_globals(),
+    }
+
+
+@operation(
+    "autotranscribe.set_global",
+    request=AutoTranscribeSetGlobalRequest,
+    response=dict[str, bool],
+)
+def autotranscribe_set_global(
+    api: ChatAPI, req: AutoTranscribeSetGlobalRequest
+) -> dict[str, bool]:
+    """Set one protocol's global switch; returns all globals."""
+    from transcription.config import set_auto_transcribe_global
+
+    _save(set_auto_transcribe_global, req.protocol, req.enabled)
+    return _auto_globals()
+
+
+@operation(
+    "autotranscribe.chat",
+    request=AutoTranscribeChatRequest,
+    response=dict[str, Any],
+)
+def autotranscribe_chat(api: ChatAPI, req: AutoTranscribeChatRequest) -> dict[str, Any]:
+    """``{global, override, effective}`` of a chat (``override`` may be null)."""
+    return _auto_chat(req.protocol, req.contact_id)
+
+
+@operation(
+    "autotranscribe.set_chat",
+    request=AutoTranscribeSetChatRequest,
+    response=dict[str, Any],
+)
+def autotranscribe_set_chat(
+    api: ChatAPI, req: AutoTranscribeSetChatRequest
+) -> dict[str, Any]:
+    """Set (or, with ``enabled=null``, clear) a chat's override."""
+    from transcription.config import set_auto_transcribe_chat
+
+    _save(set_auto_transcribe_chat, req.protocol, req.contact_id, req.enabled)
+    return _auto_chat(req.protocol, req.contact_id)

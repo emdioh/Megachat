@@ -302,6 +302,56 @@ def create_api_router() -> Any:
     async def transcription_config(request: Request) -> dict[str, bool]:
         return await call_op(request, "transcribe.config")
 
+    @router.get("/autotranscribe")
+    async def autotranscribe_config(request: Request) -> dict[str, Any]:
+        return await call_op(request, "autotranscribe.config")
+
+    @router.put("/autotranscribe/global/{proto}")
+    async def autotranscribe_set_global(
+        request: Request,
+        proto: Literal["signal", "whatsapp", "telegram"],
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        return await call_op(
+            request,
+            "autotranscribe.set_global",
+            {"protocol": proto, "enabled": payload.get("enabled")},
+        )
+
+    # Contact ids contain "@", "+" and so on: query parameter, as for
+    # /messages and /contact-avatar, never a path segment.
+    @router.get("/autotranscribe/chat")
+    async def autotranscribe_chat(
+        request: Request,
+        proto: Literal["signal", "whatsapp", "telegram"],
+        contact_id: str,
+    ) -> dict[str, Any]:
+        return await call_op(
+            request,
+            "autotranscribe.chat",
+            {"protocol": proto, "contact_id": contact_id},
+        )
+
+    @router.put("/autotranscribe/chat")
+    async def autotranscribe_set_chat(
+        request: Request,
+        proto: Literal["signal", "whatsapp", "telegram"],
+        contact_id: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        # ``"enabled": null`` clears the override; a missing key is an error.
+        if "enabled" not in payload:
+            raise HTTPException(status_code=422, detail="enabled richiesto")
+        return await call_op(
+            request,
+            "autotranscribe.set_chat",
+            {
+                "protocol": proto,
+                "contact_id": contact_id,
+                "enabled": payload["enabled"],
+            },
+        )
+
     @router.get("/transcribe/{proto}/{attachment_id:path}")
     async def transcription_status(
         request: Request,

@@ -518,6 +518,22 @@ class TranscribeConfigOut(BaseModel):
     enabled: bool
 
 
+class AutoTranscribeSetGlobalRequest(BaseModel):
+    protocol: Literal["signal", "whatsapp", "telegram"]
+    enabled: StrictBool
+
+
+class AutoTranscribeChatRequest(BaseModel):
+    protocol: Literal["signal", "whatsapp", "telegram"]
+    contact_id: StrictStr = Field(min_length=1)
+
+
+class AutoTranscribeSetChatRequest(AutoTranscribeChatRequest):
+    """``enabled=None`` clears the chat override."""
+
+    enabled: StrictBool | None
+
+
 class OpenAIKeyRequest(BaseModel):
     """Checked by the operation ('Chiave non valida')."""
 

@@ -180,6 +180,12 @@ const elements = {
   saveOpenaiKey: document.querySelector("#save-openai-key"),
   changeOpenaiKey: document.querySelector("#change-openai-key"),
   openaiKeyStatus: document.querySelector("#openai-key-status"),
+  autotranscribeToggles: document.querySelector("#autotranscribe-toggles"),
+  autotranscribeStatus: document.querySelector("#autotranscribe-status"),
+  autotranscribeControl: document.querySelector("#autotranscribe-control"),
+  autotranscribeButton: document.querySelector("#autotranscribe-button"),
+  autotranscribeMenu: document.querySelector("#autotranscribe-menu"),
+  autotranscribeCaption: document.querySelector("#autotranscribe-caption"),
   tokenInput: document.querySelector("#token-input"),
   tokenError: document.querySelector("#token-error"),
   saveToken: document.querySelector("#save-token"),
@@ -224,7 +230,10 @@ function requestToken(invalid = false) {
   elements.tokenError.hidden = !invalid;
   elements.tokenInput.value = state.token;
   if (!elements.linkDialog.open) elements.linkDialog.showModal();
-  if (!invalid) loadTranscriptionConfig();
+  if (!invalid) {
+    loadTranscriptionConfig();
+    loadAutoTranscribeConfig();
+  }
   window.setTimeout(() => elements.tokenInput.focus(), 0);
 }
 
@@ -617,6 +626,7 @@ async function updateBackendStatuses() {
       telegram: data.telegram === true,
     };
     if (syncProtocolTabs()) renderContacts();
+    renderAutoTranscribeSettings();
   } catch {
     // Best-effort: leave the previously shown labels as-is on failure.
     state.backendStatuses = null;
@@ -649,6 +659,156 @@ async function loadTranscriptionConfig() {
   }
 }
 
+// --- Trascrizione automatica (impostazioni globali e override per chat) ---
+const AUTOTRANSCRIBE_LABELS = { whatsapp: "WhatsApp", signal: "Signal", telegram: "Telegram" };
+
+async function autotranscribeJson(url, options) {
+  const response = await apiFetch(url, options);
+  return response.json();
+}
+
+async function loadAutoTranscribeConfig() {
+  if (!state.token) return;
+  try {
+    state.autotranscribe = await autotranscribeJson("api/autotranscribe");
+  } catch (error) {
+    if (error.message !== "unauthorized") {
+      elements.autotranscribeStatus.textContent = "Impossibile leggere le impostazioni.";
+    }
+    return;
+  }
+  renderAutoTranscribeSettings();
+  updateAutoTranscribeControl();
+}
+
+function renderAutoTranscribeSettings() {
+  const config = state.autotranscribe;
+  if (!config) return;
+  const statuses = state.backendStatuses;
+  const nodes = [];
+  for (const protocol of ["whatsapp", "signal", "telegram"]) {
+    // Solo i protocolli collegati (se lo stato non e' noto, tutti).
+    if (statuses && statuses[protocol] !== true) continue;
+    const label = document.createElement("label");
+    label.className = "autotranscribe-toggle";
+    const text = document.createElement("span");
+    text.textContent = AUTOTRANSCRIBE_LABELS[protocol];
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.checked = config.globals?.[protocol] === true;
+    input.dataset.protocol = protocol;
+    input.addEventListener("change", () => saveAutoTranscribeGlobal(protocol, input));
+    label.append(text, input);
+    nodes.push(label);
+  }
+  elements.autotranscribeToggles.replaceChildren(...nodes);
+  elements.autotranscribeStatus.textContent = config.configured
+    ? "Trascrive le note vocali e risponde in chat."
+    : "Trascrizione non configurata: inserisci la chiave OpenAI per attivarla.";
+}
+
+async function saveAutoTranscribeGlobal(protocol, input) {
+  input.disabled = true;
+  try {
+    const globals = await autotranscribeJson(`api/autotranscribe/global/${protocol}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled: input.checked }),
+    });
+    state.autotranscribe = { ...(state.autotranscribe || {}), globals };
+    updateAutoTranscribeControl();
+  } catch (error) {
+    input.checked = !input.checked;
+    if (error.message !== "unauthorized") {
+      elements.autotranscribeStatus.textContent = "Salvataggio non riuscito.";
+    }
+  } finally {
+    input.disabled = false;
+  }
+}
+
+function autotranscribeChatQuery(contact) {
+  return new URLSearchParams({ proto: contact.protocol, contact_id: contact.id }).toString();
+}
+
+function closeAutoTranscribeMenu() {
+  if (elements.autotranscribeMenu.hidden) return;
+  elements.autotranscribeMenu.hidden = true;
+  elements.autotranscribeButton.setAttribute("aria-expanded", "false");
+}
+
+function updateAutoTranscribeControl() {
+  const control = elements.autotranscribeControl;
+  const button = elements.autotranscribeButton;
+  const contact = state.active;
+  // Gmail escluso.
+  control.hidden = !contact || !PROTOCOLS.includes(contact.protocol);
+  if (control.hidden) {
+    closeAutoTranscribeMenu();
+    return;
+  }
+  const info = state.autotranscribeChat;
+  const mine = info && info.key === `${contact.protocol}:${contact.id}` ? info : null;
+  button.disabled = !mine;
+  button.classList.toggle("is-on", !!mine && mine.effective === true);
+  button.classList.toggle("is-off", !!mine && mine.effective !== true);
+  button.classList.toggle("has-override", !!mine && mine.override !== null && mine.override !== undefined);
+  if (!mine) {
+    closeAutoTranscribeMenu();
+    return;
+  }
+  const globalOn = mine.global === true;
+  const current = mine.override === true ? "on" : mine.override === false ? "off" : "default";
+  const effective = `Trascrizione automatica: ${mine.effective ? "attiva" : "disattiva"} per questa chat`;
+  const label = `${effective}${current === "default" ? " (predefinito)" : " (impostazione della chat)"}`;
+  button.setAttribute("aria-label", label);
+  button.title = label;
+  elements.autotranscribeCaption.textContent = `${effective}.`;
+  for (const option of elements.autotranscribeMenu.querySelectorAll(".autotranscribe-option")) {
+    const value = option.dataset.value;
+    option.setAttribute("aria-checked", String(value === current));
+    if (value === "default") {
+      option.querySelector(".autotranscribe-option-label").textContent = `Predefinito (globale: ${globalOn ? "attiva" : "disattiva"})`;
+    }
+  }
+}
+
+async function loadAutoTranscribeChat(contact) {
+  state.autotranscribeChat = null;
+  updateAutoTranscribeControl();
+  if (!contact || !PROTOCOLS.includes(contact.protocol)) return;
+  const key = `${contact.protocol}:${contact.id}`;
+  try {
+    const data = await autotranscribeJson(`api/autotranscribe/chat?${autotranscribeChatQuery(contact)}`);
+    if (!state.active || `${state.active.protocol}:${state.active.id}` !== key) return;
+    state.autotranscribeChat = { ...data, key };
+  } catch {
+    return;
+  }
+  updateAutoTranscribeControl();
+}
+
+async function saveAutoTranscribeChat(value) {
+  const contact = state.active;
+  if (!contact) return;
+  const enabled = value === "on" ? true : value === "off" ? false : null;
+  const key = `${contact.protocol}:${contact.id}`;
+  elements.autotranscribeButton.disabled = true;
+  try {
+    const data = await autotranscribeJson(`api/autotranscribe/chat?${autotranscribeChatQuery(contact)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled }),
+    });
+    if (state.active && `${state.active.protocol}:${state.active.id}` === key) {
+      state.autotranscribeChat = { ...data, key };
+    }
+  } catch (error) {
+    if (error.message !== "unauthorized") showError("Impossibile salvare la trascrizione automatica.");
+  }
+  updateAutoTranscribeControl();
+}
+
 function enableOpenaiKeyEdit() {
   elements.openaiKeyInput.disabled = false;
   elements.saveOpenaiKey.disabled = false;
@@ -675,6 +835,7 @@ async function saveOpenaiKey() {
     elements.openaiKeyStatus.textContent = "Chiave salvata, trascrizione attiva";
     elements.saveOpenaiKey.hidden = true;
     elements.changeOpenaiKey.hidden = false;
+    loadAutoTranscribeConfig();
   } catch (error) {
     elements.openaiKeyStatus.textContent = error.status === 400
       ? "Chiave non valida"
@@ -2546,6 +2707,7 @@ function openThread(contact) {
   elements.threadMeta.innerHTML = `${protocolIcon(contact.protocol, 13)}<span class="thread-proto-name">${contact.protocol}</span>`;
   renderThreadAvatar(contact);
   updateArchiveButton();
+  if (typeof loadAutoTranscribeChat === "function") void loadAutoTranscribeChat(contact);
   elements.app.classList.add("thread-open");
   // Push una history entry SOLO al primo ingresso nel thread (lista →
   // thread): così il back/swipe-back del browser (mobile) la consuma
@@ -4369,6 +4531,26 @@ elements.stealthToggle.addEventListener("change", () => {
   renderThreadAvatar(state.active);
 });
 elements.archiveButton.addEventListener("click", () => toggleActiveArchived());
+elements.autotranscribeButton.addEventListener("click", () => {
+  const willOpen = elements.autotranscribeMenu.hidden;
+  elements.autotranscribeMenu.hidden = !willOpen;
+  elements.autotranscribeButton.setAttribute("aria-expanded", String(willOpen));
+});
+elements.autotranscribeMenu.addEventListener("click", (event) => {
+  const option = event.target.closest(".autotranscribe-option");
+  if (!option) return;
+  closeAutoTranscribeMenu();
+  elements.autotranscribeButton.focus();
+  void saveAutoTranscribeChat(option.dataset.value);
+});
+document.addEventListener("click", (event) => {
+  if (!event.target.closest("#autotranscribe-menu, #autotranscribe-button")) closeAutoTranscribeMenu();
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape" || elements.autotranscribeMenu.hidden) return;
+  closeAutoTranscribeMenu();
+  elements.autotranscribeButton.focus();
+});
 elements.linkPreviewsToggle.checked = state.linkPreviewsEnabled;
 elements.linkPreviewsToggle.addEventListener("change", () => {
   state.linkPreviewsEnabled = elements.linkPreviewsToggle.checked;
