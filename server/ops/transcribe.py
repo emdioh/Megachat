@@ -7,7 +7,6 @@ shown.
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 from pathlib import Path
@@ -22,6 +21,7 @@ from server.models_api import (
     EmptyRequest,
     OpenAIKeyRequest,
     StatusOut,
+    TranscribeApiKeyRequest,
     TranscribeConfigOut,
     TranscribeSettingsRequest,
     TranscribeStatusRequest,
@@ -43,7 +43,7 @@ def _service(api: ChatAPI) -> Any:
 
 @operation("transcribe.config", request=EmptyRequest, response=TranscribeConfigOut)
 def transcribe_config(api: ChatAPI, req: EmptyRequest) -> TranscribeConfigOut:
-    """Whether transcription is available (an OpenAI key is configured)."""
+    """Whether transcription is available (the selected provider has an API key)."""
     return TranscribeConfigOut(enabled=api.transcription.service is not None)
 
 
@@ -99,35 +99,55 @@ def transcribe_submit(api: ChatAPI, req: TranscribeSubmitRequest) -> dict[str, A
     return {"status": "pending"}
 
 
-@operation("config.set_openai_key", request=OpenAIKeyRequest, response=StatusOut)
-def config_set_openai_key(api: ChatAPI, req: OpenAIKeyRequest) -> StatusOut:
-    """Save the OpenAI key to ``config.json`` and (re)start transcription."""
-    api_key = req.api_key
-    if not isinstance(api_key, str):
-        raise ApiError("invalid_request", "Chiave non valida")
-    api_key = api_key.strip()
-    if not api_key or not api_key.startswith("sk-"):
-        raise ApiError("invalid_request", "Chiave non valida")
-
-    from protocols.config import PROJECT_DIR, _load_config
-
-    config_path = PROJECT_DIR / "config.json"
-    data = _load_config()
-    data["openai_api_key"] = api_key
-    try:
-        with config_path.open("w", encoding="utf-8") as config_file:
-            json.dump(data, config_file, indent=2)
-            config_file.write("\n")
-    except OSError:
-        logger.exception("Impossibile salvare la configurazione OpenAI")
-        raise ApiError("internal", "Errore di salvataggio") from None
-
+def _reinit(api: ChatAPI) -> None:
     try:
         api.transcription.init()
     except Exception:
-        logger.exception("Impossibile inizializzare la trascrizione OpenAI")
+        logger.exception("Impossibile inizializzare la trascrizione")
         raise ApiError("internal", "Errore di inizializzazione") from None
+
+
+_KEY_ERROR = "Chiave non valida"
+
+
+def _validated_api_key(provider: Any, api_key: Any) -> tuple[str, str]:
+    from transcription.config import PROVIDERS
+
+    if not isinstance(provider, str) or provider not in PROVIDERS:
+        raise ApiError("invalid_request", "Provider non valido")
+    if not isinstance(api_key, str):
+        raise ApiError("invalid_request", _KEY_ERROR)
+    api_key = api_key.strip()
+    if not api_key or any(c.isspace() for c in api_key) or len(api_key) > 500:
+        raise ApiError("invalid_request", _KEY_ERROR)
+    if provider == "openai" and not api_key.startswith("sk-"):
+        raise ApiError("invalid_request", _KEY_ERROR)
+    if provider == "openrouter" and not api_key.startswith("sk-or-"):
+        raise ApiError("invalid_request", _KEY_ERROR)
+    if provider == "gemini" and len(api_key) < 20:
+        raise ApiError("invalid_request", _KEY_ERROR)
+    return provider, api_key
+
+
+@operation(
+    "transcribe.set_api_key", request=TranscribeApiKeyRequest, response=StatusOut
+)
+def transcribe_set_api_key(api: ChatAPI, req: TranscribeApiKeyRequest) -> StatusOut:
+    """Save a provider's API key to ``config.json`` and rebuild the service."""
+    from transcription.config import set_api_key
+
+    provider, api_key = _validated_api_key(req.provider, req.api_key)
+    _save(set_api_key, provider, api_key)
+    _reinit(api)
     return StatusOut(status="ok")
+
+
+@operation("config.set_openai_key", request=OpenAIKeyRequest, response=StatusOut)
+def config_set_openai_key(api: ChatAPI, req: OpenAIKeyRequest) -> StatusOut:
+    """Save the OpenAI key (``transcribe.set_api_key`` for OpenAI)."""
+    return transcribe_set_api_key(
+        api, TranscribeApiKeyRequest(provider="openai", api_key=req.api_key)
+    )
 
 
 # -- automatic transcription settings (shared with the "!" chat commands) --------
@@ -215,15 +235,32 @@ _TIMEOUT_RANGE = (5, 600)
 
 
 def _settings_out(api: ChatAPI) -> dict[str, Any]:
-    """Effective settings.  Never contains the API key itself."""
+    """Effective settings.  Never contains an API key itself."""
     from transcription import config as tconfig
 
+    provider = tconfig.get_transcription_provider()
+    providers = {
+        name: {
+            "api_key_set": tconfig.get_api_key(name) is not None,
+            "model": tconfig.get_provider_model(name),
+            "base_url": tconfig.get_provider_base_url(name),
+        }
+        for name in tconfig.PROVIDERS
+    }
+    providers["openrouter"]["http_referer"] = tconfig._provider_setting(
+        "openrouter", "http_referer"
+    )
+    providers["openrouter"]["app_title"] = tconfig._provider_setting(
+        "openrouter", "app_title"
+    )
     return {
         "configured": api.transcription.service is not None,
-        "api_key_set": tconfig.get_openai_api_key() is not None,
-        "model": tconfig.get_transcription_model(),
+        "provider": provider,
+        "providers": providers,
+        "api_key_set": providers[provider]["api_key_set"],
+        "model": providers[provider]["model"],
         "language": tconfig.get_transcription_language() or "",
-        "base_url": tconfig.get_transcription_base_url(),
+        "base_url": providers[provider]["base_url"],
         "timeout": tconfig.get_transcription_timeout(),
         "env_overrides": tconfig.transcription_env_overrides(),
     }
@@ -246,18 +283,91 @@ def _valid_url(value: str) -> bool:
         return False
 
 
+_GEMINI_MODEL_RE = re.compile(r"[a-z0-9.-]+")
+
+
+def _validated_model(provider: str, model: Any) -> str:
+    if not isinstance(model, str) or not model.strip():
+        raise _invalid("Modello non valido")
+    model = model.strip()
+    if len(model) > _MODEL_MAX:
+        raise _invalid("Modello troppo lungo (massimo 100 caratteri)")
+    if provider == "gemini":
+        model = model.removeprefix("models/")
+        if not _GEMINI_MODEL_RE.fullmatch(model):
+            raise _invalid("Modello Gemini non valido (es. gemini-flash-latest)")
+    elif provider == "openrouter" and "/" not in model:
+        raise _invalid("Modello OpenRouter non valido (formato fornitore/modello)")
+    return model
+
+
+def _validated_base_url(value: Any) -> str | None:
+    if not isinstance(value, str):
+        raise _invalid("URL non valido")
+    value = value.strip()
+    if value and not _valid_url(value):
+        raise _invalid("URL non valido: deve iniziare con http:// o https://")
+    return value.rstrip("/") or None
+
+
+def _validated_referer(value: Any) -> str | None:
+    if not isinstance(value, str):
+        raise _invalid("Referer non valido")
+    value = value.strip()
+    if value and not _valid_url(value):
+        raise _invalid("Referer non valido: deve essere un URL http:// o https://")
+    return value or None
+
+
+def _validated_title(value: Any) -> str | None:
+    if not isinstance(value, str):
+        raise _invalid("Titolo non valido")
+    value = value.strip()
+    if len(value) > 100 or any(c in value for c in "\r\n") or not value.isprintable():
+        raise _invalid("Titolo non valido (una riga, massimo 100 caratteri)")
+    return value or None
+
+
 def _validated_settings(req: TranscribeSettingsRequest) -> dict[str, Any]:
-    """Values to store (``None`` = remove the key) for the fields present in *req*."""
+    """Values to store (``None`` = remove the key) for the fields present in *req*.
+
+    Keys: ``provider``, ``language``, ``timeout``, ``<provider>.model`` and
+    ``<provider>.base_url`` (top-level ``model``/``base_url`` go to the selected
+    provider).
+    """
+    from transcription.config import PROVIDERS, get_transcription_provider
+
     present = req.model_fields_set
     out: dict[str, Any] = {}
+    selected = get_transcription_provider()
+    if "provider" in present:
+        provider = req.provider
+        if not isinstance(provider, str) or provider not in PROVIDERS:
+            raise _invalid("Provider non valido")
+        out["provider"] = provider
+        selected = provider
     if "model" in present:
-        model = req.model
-        if not isinstance(model, str) or not model.strip():
-            raise _invalid("Modello non valido")
-        model = model.strip()
-        if len(model) > _MODEL_MAX:
-            raise _invalid("Modello troppo lungo (massimo 100 caratteri)")
-        out["model"] = model
+        out[f"{selected}.model"] = _validated_model(selected, req.model)
+    if "base_url" in present:
+        out[f"{selected}.base_url"] = _validated_base_url(req.base_url)
+    if "providers" in present:
+        providers = req.providers
+        if not isinstance(providers, dict):
+            raise _invalid("Provider non valido")
+        for name, values in providers.items():
+            if name not in PROVIDERS or not isinstance(values, dict):
+                raise _invalid("Provider non valido")
+            if "model" in values:
+                out[f"{name}.model"] = _validated_model(name, values["model"])
+            if "base_url" in values:
+                out[f"{name}.base_url"] = _validated_base_url(values["base_url"])
+            if name == "openrouter":
+                if "http_referer" in values:
+                    out["openrouter.http_referer"] = _validated_referer(
+                        values["http_referer"]
+                    )
+                if "app_title" in values:
+                    out["openrouter.app_title"] = _validated_title(values["app_title"])
     if "language" in present:
         language = req.language
         if not isinstance(language, str):
@@ -268,14 +378,6 @@ def _validated_settings(req: TranscribeSettingsRequest) -> dict[str, Any]:
                 "Lingua non valida: usa un codice di 2-3 lettere minuscole (es. it)"
             )
         out["language"] = language or None
-    if "base_url" in present:
-        base_url = req.base_url
-        if not isinstance(base_url, str):
-            raise _invalid("URL non valido")
-        base_url = base_url.strip()
-        if base_url and not _valid_url(base_url):
-            raise _invalid("URL non valido: deve iniziare con http:// o https://")
-        out["base_url"] = base_url.rstrip("/") or None
     if "timeout" in present:
         timeout = req.timeout
         low, high = _TIMEOUT_RANGE
@@ -311,9 +413,5 @@ def transcribe_set_settings(
     values = _validated_settings(req)
     if values:
         _save(set_transcription_settings, values)
-        try:
-            api.transcription.init()
-        except Exception:
-            logger.exception("Impossibile inizializzare la trascrizione")
-            raise ApiError("internal", "Errore di inizializzazione") from None
+        _reinit(api)
     return _settings_out(api)

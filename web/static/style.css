@@ -626,7 +626,7 @@ h2 { font-size: 1.05rem; }
 .link-key-controls { display: flex; min-width: 0; gap: 7px; }
 .link-key-controls input { box-sizing: border-box; min-width: 0; width: 100%; padding: 8px 9px; font: inherit; font-size: .86rem; border: 1px solid var(--line); border-radius: 8px; outline: none; background: #090f16; color: var(--text); }
 .link-key-controls input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px #4f8cff25; }
-#openai-key-input:disabled, #save-openai-key:disabled { opacity: .6; cursor: not-allowed; }
+#transcription-key-input:disabled, #save-transcription-key:disabled { opacity: .6; cursor: not-allowed; }
 .field-error { color: var(--danger); font-size: .78rem; }
 .link-dialog-note { margin-bottom: 0; font-size: .8rem; }
 .link-option select { padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--text); font: inherit; font-size: .84rem; }
@@ -739,6 +739,8 @@ h2 { font-size: 1.05rem; }
 .transcription-field input, .transcription-field select { box-sizing: border-box; width: 100%; min-width: 0; padding: 8px 9px; border: 1px solid var(--line); border-radius: 8px; outline: none; background: #090f16; color: var(--text); font: inherit; font-size: .86rem; }
 .transcription-field input:focus, .transcription-field select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px #4f8cff25; }
 .transcription-field input:disabled, .transcription-field select:disabled { opacity: .55; cursor: not-allowed; }
+.transcription-field[hidden] { display: none; }
+.link-option-provider { margin-bottom: 0; }
 .transcription-env-note { grid-column: 2; color: var(--muted); font-size: .72rem; }
 .transcription-actions { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .transcription-actions .link-option-status { text-align: left; min-width: 0; }

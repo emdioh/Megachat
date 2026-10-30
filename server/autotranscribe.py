@@ -44,7 +44,9 @@ START_MARGIN_S = 60
 TRANSCRIPTION_PREFIX = "🎤 Trascrizione:\n\n"
 _EMPTY_TEXT = "(nessun testo riconosciuto)"
 _ERROR_TEXT = "⚠️ Trascrizione non riuscita. Riprova più tardi con !t."
-_NOT_CONFIGURED_TEXT = "⚠️ Trascrizione non configurata (manca la chiave OpenAI)."
+_NOT_CONFIGURED_TEXT = (
+    "⚠️ Trascrizione non configurata (manca la chiave API del provider)."
+)
 _T_HINT = "ℹ️ Rispondi a una nota vocale con !t per trascriverla."
 
 _PROTOCOLS = frozenset(tconfig.AUTO_TRANSCRIBE_PROTOCOLS)

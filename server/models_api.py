@@ -537,10 +537,22 @@ class AutoTranscribeSetChatRequest(AutoTranscribeChatRequest):
 class TranscribeSettingsRequest(BaseModel):
     """Partial update: omitted fields stay unchanged; values are checked by the operation."""
 
+    #: ``model`` / ``base_url`` at top level apply to the selected provider
+    #: (the ``provider`` of this request, else the current one).
+    provider: Any = None
     model: Any = None
     language: Any = None
     base_url: Any = None
     timeout: Any = None
+    #: ``{"openai": {"model": ..., "base_url": ...}, "openrouter": {...}, ...}``
+    providers: Any = None
+
+
+class TranscribeApiKeyRequest(BaseModel):
+    """Checked by the operation ('Chiave non valida')."""
+
+    provider: Any = None
+    api_key: Any = None
 
 
 class OpenAIKeyRequest(BaseModel):

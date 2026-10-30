@@ -10,7 +10,7 @@
   <link rel="apple-touch-icon" href="icon.svg">
   <meta name="theme-color" content="#101720">
   <script>try{document.documentElement.dataset.skin=localStorage.getItem("signal-tui-web-skin")||"";}catch(e){}</script>
-  <link rel="stylesheet" href="style.css?v=75">
+  <link rel="stylesheet" href="style.css?v=76">
   <link rel="stylesheet" href="teams-skin.css?v=24">
   <link rel="stylesheet" href="gmail.css?v=26">
 </head>
@@ -386,19 +386,41 @@
         </div>
         <section class="link-section" aria-labelledby="transcription-title">
           <h3 id="transcription-title" class="link-section-title">Trascrizione</h3>
-          <div class="link-option link-option-openai">
-            <label class="link-option-name" for="openai-key-input">OpenAI Key</label>
-            <div class="link-key-controls">
-              <input id="openai-key-input" type="password" placeholder="sk-..." autocomplete="new-password">
-              <button id="save-openai-key" class="primary-button" type="button">Salva</button>
-              <button id="change-openai-key" class="primary-button" type="button" hidden>Cambia</button>
+          <div class="link-option link-option-transcription link-option-provider">
+            <div class="transcription-field">
+              <label class="link-option-name" for="transcription-provider">Provider</label>
+              <select id="transcription-provider" name="provider">
+                <option value="openai">OpenAI</option>
+                <option value="openrouter">OpenRouter</option>
+                <option value="gemini">Gemini</option>
+              </select>
             </div>
-            <span id="openai-key-status" class="link-option-status" aria-live="polite">Non configurata</span>
+          </div>
+          <div class="link-option link-option-openai">
+            <label id="transcription-key-label" class="link-option-name" for="transcription-key-input">Chiave API</label>
+            <div class="link-key-controls">
+              <input id="transcription-key-input" type="password" placeholder="sk-..." autocomplete="new-password">
+              <button id="save-transcription-key" class="primary-button" type="button">Salva</button>
+              <button id="change-transcription-key" class="primary-button" type="button" hidden>Cambia</button>
+            </div>
+            <span id="transcription-key-status" class="link-option-status" aria-live="polite">Non configurata</span>
           </div>
           <form id="transcription-settings" class="link-option link-option-transcription" novalidate>
             <div class="transcription-field">
               <label class="link-option-name" for="transcription-model">Modello</label>
               <input id="transcription-model" name="model" type="text" maxlength="100" placeholder="gpt-transcribe" autocomplete="off" spellcheck="false">
+            </div>
+            <div class="transcription-field">
+              <label class="link-option-name" for="transcription-base-url">Base URL API</label>
+              <input id="transcription-base-url" name="base_url" type="url" placeholder="https://api.openai.com/v1" autocomplete="off" spellcheck="false">
+            </div>
+            <div class="transcription-field" data-provider-only="openrouter" hidden>
+              <label class="link-option-name" for="transcription-referer">HTTP-Referer</label>
+              <input id="transcription-referer" name="http_referer" type="url" maxlength="300" placeholder="facoltativo" autocomplete="off" spellcheck="false">
+            </div>
+            <div class="transcription-field" data-provider-only="openrouter" hidden>
+              <label class="link-option-name" for="transcription-app-title">Titolo app</label>
+              <input id="transcription-app-title" name="app_title" type="text" maxlength="100" placeholder="facoltativo" autocomplete="off">
             </div>
             <div class="transcription-field">
               <label class="link-option-name" for="transcription-language">Lingua</label>
@@ -411,10 +433,6 @@
                 <option value="es">Spagnolo</option>
                 <option value="pt">Portoghese</option>
               </select>
-            </div>
-            <div class="transcription-field">
-              <label class="link-option-name" for="transcription-base-url">Base URL API</label>
-              <input id="transcription-base-url" name="base_url" type="url" placeholder="https://api.openai.com/v1" autocomplete="off" spellcheck="false">
             </div>
             <div class="transcription-field">
               <label class="link-option-name" for="transcription-timeout">Timeout (s)</label>
@@ -439,7 +457,7 @@
   <script src="reconcile.js?v=8" defer></script>
   <script src="outbox.js?v=1" defer></script>
   <script src="message_cache.js?v=1" defer></script>
-  <script src="app.js?v=137" defer></script>
+  <script src="app.js?v=138" defer></script>
   <script src="gmail.js?v=29" defer></script>
 </body>
 </html>

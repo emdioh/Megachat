@@ -158,7 +158,10 @@ def test_static_ui_wiring():
         assert f'id="{element_id}"' in html
     settings = html.split('id="settings-dialog"')[1]
     assert 'id="autotranscribe-toggles"' in settings
-    assert 'id="autotranscribe-toggles"' not in html.split('id="settings-dialog"')[0].split('id="link-dialog"')[1]
+    assert (
+        'id="autotranscribe-toggles"'
+        not in html.split('id="settings-dialog"')[0].split('id="link-dialog"')[1]
+    )
     # Loaded when Impostazioni opens, not when the token dialog opens.
     opener = app.split('querySelector("#open-settings")')[1][:500]
     assert "loadAutoTranscribeConfig()" in opener
@@ -174,7 +177,7 @@ def test_static_ui_wiring():
     assert "api/autotranscribe/chat?" in app
     # Changing the setting must never touch the read state.
     start = app.index("// --- Trascrizione automatica")
-    end = app.index("function enableOpenaiKeyEdit")
+    end = app.index("function enableTranscriptionKeyEdit")
     assert "mark_read" not in app[start:end] and "markRead" not in app[start:end]
 
 
@@ -187,12 +190,24 @@ def test_static_wiring_for_transcription_settings():
         "transcription-language",
         "transcription-base-url",
         "transcription-timeout",
+        "transcription-provider",
+        "transcription-referer",
+        "transcription-app-title",
+        "save-transcription-key",
         "save-transcription-settings",
         "transcription-settings-status",
     ):
         assert f'id="{element_id}"' in index
         assert f"#{element_id}" in app
-    assert index.index("openai-key-input") < index.index("transcription-model")
+    assert index.index("transcription-key-input") < index.index("transcription-model")
     assert index.index("transcription-model") < index.index("autotranscribe-toggles")
     assert "api/transcribe/settings" in app
+    assert "api/transcribe/api-key" in app
+    assert "openai-key" not in index + app
+    assert index.index("transcription-provider") < index.index(
+        "transcription-key-input"
+    )
+    for provider in ("openai", "openrouter", "gemini"):
+        assert f'<option value="{provider}">' in index
+    assert index.count('data-provider-only="openrouter"') == 2
     assert "impostato da variabile d'ambiente" in app
