@@ -10,7 +10,7 @@
   <link rel="apple-touch-icon" href="icon.svg">
   <meta name="theme-color" content="#101720">
   <script>try{document.documentElement.dataset.skin=localStorage.getItem("signal-tui-web-skin")||"";}catch(e){}</script>
-  <link rel="stylesheet" href="style.css?v=74">
+  <link rel="stylesheet" href="style.css?v=75">
   <link rel="stylesheet" href="teams-skin.css?v=24">
   <link rel="stylesheet" href="gmail.css?v=26">
 </head>
@@ -286,53 +286,6 @@
           <span class="link-option-name">Telegram</span>
           <span id="link-status-telegram" class="link-option-status">Non collegato</span>
         </div>
-        <section class="link-section" aria-labelledby="transcription-title">
-          <h3 id="transcription-title" class="link-section-title">Trascrizione</h3>
-          <div class="link-option link-option-openai">
-            <label class="link-option-name" for="openai-key-input">OpenAI Key</label>
-            <div class="link-key-controls">
-              <input id="openai-key-input" type="password" placeholder="sk-..." autocomplete="new-password">
-              <button id="save-openai-key" class="primary-button" type="button">Salva</button>
-              <button id="change-openai-key" class="primary-button" type="button" hidden>Cambia</button>
-            </div>
-            <span id="openai-key-status" class="link-option-status" aria-live="polite">Non configurata</span>
-          </div>
-          <form id="transcription-settings" class="link-option link-option-transcription" novalidate>
-            <div class="transcription-field">
-              <label class="link-option-name" for="transcription-model">Modello</label>
-              <input id="transcription-model" name="model" type="text" maxlength="100" placeholder="gpt-transcribe" autocomplete="off" spellcheck="false">
-            </div>
-            <div class="transcription-field">
-              <label class="link-option-name" for="transcription-language">Lingua</label>
-              <select id="transcription-language" name="language">
-                <option value="">Automatica</option>
-                <option value="it">Italiano</option>
-                <option value="en">Inglese</option>
-                <option value="de">Tedesco</option>
-                <option value="fr">Francese</option>
-                <option value="es">Spagnolo</option>
-                <option value="pt">Portoghese</option>
-              </select>
-            </div>
-            <div class="transcription-field">
-              <label class="link-option-name" for="transcription-base-url">Base URL API</label>
-              <input id="transcription-base-url" name="base_url" type="url" placeholder="https://api.openai.com/v1" autocomplete="off" spellcheck="false">
-            </div>
-            <div class="transcription-field">
-              <label class="link-option-name" for="transcription-timeout">Timeout (s)</label>
-              <input id="transcription-timeout" name="timeout" type="number" min="5" max="600" step="1" inputmode="numeric" placeholder="120">
-            </div>
-            <div class="transcription-actions">
-              <span id="transcription-settings-status" class="link-option-status" aria-live="polite"></span>
-              <button id="save-transcription-settings" class="primary-button" type="submit">Salva</button>
-            </div>
-          </form>
-          <div class="link-option link-option-autotranscribe" id="autotranscribe-settings">
-            <span class="link-option-name">Trascrizione automatica</span>
-            <div id="autotranscribe-toggles" class="autotranscribe-toggles"></div>
-            <span id="autotranscribe-status" class="link-option-status" aria-live="polite">Trascrive le note vocali e risponde in chat.</span>
-          </div>
-        </section>
         <div class="link-option link-option-token">
           <label class="link-option-name" for="token-input">Token web</label>
           <div class="link-key-controls">
@@ -431,6 +384,53 @@
             <button id="clear-message-cache" class="primary-button" type="button">Svuota</button>
           </div>
         </div>
+        <section class="link-section" aria-labelledby="transcription-title">
+          <h3 id="transcription-title" class="link-section-title">Trascrizione</h3>
+          <div class="link-option link-option-openai">
+            <label class="link-option-name" for="openai-key-input">OpenAI Key</label>
+            <div class="link-key-controls">
+              <input id="openai-key-input" type="password" placeholder="sk-..." autocomplete="new-password">
+              <button id="save-openai-key" class="primary-button" type="button">Salva</button>
+              <button id="change-openai-key" class="primary-button" type="button" hidden>Cambia</button>
+            </div>
+            <span id="openai-key-status" class="link-option-status" aria-live="polite">Non configurata</span>
+          </div>
+          <form id="transcription-settings" class="link-option link-option-transcription" novalidate>
+            <div class="transcription-field">
+              <label class="link-option-name" for="transcription-model">Modello</label>
+              <input id="transcription-model" name="model" type="text" maxlength="100" placeholder="gpt-transcribe" autocomplete="off" spellcheck="false">
+            </div>
+            <div class="transcription-field">
+              <label class="link-option-name" for="transcription-language">Lingua</label>
+              <select id="transcription-language" name="language">
+                <option value="">Automatica</option>
+                <option value="it">Italiano</option>
+                <option value="en">Inglese</option>
+                <option value="de">Tedesco</option>
+                <option value="fr">Francese</option>
+                <option value="es">Spagnolo</option>
+                <option value="pt">Portoghese</option>
+              </select>
+            </div>
+            <div class="transcription-field">
+              <label class="link-option-name" for="transcription-base-url">Base URL API</label>
+              <input id="transcription-base-url" name="base_url" type="url" placeholder="https://api.openai.com/v1" autocomplete="off" spellcheck="false">
+            </div>
+            <div class="transcription-field">
+              <label class="link-option-name" for="transcription-timeout">Timeout (s)</label>
+              <input id="transcription-timeout" name="timeout" type="number" min="5" max="600" step="1" inputmode="numeric" placeholder="120">
+            </div>
+            <div class="transcription-actions">
+              <span id="transcription-settings-status" class="link-option-status" aria-live="polite"></span>
+              <button id="save-transcription-settings" class="primary-button" type="submit">Salva</button>
+            </div>
+          </form>
+          <div class="link-option link-option-autotranscribe" id="autotranscribe-settings">
+            <span class="link-option-name">Trascrizione automatica</span>
+            <div id="autotranscribe-toggles" class="autotranscribe-toggles"></div>
+            <span id="autotranscribe-status" class="link-option-status" aria-live="polite">Trascrive le note vocali e risponde in chat.</span>
+          </div>
+        </section>
       </div>
       <p class="dialog-copy link-dialog-note">I messaggi salvati restano su questo dispositivo: le chat si aprono subito e si leggono anche offline.</p>
     </div>
@@ -439,7 +439,7 @@
   <script src="reconcile.js?v=8" defer></script>
   <script src="outbox.js?v=1" defer></script>
   <script src="message_cache.js?v=1" defer></script>
-  <script src="app.js?v=136" defer></script>
+  <script src="app.js?v=137" defer></script>
   <script src="gmail.js?v=29" defer></script>
 </body>
 </html>

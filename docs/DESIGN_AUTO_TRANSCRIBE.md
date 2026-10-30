@@ -132,9 +132,10 @@ dell'auto-trascrizione (coperto da test). REST: `GET|PUT /api/transcribe/setting
 (percorso a un solo segmento: nessun conflitto con
 `GET /api/transcribe/{proto}/{attachment_id}`).
 
-UI: nel dialog "Collega backend" la sezione "Trascrizione" raggruppa chiave
+UI: nel dialog "Impostazioni" (☰ → Impostazioni) la sezione "Trascrizione" raggruppa chiave
 OpenAI, i campi Modello / Lingua / Base URL API / Timeout (s) con "Salva" e
-feedback inline, e i selettori "Trascrizione automatica".
+feedback inline, e i selettori "Trascrizione automatica"; i valori si caricano
+all'apertura del dialog.
 
 ## 3. Limiti noti
 
