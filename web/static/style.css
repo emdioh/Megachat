@@ -730,3 +730,20 @@ h2 { font-size: 1.05rem; }
 .autotranscribe-option { display: grid; grid-template-columns: 1.1em minmax(0, 1fr); align-items: start; gap: 6px; white-space: normal; }
 .autotranscribe-option[aria-checked="true"] .autotranscribe-check::before { content: "✓"; color: var(--accent); }
 .autotranscribe-caption { margin: 4px 0 0; padding: 6px 10px 4px; border-top: 1px solid var(--line); color: var(--muted); font-size: .76rem; }
+
+.link-section { display: grid; gap: 8px; margin: 4px 0; }
+.link-section-title { margin: 6px 2px 0; color: var(--muted); font-size: .76rem; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
+.link-option-transcription { display: grid; grid-template-columns: minmax(0, 1fr); align-items: stretch; justify-content: stretch; gap: 10px; }
+.transcription-field { display: grid; grid-template-columns: 110px minmax(0, 1fr); align-items: center; gap: 4px 12px; }
+.transcription-field input, .transcription-field select { width: 100%; min-width: 0; padding: 8px 9px; border: 1px solid var(--line); border-radius: 8px; outline: none; background: #090f16; color: var(--text); font: inherit; font-size: .86rem; }
+.transcription-field input:focus, .transcription-field select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px #4f8cff25; }
+.transcription-field input:disabled, .transcription-field select:disabled { opacity: .55; cursor: not-allowed; }
+.transcription-env-note { grid-column: 2; color: var(--muted); font-size: .72rem; }
+.transcription-actions { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.transcription-actions .link-option-status { text-align: left; min-width: 0; }
+.transcription-actions .link-option-status.is-ok { color: var(--accent); }
+.transcription-actions .link-option-status.is-error { color: var(--danger); }
+@media (max-width: 520px) {
+  .transcription-field { grid-template-columns: minmax(0, 1fr); }
+  .transcription-env-note { grid-column: 1; }
+}

@@ -169,3 +169,23 @@ def test_static_ui_wiring():
     start = app.index("// --- Trascrizione automatica")
     end = app.index("function enableOpenaiKeyEdit")
     assert "mark_read" not in app[start:end] and "markRead" not in app[start:end]
+
+
+def test_static_wiring_for_transcription_settings():
+    index = Path("web/static/index.html").read_text(encoding="utf-8")
+    app = Path("web/static/app.js").read_text(encoding="utf-8")
+    for element_id in (
+        "transcription-settings",
+        "transcription-model",
+        "transcription-language",
+        "transcription-base-url",
+        "transcription-timeout",
+        "save-transcription-settings",
+        "transcription-settings-status",
+    ):
+        assert f'id="{element_id}"' in index
+        assert f"#{element_id}" in app
+    assert index.index("openai-key-input") < index.index("transcription-model")
+    assert index.index("transcription-model") < index.index("autotranscribe-toggles")
+    assert "api/transcribe/settings" in app
+    assert "impostato da variabile d'ambiente" in app

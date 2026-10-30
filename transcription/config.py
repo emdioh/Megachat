@@ -135,3 +135,39 @@ def set_auto_transcribe_chat(
         data[_AUTO_CHATS_KEY] = section
 
     _update_config(mutate)
+
+
+# -- transcription service settings (editable from the web UI) -----------------
+
+#: setting name -> (config.json key, environment variable)
+TRANSCRIPTION_SETTINGS = {
+    "model": ("transcription_model", "TRANSCRIPTION_MODEL"),
+    "language": ("transcription_language", "TRANSCRIPTION_LANGUAGE"),
+    "base_url": ("transcription_base_url", "TRANSCRIPTION_BASE_URL"),
+    "timeout": ("transcription_timeout", "TRANSCRIPTION_TIMEOUT"),
+}
+
+
+def transcription_env_overrides() -> list[str]:
+    """Settings currently forced by an environment variable (``_get`` gives env priority)."""
+    import os
+
+    return [
+        name
+        for name, (_key, env) in TRANSCRIPTION_SETTINGS.items()
+        if os.environ.get(env)
+    ]
+
+
+def set_transcription_settings(values: dict[str, object]) -> None:
+    """Persist the given settings; ``None`` removes the key (back to default)."""
+
+    def mutate(data: dict) -> None:
+        for name, value in values.items():
+            key = TRANSCRIPTION_SETTINGS[name][0]
+            if value is None:
+                data.pop(key, None)
+            else:
+                data[key] = value
+
+    _update_config(mutate)

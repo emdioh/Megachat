@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from server.api import ApiError, ChatAPI, operation
 from server.models_api import (
@@ -21,6 +23,7 @@ from server.models_api import (
     OpenAIKeyRequest,
     StatusOut,
     TranscribeConfigOut,
+    TranscribeSettingsRequest,
     TranscribeStatusRequest,
     TranscribeSubmitRequest,
 )
@@ -201,3 +204,116 @@ def autotranscribe_set_chat(
 
     _save(set_auto_transcribe_chat, req.protocol, req.contact_id, req.enabled)
     return _auto_chat(req.protocol, req.contact_id)
+
+
+# -- transcription service settings (model, language, endpoint, timeout) --------
+
+_LANGUAGE_RE = re.compile(r"[a-z]{2,3}")
+_MODEL_MAX = 100
+_URL_MAX = 300
+_TIMEOUT_RANGE = (5, 600)
+
+
+def _settings_out(api: ChatAPI) -> dict[str, Any]:
+    """Effective settings.  Never contains the API key itself."""
+    from transcription import config as tconfig
+
+    return {
+        "configured": api.transcription.service is not None,
+        "api_key_set": tconfig.get_openai_api_key() is not None,
+        "model": tconfig.get_transcription_model(),
+        "language": tconfig.get_transcription_language() or "",
+        "base_url": tconfig.get_transcription_base_url(),
+        "timeout": tconfig.get_transcription_timeout(),
+        "env_overrides": tconfig.transcription_env_overrides(),
+    }
+
+
+def _invalid(message: str) -> ApiError:
+    return ApiError("invalid_request", message)
+
+
+def _valid_url(value: str) -> bool:
+    try:
+        parsed = urlparse(value)
+        return (
+            parsed.scheme in ("http", "https")
+            and bool(parsed.hostname)
+            and not any(c.isspace() for c in value)
+            and len(value) <= _URL_MAX
+        )
+    except ValueError:
+        return False
+
+
+def _validated_settings(req: TranscribeSettingsRequest) -> dict[str, Any]:
+    """Values to store (``None`` = remove the key) for the fields present in *req*."""
+    present = req.model_fields_set
+    out: dict[str, Any] = {}
+    if "model" in present:
+        model = req.model
+        if not isinstance(model, str) or not model.strip():
+            raise _invalid("Modello non valido")
+        model = model.strip()
+        if len(model) > _MODEL_MAX:
+            raise _invalid("Modello troppo lungo (massimo 100 caratteri)")
+        out["model"] = model
+    if "language" in present:
+        language = req.language
+        if not isinstance(language, str):
+            raise _invalid("Lingua non valida")
+        language = language.strip()
+        if language and not _LANGUAGE_RE.fullmatch(language):
+            raise _invalid(
+                "Lingua non valida: usa un codice di 2-3 lettere minuscole (es. it)"
+            )
+        out["language"] = language or None
+    if "base_url" in present:
+        base_url = req.base_url
+        if not isinstance(base_url, str):
+            raise _invalid("URL non valido")
+        base_url = base_url.strip()
+        if base_url and not _valid_url(base_url):
+            raise _invalid("URL non valido: deve iniziare con http:// o https://")
+        out["base_url"] = base_url.rstrip("/") or None
+    if "timeout" in present:
+        timeout = req.timeout
+        low, high = _TIMEOUT_RANGE
+        if isinstance(timeout, bool) or not isinstance(timeout, int):
+            raise _invalid("Timeout non valido")
+        if not low <= timeout <= high:
+            raise _invalid(f"Timeout non valido: da {low} a {high} secondi")
+        out["timeout"] = timeout
+    return out
+
+
+@operation("transcribe.settings", request=EmptyRequest, response=dict[str, Any])
+def transcribe_settings(api: ChatAPI, req: EmptyRequest) -> dict[str, Any]:
+    """Effective transcription settings and which ones environment variables force."""
+    return _settings_out(api)
+
+
+@operation(
+    "transcribe.set_settings",
+    request=TranscribeSettingsRequest,
+    response=dict[str, Any],
+)
+def transcribe_set_settings(
+    api: ChatAPI, req: TranscribeSettingsRequest
+) -> dict[str, Any]:
+    """Partially update the settings, then rebuild the service.
+
+    Omitted fields are unchanged; an empty ``language`` / ``base_url`` restores
+    the default.  Environment variables still win over what is saved.
+    """
+    from transcription.config import set_transcription_settings
+
+    values = _validated_settings(req)
+    if values:
+        _save(set_transcription_settings, values)
+        try:
+            api.transcription.init()
+        except Exception:
+            logger.exception("Impossibile inizializzare la trascrizione")
+            raise ApiError("internal", "Errore di inizializzazione") from None
+    return _settings_out(api)

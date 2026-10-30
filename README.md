@@ -620,6 +620,13 @@ header selector (*Predefinito* / *Attiva* / *Disattiva*) for the per-chat overri
 `GET /api/autotranscribe`, `PUT /api/autotranscribe/global/{protocol}`,
 `GET|PUT /api/autotranscribe/chat?proto=&contact_id=`.
 
+The transcription service itself (model, language, API base URL, timeout) can also be edited in
+the web UI under **Collega backend → Trascrizione** (ops `transcribe.settings` /
+`transcribe.set_settings`, REST `GET|PUT /api/transcribe/settings`). Values are saved to
+`config.json` (`transcription_model`, `transcription_language`, `transcription_base_url`,
+`transcription_timeout`); fields forced by `TRANSCRIPTION_*` environment variables are shown
+disabled. The API key is never returned.
+
 Design notes in `docs/DESIGN_AUTO_TRANSCRIBE.md`.
 
 ### Message editing
