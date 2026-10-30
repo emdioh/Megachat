@@ -180,6 +180,13 @@ const elements = {
   saveOpenaiKey: document.querySelector("#save-openai-key"),
   changeOpenaiKey: document.querySelector("#change-openai-key"),
   openaiKeyStatus: document.querySelector("#openai-key-status"),
+  transcriptionForm: document.querySelector("#transcription-settings"),
+  transcriptionModel: document.querySelector("#transcription-model"),
+  transcriptionLanguage: document.querySelector("#transcription-language"),
+  transcriptionBaseUrl: document.querySelector("#transcription-base-url"),
+  transcriptionTimeout: document.querySelector("#transcription-timeout"),
+  transcriptionStatus: document.querySelector("#transcription-settings-status"),
+  saveTranscriptionSettings: document.querySelector("#save-transcription-settings"),
   autotranscribeToggles: document.querySelector("#autotranscribe-toggles"),
   autotranscribeStatus: document.querySelector("#autotranscribe-status"),
   autotranscribeControl: document.querySelector("#autotranscribe-control"),
@@ -232,6 +239,7 @@ function requestToken(invalid = false) {
   if (!elements.linkDialog.open) elements.linkDialog.showModal();
   if (!invalid) {
     loadTranscriptionConfig();
+    loadTranscriptionSettings();
     loadAutoTranscribeConfig();
   }
   window.setTimeout(() => elements.tokenInput.focus(), 0);
@@ -659,6 +667,114 @@ async function loadTranscriptionConfig() {
   }
 }
 
+// --- Impostazioni del servizio di trascrizione (modello, lingua, endpoint, timeout) ---
+function transcriptionFields() {
+  return {
+    model: elements.transcriptionModel,
+    language: elements.transcriptionLanguage,
+    base_url: elements.transcriptionBaseUrl,
+    timeout: elements.transcriptionTimeout,
+  };
+}
+
+function setTranscriptionFeedback(message, kind = "") {
+  elements.transcriptionStatus.textContent = message;
+  elements.transcriptionStatus.classList.toggle("is-ok", kind === "ok");
+  elements.transcriptionStatus.classList.toggle("is-error", kind === "error");
+}
+
+function renderTranscriptionSettings(settings) {
+  const fields = transcriptionFields();
+  const forced = new Set(settings.env_overrides || []);
+  const language = settings.language || "";
+  // Una lingua fuori elenco (es. da config.json) resta visibile e selezionata.
+  if (language && !Array.from(fields.language.options).some((o) => o.value === language)) {
+    fields.language.add(new Option(language, language));
+  }
+  fields.model.value = settings.model ?? "";
+  fields.language.value = language;
+  // Il valore predefinito resta nel segnaposto: il campo vuoto significa "predefinito".
+  fields.base_url.value = settings.base_url === fields.base_url.placeholder ? "" : (settings.base_url ?? "");
+  fields.timeout.value = settings.timeout ?? "";
+  for (const [name, input] of Object.entries(fields)) {
+    const isForced = forced.has(name);
+    input.disabled = isForced;
+    const note = input.parentElement.querySelector(".transcription-env-note");
+    if (isForced && !note) {
+      const text = document.createElement("span");
+      text.className = "transcription-env-note";
+      text.textContent = "impostato da variabile d'ambiente";
+      input.parentElement.append(text);
+      input.setAttribute("aria-describedby", `transcription-env-${name}`);
+      text.id = `transcription-env-${name}`;
+    } else if (!isForced && note) {
+      note.remove();
+      input.removeAttribute("aria-describedby");
+    }
+  }
+  elements.saveTranscriptionSettings.disabled = forced.size === Object.keys(fields).length;
+}
+
+async function loadTranscriptionSettings() {
+  if (!state.token) return;
+  try {
+    renderTranscriptionSettings(await autotranscribeJson("api/transcribe/settings"));
+    setTranscriptionFeedback("");
+  } catch (error) {
+    if (error.message !== "unauthorized") {
+      setTranscriptionFeedback("Impossibile leggere le impostazioni.", "error");
+    }
+  }
+}
+
+async function saveTranscriptionSettings(event) {
+  event.preventDefault();
+  const fields = transcriptionFields();
+  const body = {};
+  for (const [name, input] of Object.entries(fields)) {
+    if (input.disabled) continue;
+    body[name] = name === "timeout" ? (input.value.trim() === "" ? null : Number(input.value)) : input.value.trim();
+  }
+  // Timeout vuoto: valore non valido (non esiste "predefinito" nel campo), segnalalo prima.
+  if ("timeout" in body && (body.timeout === null || !Number.isInteger(body.timeout) || body.timeout < 5 || body.timeout > 600)) {
+    setTranscriptionFeedback("Timeout non valido: da 5 a 600 secondi.", "error");
+    return;
+  }
+  if ("model" in body && !body.model) {
+    setTranscriptionFeedback("Modello non valido.", "error");
+    return;
+  }
+  elements.saveTranscriptionSettings.disabled = true;
+  setTranscriptionFeedback("Salvataggio…");
+  try {
+    const settings = await autotranscribeJson("api/transcribe/settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    renderTranscriptionSettings(settings);
+    setTranscriptionFeedback("Salvato.", "ok");
+  } catch (error) {
+    if (error.message === "unauthorized") return;
+    let message = "Salvataggio non riuscito.";
+    if (error.status === 400) {
+      try {
+        const detail = (await error.response.json()).detail;
+        if (typeof detail === "string" && detail) message = detail;
+      } catch {
+        // corpo non JSON: messaggio generico
+      }
+    }
+    setTranscriptionFeedback(message, "error");
+  } finally {
+    elements.saveTranscriptionSettings.disabled = false;
+  }
+}
+
+if (elements.transcriptionForm) {
+  elements.transcriptionForm.addEventListener("submit", saveTranscriptionSettings);
+}
+
 // --- Trascrizione automatica (impostazioni globali e override per chat) ---
 const AUTOTRANSCRIBE_LABELS = { whatsapp: "WhatsApp", signal: "Signal", telegram: "Telegram" };
 
@@ -836,6 +952,7 @@ async function saveOpenaiKey() {
     elements.saveOpenaiKey.hidden = true;
     elements.changeOpenaiKey.hidden = false;
     loadAutoTranscribeConfig();
+    loadTranscriptionSettings();
   } catch (error) {
     elements.openaiKeyStatus.textContent = error.status === 400
       ? "Chiave non valida"

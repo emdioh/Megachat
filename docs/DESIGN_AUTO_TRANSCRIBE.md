@@ -105,6 +105,37 @@ percorso. Protocollo non valido: 422; valori non validi: 400.
   se la chat ha un override. Si carica all'apertura della chat e salva alla
   scelta. Nessuna chiamata a `mark_read`.
 
+## 2c. Impostazioni del servizio di trascrizione (web)
+
+Operazioni `transcribe.settings` (lettura) e `transcribe.set_settings`
+(aggiornamento parziale, stessa forma di risposta), in `server/ops/transcribe.py`;
+scrittura con `_update_config` (stesso lock). Risposta: `{configured, api_key_set,
+model, language, base_url, timeout, env_overrides}` (valori effettivi; la chiave
+API non viene mai restituita). `env_overrides` elenca i campi forzati da variabili
+d'ambiente (`TRANSCRIPTION_MODEL|LANGUAGE|BASE_URL|TIMEOUT`), che hanno la
+precedenza su `config.json`; la UI li mostra disabilitati ("impostato da
+variabile d'ambiente").
+
+| Campo | Validazione |
+|---|---|
+| `model` | stringa non vuota, max 100 caratteri |
+| `language` | `""` (auto) oppure 2-3 lettere minuscole (es. `it`) |
+| `base_url` | `""` (predefinito) oppure URL `http(s)://host...` (max 300; `/` finale rimosso) |
+| `timeout` | intero 5..600 (secondi) |
+
+I campi omessi restano invariati; `language`/`base_url` vuoti rimuovono la chiave
+(valore predefinito). Valore non valido: `invalid_request` (400) con messaggio
+italiano, senza salvare nulla. Dopo il salvataggio si richiama
+`api.transcription.init()`; `on_done` vive su `TranscriptionHost` (non sul
+servizio), quindi il servizio ricostruito mantiene il callback
+dell'auto-trascrizione (coperto da test). REST: `GET|PUT /api/transcribe/settings`
+(percorso a un solo segmento: nessun conflitto con
+`GET /api/transcribe/{proto}/{attachment_id}`).
+
+UI: nel dialog "Collega backend" la sezione "Trascrizione" raggruppa chiave
+OpenAI, i campi Modello / Lingua / Base URL API / Timeout (s) con "Salva" e
+feedback inline, e i selettori "Trascrizione automatica".
+
 ## 3. Limiti noti
 
 - Signal: `quote_author` è il contact id anche per note vocali proprie (come
@@ -119,5 +150,5 @@ percorso. Protocollo non valido: 422; valori non validi: 400.
 - `server/transcribe.py`, `transcription/service.py` (callback `on_done`)
 - `transcription/config.py` (getter/setter), `server/ops/transcribe.py`,
   `server/models_api.py` (operazioni `autotranscribe.*`)
-- `tests/test_autotranscribe.py`
+- `tests/test_autotranscribe.py`, `tests/test_transcribe_settings.py` (impostazioni del servizio)
 - `web/api.py`, `web/static/{index.html,app.js,style.css}`, `tests/test_web_autotranscribe.py` (interfaccia web)

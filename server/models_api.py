@@ -534,6 +534,15 @@ class AutoTranscribeSetChatRequest(AutoTranscribeChatRequest):
     enabled: StrictBool | None
 
 
+class TranscribeSettingsRequest(BaseModel):
+    """Partial update: omitted fields stay unchanged; values are checked by the operation."""
+
+    model: Any = None
+    language: Any = None
+    base_url: Any = None
+    timeout: Any = None
+
+
 class OpenAIKeyRequest(BaseModel):
     """Checked by the operation ('Chiave non valida')."""
 
