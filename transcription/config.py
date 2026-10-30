@@ -1,6 +1,17 @@
 from __future__ import annotations
 
+import json
+import threading
+
+import protocols.config as _cfg
 from protocols.config import _get, _get_int, _load_dotenv
+
+#: Protocols with automatic transcription (Gmail has no voice notes).
+AUTO_TRANSCRIBE_PROTOCOLS = ("whatsapp", "signal", "telegram")
+
+_AUTO_GLOBAL_KEY = "auto_transcribe"
+_AUTO_CHATS_KEY = "auto_transcribe_chats"
+_write_lock = threading.Lock()
 
 
 def get_openai_api_key() -> str | None:
@@ -37,3 +48,90 @@ def get_transcription_timeout() -> int:
 
 def get_transcription_enabled() -> bool:
     return get_openai_api_key() is not None
+
+
+# -- trascrizione automatica delle note vocali ----------------------------------
+
+
+def _chat_key(protocol: str, contact_id: str) -> str:
+    return f"{protocol}:{contact_id}"
+
+
+def _check_protocol(protocol: str) -> None:
+    if protocol not in AUTO_TRANSCRIBE_PROTOCOLS:
+        raise ValueError(f"unsupported protocol: {protocol!r}")
+
+
+def get_auto_transcribe_global(protocol: str) -> bool:
+    """Global switch of *protocol* (``False`` when unset or invalid)."""
+    section = _cfg._load_config().get(_AUTO_GLOBAL_KEY)
+    if not isinstance(section, dict):
+        return False
+    return section.get(protocol) is True
+
+
+def get_auto_transcribe_globals() -> dict[str, bool]:
+    return {p: get_auto_transcribe_global(p) for p in AUTO_TRANSCRIBE_PROTOCOLS}
+
+
+def get_auto_transcribe_chat(protocol: str, contact_id: str) -> bool | None:
+    """Per-chat override: ``True``/``False``, or ``None`` when not set."""
+    section = _cfg._load_config().get(_AUTO_CHATS_KEY)
+    if not isinstance(section, dict):
+        return None
+    value = section.get(_chat_key(protocol, contact_id))
+    return value if isinstance(value, bool) else None
+
+
+def auto_transcribe_effective(protocol: str, contact_id: str) -> bool:
+    """Chat override if set, else the protocol's global value."""
+    if protocol not in AUTO_TRANSCRIBE_PROTOCOLS:
+        return False
+    override = get_auto_transcribe_chat(protocol, contact_id)
+    if override is not None:
+        return override
+    return get_auto_transcribe_global(protocol)
+
+
+def _update_config(mutate) -> None:
+    """Load the whole ``config.json``, apply *mutate*, write it back."""
+    with _write_lock:
+        config_path = _cfg.PROJECT_DIR / "config.json"
+        data = _cfg._load_config()
+        mutate(data)
+        with config_path.open("w", encoding="utf-8") as config_file:
+            json.dump(data, config_file, indent=2)
+            config_file.write("\n")
+
+
+def set_auto_transcribe_global(protocol: str, enabled: bool) -> None:
+    _check_protocol(protocol)
+
+    def mutate(data: dict) -> None:
+        section = data.get(_AUTO_GLOBAL_KEY)
+        if not isinstance(section, dict):
+            section = {}
+        section[protocol] = bool(enabled)
+        data[_AUTO_GLOBAL_KEY] = section
+
+    _update_config(mutate)
+
+
+def set_auto_transcribe_chat(
+    protocol: str, contact_id: str, enabled: bool | None
+) -> None:
+    """Set the per-chat override; ``None`` removes it."""
+    _check_protocol(protocol)
+    key = _chat_key(protocol, contact_id)
+
+    def mutate(data: dict) -> None:
+        section = data.get(_AUTO_CHATS_KEY)
+        if not isinstance(section, dict):
+            section = {}
+        if enabled is None:
+            section.pop(key, None)
+        else:
+            section[key] = bool(enabled)
+        data[_AUTO_CHATS_KEY] = section
+
+    _update_config(mutate)

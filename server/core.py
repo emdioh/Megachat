@@ -57,6 +57,7 @@ from protocols.config import signal_enabled, telegram_enabled, whatsapp_enabled
 from protocols.webhook import WEBHOOK_PORT, ensure_webhook_server
 from server.address_book_refresh import DynamicAddressBookMixin
 from server.api import ChatAPI
+from server.autotranscribe import AutoTranscriber
 from server.bus import EventBus
 from server.domain import (
     bump_recency,
@@ -132,6 +133,10 @@ class ChatCore(DynamicAddressBookMixin, WhatsAppSessionGuardMixin):
         # no thread until start().
         self.gmail_unread = GmailUnreadWatcher(self.api.publish_web_push)
 
+        # Voice-note auto-transcription + "!" commands (bus consumer thread,
+        # see server.autotranscribe); no thread until start().
+        self.autotranscribe = AutoTranscriber(self.api, self.bus)
+
         # Event pump (one daemon thread, see start()/stop()).
         self._pump_thread: threading.Thread | None = None
         self._pump_stop = threading.Event()
@@ -161,6 +166,10 @@ class ChatCore(DynamicAddressBookMixin, WhatsAppSessionGuardMixin):
             self.api.transcription.init()
         except Exception:
             logger.exception("Transcription service init failed (non-fatal)")
+        try:
+            self.autotranscribe.start()
+        except Exception:
+            logger.exception("Auto-transcription start failed (non-fatal)")
         # Only connect backends that are already linked (skip slow daemon
         # startup for unlinked accounts — they connect after Ctrl+L link).
         if signal_enabled():
@@ -221,6 +230,10 @@ class ChatCore(DynamicAddressBookMixin, WhatsAppSessionGuardMixin):
             except Exception:
                 logger.exception("Adapter stop failed (non-fatal)")
         self.api.close_resources()  # Gmail IMAP pool / temp blobs
+        try:
+            self.autotranscribe.stop()
+        except Exception:
+            logger.debug("Stopping auto-transcription on exit failed", exc_info=True)
         try:
             self.api.transcription.stop()
         except Exception:

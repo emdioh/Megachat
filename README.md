@@ -597,6 +597,26 @@ Implementation: `contact_picker.py`; design notes in `docs/DESIGN_CTRLS_RUBRICA.
 
 ![Address book picker](assets/screenshots/address-book.png)
 
+### Automatic voice-note transcription
+
+With an OpenAI key configured, the core can transcribe voice notes (incoming and your
+own) on WhatsApp, Signal and Telegram and post the text in the same chat as a quoted
+reply from your account (`🎤 Trascrizione: ...`). The voice note is never marked as read.
+It is off by default and only handles recent messages (last 10 minutes).
+
+Chat commands (only from your own messages):
+
+- `!t` — reply to a voice note with it to transcribe that note
+- `!transcription` — show the global / chat / effective setting
+- `!transcription on|off` — override for this chat
+- `!transcription global on|off` — switch for the whole protocol
+
+Config keys in `config.json`: `auto_transcribe` (`{"whatsapp": false, "signal": false,
+"telegram": false}`) and `auto_transcribe_chats` (`{"<protocol>:<contact_id>": true|false}`).
+The same settings are exposed as the `autotranscribe.*` server operations.
+
+Design notes in `docs/DESIGN_AUTO_TRANSCRIBE.md`.
+
 ### Message editing
 
 Your own **text** messages can be edited after sending, on all three protocols (Signal, Telegram,

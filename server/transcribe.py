@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import threading
+from collections.abc import Callable
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -23,9 +24,14 @@ class TranscriptionHost:
     builds the next one (a changed key replaces the client).
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self, on_done: Callable[[str, str, dict[str, Any]], None] | None = None
+    ) -> None:
         self._lock = threading.Lock()
         self.service: Any = None
+        #: Completion hook handed to every service built by :meth:`init`
+        #: (``ChatCore`` points it at the auto-transcriber).
+        self.on_done = on_done
 
     def init(self) -> Any:
         """(Re)build the service from the current configuration."""
@@ -58,9 +64,16 @@ class TranscriptionHost:
                 language=get_transcription_language(),
                 timeout=get_transcription_timeout(),
             )
-            self.service = TranscriptionService(client, store)
+            self.service = TranscriptionService(
+                client, store, on_done=self._dispatch_done
+            )
             logger.info("Trascrizione cloud OpenAI attiva")
             return self.service
+
+    def _dispatch_done(self, protocol: str, attachment_id: str, row: dict) -> None:
+        callback = self.on_done
+        if callback is not None:
+            callback(protocol, attachment_id, row)
 
     def stop(self) -> None:
         """Stop the worker (``ChatCore.shutdown``).  Safe to call repeatedly."""
