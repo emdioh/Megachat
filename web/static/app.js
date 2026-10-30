@@ -237,11 +237,6 @@ function requestToken(invalid = false) {
   elements.tokenError.hidden = !invalid;
   elements.tokenInput.value = state.token;
   if (!elements.linkDialog.open) elements.linkDialog.showModal();
-  if (!invalid) {
-    loadTranscriptionConfig();
-    loadTranscriptionSettings();
-    loadAutoTranscribeConfig();
-  }
   window.setTimeout(() => elements.tokenInput.focus(), 0);
 }
 
@@ -4619,6 +4614,9 @@ document.querySelector("#open-settings").addEventListener("click", () => {
   closeMainMenu();
   updateCacheStatus();
   if (!elements.settingsDialog.open) elements.settingsDialog.showModal();
+  loadTranscriptionConfig();
+  loadTranscriptionSettings();
+  loadAutoTranscribeConfig();
 });
 document.querySelector("#close-settings-dialog").addEventListener("click", () => elements.settingsDialog.close());
 elements.cacheSizeSelect.value = String(state.cacheSize);

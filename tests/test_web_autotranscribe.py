@@ -156,6 +156,13 @@ def test_static_ui_wiring():
         "autotranscribe-control",
     ):
         assert f'id="{element_id}"' in html
+    settings = html.split('id="settings-dialog"')[1]
+    assert 'id="autotranscribe-toggles"' in settings
+    assert 'id="autotranscribe-toggles"' not in html.split('id="settings-dialog"')[0].split('id="link-dialog"')[1]
+    # Loaded when Impostazioni opens, not when the token dialog opens.
+    opener = app.split('querySelector("#open-settings")')[1][:500]
+    assert "loadAutoTranscribeConfig()" in opener
+    assert "loadTranscriptionSettings()" in opener
     for option in ("Attiva", "Disattiva", "Predefinito"):
         assert f">{option}" in html
     # Icon button + popup menu (radio-like options), not a <select>.
