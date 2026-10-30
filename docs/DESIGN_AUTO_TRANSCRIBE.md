@@ -98,9 +98,12 @@ percorso. Protocollo non valido: 422; valori non validi: 400.
 - **Impostazioni** (dialog accanto alla chiave OpenAI): sezione "Trascrizione
   automatica" con un interruttore per protocollo collegato; nota se la
   trascrizione non e' configurata.
-- **Chat** (Gmail escluso): selettore nell'intestazione con "Predefinito
-  (globale: attiva/disattiva)", "Attiva", "Disattiva"; si carica all'apertura
-  della chat e salva al cambio. Nessuna chiamata a `mark_read`.
+- **Chat** (Gmail escluso): icona microfono nell'intestazione (stile del pulsante Archivia) che apre un piccolo menu a comparsa (stesso schema del menu principale, chiusura con clic esterno o Esc) con le opzioni "Predefinito
+  (globale: attiva/disattiva)", "Attiva", "Disattiva" (spunta su quella
+  corrente) e una riga con lo stato effettivo; l'icona è piena se la
+  trascrizione è attiva, attenuata e barrata se disattiva, con un puntino
+  se la chat ha un override. Si carica all'apertura della chat e salva alla
+  scelta. Nessuna chiamata a `mark_read`.
 
 ## 3. Limiti noti
 

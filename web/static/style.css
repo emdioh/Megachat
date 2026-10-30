@@ -716,12 +716,17 @@ h2 { font-size: 1.05rem; }
 .autotranscribe-toggle { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 36px; cursor: pointer; }
 .autotranscribe-toggle input { width: 20px; height: 20px; accent-color: var(--accent); }
 .autotranscribe-toggle input:disabled { cursor: not-allowed; }
-.autotranscribe-control { display: inline-flex; align-items: center; gap: 4px; margin-left: auto; min-width: 0; color: var(--muted); font-size: .9rem; }
+.autotranscribe-control { position: relative; display: inline-flex; margin-left: auto; flex: none; }
 .archive-button:not([hidden]) + .autotranscribe-control { margin-left: 0; }
 .autotranscribe-control[hidden] { display: none; }
-.autotranscribe-control select { max-width: 9.5rem; min-height: 32px; padding: 3px 6px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-raised); color: var(--text); font-size: .8rem; text-overflow: ellipsis; }
-.autotranscribe-control select:focus-visible { outline: none; border-color: var(--accent); }
-@media (max-width: 640px) {
-  .autotranscribe-control > span { display: none; }
-  .autotranscribe-control select { max-width: 4.6rem; }
-}
+.autotranscribe-button { position: relative; opacity: .55; }
+.autotranscribe-button.is-on { opacity: 1; color: var(--accent); }
+.autotranscribe-button:disabled { opacity: .35; cursor: default; }
+.autotranscribe-strike { display: none; }
+.autotranscribe-button.is-off .autotranscribe-strike { display: inline; }
+.autotranscribe-dot { display: none; position: absolute; top: 6px; right: 6px; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 2px var(--panel); }
+.autotranscribe-button.has-override .autotranscribe-dot { display: block; }
+.autotranscribe-menu { width: max-content; max-width: min(280px, calc(100vw - 24px)); }
+.autotranscribe-option { display: grid; grid-template-columns: 1.1em minmax(0, 1fr); align-items: start; gap: 6px; white-space: normal; }
+.autotranscribe-option[aria-checked="true"] .autotranscribe-check::before { content: "✓"; color: var(--accent); }
+.autotranscribe-caption { margin: 4px 0 0; padding: 6px 10px 4px; border-top: 1px solid var(--line); color: var(--muted); font-size: .76rem; }

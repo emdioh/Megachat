@@ -55,14 +55,15 @@
           </div>
         </div>
         <button id="archive-button" class="icon-button archive-button" type="button" aria-label="Archivia chat" title="Archivia chat" hidden><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="5" rx="1"/><path d="M5 9v10a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V9"/><path d="M10 13h4"/></svg></button>
-        <label id="autotranscribe-control" class="autotranscribe-control" hidden title="Trascrizione automatica delle note vocali di questa chat">
-          <span aria-hidden="true">🎤</span>
-          <select id="autotranscribe-select" aria-label="Trascrizione automatica di questa chat">
-            <option value="default">Predefinito</option>
-            <option value="on">Attiva</option>
-            <option value="off">Disattiva</option>
-          </select>
-        </label>
+        <div id="autotranscribe-control" class="autotranscribe-control" hidden>
+          <button id="autotranscribe-button" class="icon-button autotranscribe-button" type="button" aria-label="Trascrizione automatica di questa chat" title="Trascrizione automatica di questa chat" aria-haspopup="menu" aria-expanded="false" aria-controls="autotranscribe-menu"><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0"/><path d="M12 18v3"/><path class="autotranscribe-strike" d="M4 4l16 16"/></svg><span class="autotranscribe-dot" aria-hidden="true"></span></button>
+          <div id="autotranscribe-menu" class="main-menu autotranscribe-menu" role="menu" aria-label="Trascrizione automatica di questa chat" hidden>
+            <button class="main-menu-item autotranscribe-option" type="button" role="menuitemradio" aria-checked="false" data-value="default"><span class="autotranscribe-check" aria-hidden="true"></span><span class="autotranscribe-option-label">Predefinito</span></button>
+            <button class="main-menu-item autotranscribe-option" type="button" role="menuitemradio" aria-checked="false" data-value="on"><span class="autotranscribe-check" aria-hidden="true"></span><span class="autotranscribe-option-label">Attiva</span></button>
+            <button class="main-menu-item autotranscribe-option" type="button" role="menuitemradio" aria-checked="false" data-value="off"><span class="autotranscribe-check" aria-hidden="true"></span><span class="autotranscribe-option-label">Disattiva</span></button>
+            <p id="autotranscribe-caption" class="autotranscribe-caption" aria-live="polite"></p>
+          </div>
+        </div>
         <span id="connection-state" class="connection-state offline">offline</span>
       </header>
       <div id="error-banner" class="error-banner" role="alert" hidden>

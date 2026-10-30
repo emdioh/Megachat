@@ -150,12 +150,19 @@ def test_static_ui_wiring():
     app = (static / "app.js").read_text(encoding="utf-8")
     for element_id in (
         "autotranscribe-toggles",
-        "autotranscribe-select",
+        "autotranscribe-button",
+        "autotranscribe-menu",
+        "autotranscribe-caption",
         "autotranscribe-control",
     ):
         assert f'id="{element_id}"' in html
     for option in ("Attiva", "Disattiva", "Predefinito"):
         assert f">{option}" in html
+    # Icon button + popup menu (radio-like options), not a <select>.
+    assert "autotranscribe-select" not in html + app
+    assert 'aria-haspopup="menu"' in html.split('id="autotranscribe-button"')[1][:400]
+    assert html.count('role="menuitemradio"') == 3
+    assert "closeAutoTranscribeMenu" in app and 'event.key !== "Escape"' in app
     assert "api/autotranscribe/global/" in app
     assert "api/autotranscribe/chat?" in app
     # Changing the setting must never touch the read state.

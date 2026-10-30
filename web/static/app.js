@@ -183,7 +183,9 @@ const elements = {
   autotranscribeToggles: document.querySelector("#autotranscribe-toggles"),
   autotranscribeStatus: document.querySelector("#autotranscribe-status"),
   autotranscribeControl: document.querySelector("#autotranscribe-control"),
-  autotranscribeSelect: document.querySelector("#autotranscribe-select"),
+  autotranscribeButton: document.querySelector("#autotranscribe-button"),
+  autotranscribeMenu: document.querySelector("#autotranscribe-menu"),
+  autotranscribeCaption: document.querySelector("#autotranscribe-caption"),
   tokenInput: document.querySelector("#token-input"),
   tokenError: document.querySelector("#token-error"),
   saveToken: document.querySelector("#save-token"),
@@ -729,21 +731,46 @@ function autotranscribeChatQuery(contact) {
   return new URLSearchParams({ proto: contact.protocol, contact_id: contact.id }).toString();
 }
 
+function closeAutoTranscribeMenu() {
+  if (elements.autotranscribeMenu.hidden) return;
+  elements.autotranscribeMenu.hidden = true;
+  elements.autotranscribeButton.setAttribute("aria-expanded", "false");
+}
+
 function updateAutoTranscribeControl() {
   const control = elements.autotranscribeControl;
+  const button = elements.autotranscribeButton;
   const contact = state.active;
   // Gmail escluso.
   control.hidden = !contact || !PROTOCOLS.includes(contact.protocol);
-  if (control.hidden) return;
+  if (control.hidden) {
+    closeAutoTranscribeMenu();
+    return;
+  }
   const info = state.autotranscribeChat;
   const mine = info && info.key === `${contact.protocol}:${contact.id}` ? info : null;
-  const select = elements.autotranscribeSelect;
-  select.disabled = !mine;
-  if (!mine) return;
+  button.disabled = !mine;
+  button.classList.toggle("is-on", !!mine && mine.effective === true);
+  button.classList.toggle("is-off", !!mine && mine.effective !== true);
+  button.classList.toggle("has-override", !!mine && mine.override !== null && mine.override !== undefined);
+  if (!mine) {
+    closeAutoTranscribeMenu();
+    return;
+  }
   const globalOn = mine.global === true;
-  select.options[0].textContent = `Predefinito (globale: ${globalOn ? "attiva" : "disattiva"})`;
-  select.value = mine.override === true ? "on" : mine.override === false ? "off" : "default";
-  control.title = `Trascrizione automatica: ${mine.effective ? "attiva" : "disattiva"} per questa chat`;
+  const current = mine.override === true ? "on" : mine.override === false ? "off" : "default";
+  const effective = `Trascrizione automatica: ${mine.effective ? "attiva" : "disattiva"} per questa chat`;
+  const label = `${effective}${current === "default" ? " (predefinito)" : " (impostazione della chat)"}`;
+  button.setAttribute("aria-label", label);
+  button.title = label;
+  elements.autotranscribeCaption.textContent = `${effective}.`;
+  for (const option of elements.autotranscribeMenu.querySelectorAll(".autotranscribe-option")) {
+    const value = option.dataset.value;
+    option.setAttribute("aria-checked", String(value === current));
+    if (value === "default") {
+      option.querySelector(".autotranscribe-option-label").textContent = `Predefinito (globale: ${globalOn ? "attiva" : "disattiva"})`;
+    }
+  }
 }
 
 async function loadAutoTranscribeChat(contact) {
@@ -761,13 +788,12 @@ async function loadAutoTranscribeChat(contact) {
   updateAutoTranscribeControl();
 }
 
-async function saveAutoTranscribeChat() {
+async function saveAutoTranscribeChat(value) {
   const contact = state.active;
   if (!contact) return;
-  const value = elements.autotranscribeSelect.value;
   const enabled = value === "on" ? true : value === "off" ? false : null;
   const key = `${contact.protocol}:${contact.id}`;
-  elements.autotranscribeSelect.disabled = true;
+  elements.autotranscribeButton.disabled = true;
   try {
     const data = await autotranscribeJson(`api/autotranscribe/chat?${autotranscribeChatQuery(contact)}`, {
       method: "PUT",
@@ -4505,7 +4531,26 @@ elements.stealthToggle.addEventListener("change", () => {
   renderThreadAvatar(state.active);
 });
 elements.archiveButton.addEventListener("click", () => toggleActiveArchived());
-elements.autotranscribeSelect.addEventListener("change", () => saveAutoTranscribeChat());
+elements.autotranscribeButton.addEventListener("click", () => {
+  const willOpen = elements.autotranscribeMenu.hidden;
+  elements.autotranscribeMenu.hidden = !willOpen;
+  elements.autotranscribeButton.setAttribute("aria-expanded", String(willOpen));
+});
+elements.autotranscribeMenu.addEventListener("click", (event) => {
+  const option = event.target.closest(".autotranscribe-option");
+  if (!option) return;
+  closeAutoTranscribeMenu();
+  elements.autotranscribeButton.focus();
+  void saveAutoTranscribeChat(option.dataset.value);
+});
+document.addEventListener("click", (event) => {
+  if (!event.target.closest("#autotranscribe-menu, #autotranscribe-button")) closeAutoTranscribeMenu();
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape" || elements.autotranscribeMenu.hidden) return;
+  closeAutoTranscribeMenu();
+  elements.autotranscribeButton.focus();
+});
 elements.linkPreviewsToggle.checked = state.linkPreviewsEnabled;
 elements.linkPreviewsToggle.addEventListener("change", () => {
   state.linkPreviewsEnabled = elements.linkPreviewsToggle.checked;
