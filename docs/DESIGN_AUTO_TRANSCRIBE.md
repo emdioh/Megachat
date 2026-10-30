@@ -81,6 +81,27 @@ pump del core.
 - Nessuna chiamata a `mark_read`/`sendSeen` e nessun cambio del flag `read`
   della nota: l'unico chiamante è l'operazione `chats.mark_read`.
 
+## 2b. Interfaccia web
+
+Endpoint REST (`web/api.py`, stesse operazioni `autotranscribe.*`, stesso token):
+
+| Metodo e percorso | Operazione |
+|---|---|
+| `GET /api/autotranscribe` | `autotranscribe.config` |
+| `PUT /api/autotranscribe/global/{proto}` `{enabled}` | `autotranscribe.set_global` |
+| `GET /api/autotranscribe/chat?proto=&contact_id=` | `autotranscribe.chat` |
+| `PUT /api/autotranscribe/chat?proto=&contact_id=` `{enabled: bool\|null}` | `autotranscribe.set_chat` (`null` cancella l'override) |
+
+Il `contact_id` e' un query parameter (come `/api/messages`), non un segmento di
+percorso. Protocollo non valido: 422; valori non validi: 400.
+
+- **Impostazioni** (dialog accanto alla chiave OpenAI): sezione "Trascrizione
+  automatica" con un interruttore per protocollo collegato; nota se la
+  trascrizione non e' configurata.
+- **Chat** (Gmail escluso): selettore nell'intestazione con "Predefinito
+  (globale: attiva/disattiva)", "Attiva", "Disattiva"; si carica all'apertura
+  della chat e salva al cambio. Nessuna chiamata a `mark_read`.
+
 ## 3. Limiti noti
 
 - Signal: `quote_author` è il contact id anche per note vocali proprie (come
@@ -96,3 +117,4 @@ pump del core.
 - `transcription/config.py` (getter/setter), `server/ops/transcribe.py`,
   `server/models_api.py` (operazioni `autotranscribe.*`)
 - `tests/test_autotranscribe.py`
+- `web/api.py`, `web/static/{index.html,app.js,style.css}`, `tests/test_web_autotranscribe.py` (interfaccia web)

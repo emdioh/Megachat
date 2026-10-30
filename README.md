@@ -614,6 +614,11 @@ Chat commands (only from your own messages):
 Config keys in `config.json`: `auto_transcribe` (`{"whatsapp": false, "signal": false,
 "telegram": false}`) and `auto_transcribe_chats` (`{"<protocol>:<contact_id>": true|false}`).
 The same settings are exposed as the `autotranscribe.*` server operations.
+In the web UI the global switches are in **Impostazioni** ("Trascrizione automatica", next to the
+OpenAI key; one toggle per connected protocol), and each Signal/WhatsApp/Telegram chat has a
+header selector (*Predefinito* / *Attiva* / *Disattiva*) for the per-chat override. REST:
+`GET /api/autotranscribe`, `PUT /api/autotranscribe/global/{protocol}`,
+`GET|PUT /api/autotranscribe/chat?proto=&contact_id=`.
 
 Design notes in `docs/DESIGN_AUTO_TRANSCRIBE.md`.
 

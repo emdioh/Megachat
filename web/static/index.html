@@ -55,6 +55,14 @@
           </div>
         </div>
         <button id="archive-button" class="icon-button archive-button" type="button" aria-label="Archivia chat" title="Archivia chat" hidden><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="5" rx="1"/><path d="M5 9v10a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V9"/><path d="M10 13h4"/></svg></button>
+        <label id="autotranscribe-control" class="autotranscribe-control" hidden title="Trascrizione automatica delle note vocali di questa chat">
+          <span aria-hidden="true">🎤</span>
+          <select id="autotranscribe-select" aria-label="Trascrizione automatica di questa chat">
+            <option value="default">Predefinito</option>
+            <option value="on">Attiva</option>
+            <option value="off">Disattiva</option>
+          </select>
+        </label>
         <span id="connection-state" class="connection-state offline">offline</span>
       </header>
       <div id="error-banner" class="error-banner" role="alert" hidden>
@@ -285,6 +293,11 @@
             <button id="change-openai-key" class="primary-button" type="button" hidden>Cambia</button>
           </div>
           <span id="openai-key-status" class="link-option-status" aria-live="polite">Non configurata</span>
+        </div>
+        <div class="link-option link-option-autotranscribe" id="autotranscribe-settings">
+          <span class="link-option-name">Trascrizione automatica</span>
+          <div id="autotranscribe-toggles" class="autotranscribe-toggles"></div>
+          <span id="autotranscribe-status" class="link-option-status" aria-live="polite">Trascrive le note vocali e risponde in chat.</span>
         </div>
         <div class="link-option link-option-token">
           <label class="link-option-name" for="token-input">Token web</label>

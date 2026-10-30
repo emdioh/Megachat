@@ -708,3 +708,20 @@ h2 { font-size: 1.05rem; }
 .account-link-field input { padding: 8px 10px; border: 1px solid var(--line); border-radius: 9px; background: transparent; color: var(--text); font: inherit; }
 .account-link-field .dialog-copy { margin: 0; font-size: .78rem; }
 .link-cancel-button { padding: 9px 14px; border: 1px solid var(--line); border-radius: 9px; background: transparent; color: var(--text); cursor: pointer; }
+
+/* Trascrizione automatica */
+.link-option-autotranscribe { display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; }
+.link-option-autotranscribe .link-option-status { text-align: left; }
+.autotranscribe-toggles { display: flex; flex-direction: column; gap: 4px; }
+.autotranscribe-toggle { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 36px; cursor: pointer; }
+.autotranscribe-toggle input { width: 20px; height: 20px; accent-color: var(--accent); }
+.autotranscribe-toggle input:disabled { cursor: not-allowed; }
+.autotranscribe-control { display: inline-flex; align-items: center; gap: 4px; margin-left: auto; min-width: 0; color: var(--muted); font-size: .9rem; }
+.archive-button:not([hidden]) + .autotranscribe-control { margin-left: 0; }
+.autotranscribe-control[hidden] { display: none; }
+.autotranscribe-control select { max-width: 9.5rem; min-height: 32px; padding: 3px 6px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-raised); color: var(--text); font-size: .8rem; text-overflow: ellipsis; }
+.autotranscribe-control select:focus-visible { outline: none; border-color: var(--accent); }
+@media (max-width: 640px) {
+  .autotranscribe-control > span { display: none; }
+  .autotranscribe-control select { max-width: 4.6rem; }
+}
