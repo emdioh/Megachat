@@ -15,6 +15,7 @@ from server.models_api import (
     ReactionsAvailableOut,
     ReactionsAvailableRequest,
     ServerConfigOut,
+    ServerLogsRequest,
     StatusOut,
 )
 from server.ops.common import PROTOCOL_ORDER
@@ -111,6 +112,33 @@ def server_config(api: ChatAPI, req: EmptyRequest) -> ServerConfigOut:
 def server_client_log(api: ChatAPI, req: ClientLogRequest) -> StatusOut:
     """Write a line from a frontend (truncated to 500 characters) to the log."""
     logger.info("[%s] %s", req.source, str(req.message or "")[:500])
+    return StatusOut(status="ok")
+
+
+@operation("server.logs", request=ServerLogsRequest, response=dict[str, Any])
+def server_logs(api: ChatAPI, req: ServerLogsRequest) -> dict[str, Any]:
+    """Recent server log lines from the in-memory buffer (redacted)."""
+    from server import logbuffer
+
+    level = logging.getLevelName((req.level or "").upper()) if req.level else 0
+    limit = req.limit if 0 < req.limit <= 2000 else 500
+    records = logbuffer.get_handler().snapshot(
+        after=max(req.after, 0),
+        limit=limit,
+        min_level=level if isinstance(level, int) else 0,
+    )
+    return {
+        "records": records,
+        "last_seq": records[-1]["seq"] if records else max(req.after, 0),
+        "since": logbuffer.installed_at(),
+    }
+
+
+@operation("server.logs_clear", request=EmptyRequest, response=StatusOut)
+def server_logs_clear(api: ChatAPI, req: EmptyRequest) -> StatusOut:
+    from server import logbuffer
+
+    logbuffer.get_handler().clear()
     return StatusOut(status="ok")
 
 

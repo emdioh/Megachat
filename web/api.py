@@ -298,6 +298,26 @@ def create_api_router() -> Any:
             request, "config.set_openai_key", {"api_key": payload.get("api_key")}
         )
 
+    @router.get("/logs")
+    async def server_logs(
+        request: Request, after: int = 0, limit: int = 500, level: str = ""
+    ) -> dict[str, Any]:
+        return await call_op(
+            request, "server.logs", {"after": after, "limit": limit, "level": level}
+        )
+
+    @router.delete("/logs")
+    async def server_logs_clear(request: Request) -> dict[str, str]:
+        return await call_op(request, "server.logs_clear")
+
+    @router.get("/transcribe/diagnostics")
+    async def transcription_diagnostics(request: Request) -> dict[str, Any]:
+        return await call_op(request, "transcribe.diagnostics")
+
+    @router.post("/transcribe/check")
+    async def transcription_check(request: Request) -> dict[str, Any]:
+        return await call_op(request, "transcribe.check")
+
     @router.get("/transcribe/config")
     async def transcription_config(request: Request) -> dict[str, bool]:
         return await call_op(request, "transcribe.config")

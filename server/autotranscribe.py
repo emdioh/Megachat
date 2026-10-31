@@ -193,6 +193,18 @@ class AutoTranscriber:
         ):
             return
         ts = message.get("timestamp", payload.get("timestamp"))
+        media_kind = message.get("media_kind")
+        if media_kind:
+            logger.info(
+                "Auto-trascrizione: messaggio %s %s media_kind=%s mio=%s "
+                "attachment_id=%s recente=%s",
+                protocol,
+                contact_id,
+                media_kind,
+                message.get("is_mine"),
+                message.get("attachment_id"),
+                self._is_recent(ts),
+            )
         if not self._is_recent(ts):
             return
         identity = (protocol, contact_id, message.get("id"), ts, message.get("text"))
@@ -215,13 +227,34 @@ class AutoTranscriber:
 
     def _on_voice(self, protocol: str, contact_id: str, message: dict) -> None:
         if not tconfig.auto_transcribe_effective(protocol, contact_id):
+            logger.info(
+                "Auto-trascrizione disattivata per %s %s (globale=%s, chat=%s): "
+                "nota vocale ignorata",
+                protocol,
+                contact_id,
+                tconfig.get_auto_transcribe_global(protocol),
+                tconfig.get_auto_transcribe_chat(protocol, contact_id),
+            )
             return
         if self.api.transcription.service is None:
             if not self._warned_unconfigured:
                 self._warned_unconfigured = True
-                logger.info("Auto-trascrizione ignorata: trascrizione non configurata")
+                logger.warning(
+                    "Auto-trascrizione ignorata: trascrizione non configurata "
+                    "(provider %s senza chiave o servizio non avviato)",
+                    tconfig.get_transcription_provider(),
+                )
             return
-        self._request(self._voice_quote(protocol, contact_id, message), message)
+        outcome = self._request(
+            self._voice_quote(protocol, contact_id, message), message
+        )
+        logger.info(
+            "Auto-trascrizione %s %s attachment_id=%s: %s",
+            protocol,
+            contact_id,
+            message.get("attachment_id"),
+            outcome,
+        )
 
     @staticmethod
     def _voice_quote(protocol: str, contact_id: str, message: dict) -> _Quote:
@@ -246,10 +279,11 @@ class AutoTranscriber:
         """
         attachment_id = message.get("attachment_id")
         if not isinstance(attachment_id, str) or not attachment_id.strip():
+            logger.warning("Auto-trascrizione: nota vocale senza attachment_id")
             return "error"
         key = (quote.protocol, attachment_id.strip())
         if quote.protocol in ("whatsapp", "telegram") and not quote.message_id:
-            logger.debug("Auto-trascrizione: nota vocale senza id, ignorata")
+            logger.warning("Auto-trascrizione: nota vocale senza id, ignorata")
             return "error"
         service = self.api.transcription.service
         if service is None:
@@ -268,7 +302,13 @@ class AutoTranscriber:
                     "media.attachment",
                     {"protocol": key[0], "attachment_id": key[1]},
                 )
-                service.submit(key[0], key[1], Path(blob["path"]))
+                path = Path(blob["path"])
+                logger.info(
+                    "Auto-trascrizione: file %s (%s byte) in coda",
+                    path.name,
+                    path.stat().st_size if path.exists() else "inesistente",
+                )
+                service.submit(key[0], key[1], path)
             return "queued"
         except Exception:
             with self._lock:
@@ -296,6 +336,13 @@ class AutoTranscriber:
                 self._posted.add(key)
         if not ok and row.get("status") != "failed":
             return
+        logger.info(
+            "Auto-trascrizione %s %s: esito %s %s",
+            key[0],
+            key[1],
+            row.get("status"),
+            row.get("error") or "",
+        )
         if ok:
             body = (row.get("text") or "").strip() or _EMPTY_TEXT
             text = TRANSCRIPTION_PREFIX + body

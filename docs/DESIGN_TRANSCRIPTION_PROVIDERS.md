@@ -68,3 +68,23 @@ Impostazioni -> Trascrizione: select Provider, riga chiave del provider
 OpenRouter) HTTP-Referer e Titolo app, Lingua, Timeout. Cambiare provider
 aggiorna i campi senza salvare (bozze per provider); "Salva" invia provider e
 solo i campi cambiati. I campi forzati da variabili d'ambiente sono disabilitati.
+
+## 5. Diagnostica (menu -> Log)
+
+Per fare debug senza accesso ai file di log del server:
+
+- `server/logbuffer.py`: buffer in memoria (ultime 2000 righe) agganciato al
+  root logger in `ChatCore.start`; chiavi `sk-...`, `AIza...` e token Bearer
+  vengono oscurati. Operazioni `server.logs {after, limit, level}` /
+  `server.logs_clear` (`GET` / `DELETE /api/logs`).
+- `transcribe.diagnostics` (`GET /api/transcribe/diagnostics`): provider,
+  chiave presente, modello, base URL, servizio/worker attivi, coda, ascolto
+  note vocali, interruttori della trascrizione automatica, ffmpeg, ultime 10
+  trascrizioni (con l'errore).
+- `transcribe.check` (`POST /api/transcribe/check`): chiamata autenticata
+  economica al provider (OpenRouter `GET /key`, OpenAI/Gemini elenco modelli).
+- Web: menu -> "Log" (`logs.js`, `logs.css`): stato, "Verifica chiave",
+  filtro Trascrizione / Tutti / Avvisi ed errori, aggiornamento automatico,
+  Copia, Svuota.
+- Il percorso di una nota vocale (rilevata, ignorata e perché, in coda,
+  richiesta HTTP, esito) è loggato a livello INFO.

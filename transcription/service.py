@@ -61,6 +61,15 @@ class TranscriptionService:
                     return
                 protocol, attachment_id, audio_path = item
                 processed = True
+                logger.info(
+                    "Trascrizione avviata: protocol=%s attachment_id=%s "
+                    "client=%s model=%s file=%s",
+                    protocol,
+                    attachment_id,
+                    type(self.client).__name__,
+                    getattr(self.client, "model", "?"),
+                    audio_path,
+                )
                 text = self.client.transcribe(audio_path)
                 self.store.set(
                     protocol,
@@ -70,9 +79,11 @@ class TranscriptionService:
                     model=self.client.model,
                 )
                 logger.info(
-                    "Trascrizione completata: protocol=%s attachment_id=%s",
+                    "Trascrizione completata: protocol=%s attachment_id=%s "
+                    "(%d caratteri)",
                     protocol,
                     attachment_id,
+                    len(text or ""),
                 )
             except Exception as exc:
                 self.store.set(protocol, attachment_id, status="failed", error=str(exc))

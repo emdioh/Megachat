@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import re
+import sqlite3
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -415,3 +416,88 @@ def transcribe_set_settings(
         _save(set_transcription_settings, values)
         _reinit(api)
     return _settings_out(api)
+
+
+# -- diagnostics (web "Log" dialog) ---------------------------------------------
+
+
+@operation("transcribe.diagnostics", request=EmptyRequest, response=dict[str, Any])
+def transcribe_diagnostics(api: ChatAPI, req: EmptyRequest) -> dict[str, Any]:
+    """What the transcription pipeline sees right now (never the API key)."""
+    from transcription import config as tconfig
+    from transcription import store
+    from transcription.client import _ffmpeg_available
+
+    service = api.transcription.service
+    client = getattr(service, "client", None)
+    worker = getattr(service, "_worker", None)
+    queue = getattr(service, "_queue", None)
+    try:
+        recent = store.recent(10)
+    except (OSError, sqlite3.Error) as exc:
+        recent = [{"status": "db_error", "error": str(exc)}]
+    provider = tconfig.get_transcription_provider()
+    return {
+        "provider": provider,
+        "api_key_set": tconfig.get_api_key(provider) is not None,
+        "model": tconfig.get_provider_model(provider),
+        "base_url": tconfig.get_provider_base_url(provider),
+        "service_active": service is not None,
+        "service_client": type(client).__name__ if client is not None else None,
+        "service_model": getattr(client, "model", None),
+        "service_base_url": getattr(client, "base_url", None),
+        "worker_alive": bool(worker is not None and worker.is_alive()),
+        "queue_size": queue.qsize() if queue is not None else None,
+        "auto_transcribe": _auto_globals(),
+        # The AutoTranscriber sets the hook in start(): None = not listening.
+        "auto_listener": api.transcription.on_done is not None,
+        "ffmpeg": _ffmpeg_available(),
+        "env_overrides": tconfig.transcription_env_overrides(),
+        "recent": recent,
+    }
+
+
+def _check_request(provider: str, base_url: str, api_key: str) -> tuple[str, dict]:
+    if provider == "openrouter":
+        return f"{base_url}/key", {"Authorization": f"Bearer {api_key}"}
+    if provider == "gemini":
+        return f"{base_url}/models?pageSize=1", {"x-goog-api-key": api_key}
+    return f"{base_url}/models", {"Authorization": f"Bearer {api_key}"}
+
+
+@operation("transcribe.check", request=EmptyRequest, response=dict[str, Any])
+async def transcribe_check(api: ChatAPI, req: EmptyRequest) -> dict[str, Any]:
+    """Call a cheap authenticated endpoint of the selected provider."""
+    import aiohttp
+
+    from server.logbuffer import redact
+    from transcription import config as tconfig
+
+    provider = tconfig.get_transcription_provider()
+    api_key = tconfig.get_api_key(provider)
+    if not api_key:
+        return {"ok": False, "provider": provider, "detail": "Chiave API mancante"}
+    url, headers = _check_request(
+        provider, tconfig.get_provider_base_url(provider), api_key
+    )
+    try:
+        async with (
+            aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20)) as session,
+            session.get(url, headers=headers) as response,
+        ):
+            body = (await response.text())[:500].replace(api_key, "***")
+            status = response.status
+    except (aiohttp.ClientError, TimeoutError, ValueError) as exc:
+        detail = f"Errore di rete: {type(exc).__name__}: {exc}"
+        logger.warning("Verifica %s fallita: %s", provider, detail)
+        return {"ok": False, "provider": provider, "url": url, "detail": detail}
+    ok = status == 200
+    log = logger.info if ok else logger.warning
+    log("Verifica %s: HTTP %s %s", provider, status, redact(body)[:200])
+    return {
+        "ok": ok,
+        "provider": provider,
+        "url": url,
+        "http_status": status,
+        "detail": redact(body),
+    }

@@ -11,6 +11,7 @@
   <meta name="theme-color" content="#101720">
   <script>try{document.documentElement.dataset.skin=localStorage.getItem("signal-tui-web-skin")||"";}catch(e){}</script>
   <link rel="stylesheet" href="style.css?v=76">
+  <link rel="stylesheet" href="logs.css?v=1">
   <link rel="stylesheet" href="teams-skin.css?v=24">
   <link rel="stylesheet" href="gmail.css?v=26">
 </head>
@@ -26,6 +27,7 @@
           <button id="main-menu-button" class="icon-button" type="button" aria-label="Menu" title="Menu" aria-haspopup="menu" aria-expanded="false" aria-controls="main-menu"><span class="skin-default">☰</span><span class="skin-teams">⋯</span></button>
           <div id="main-menu" class="main-menu" role="menu" hidden>
             <button id="open-settings" class="main-menu-item" type="button" role="menuitem">⚙ Impostazioni</button>
+            <button id="open-logs" class="main-menu-item" type="button" role="menuitem">📜 Log</button>
             <button id="open-token" class="main-menu-item" type="button" role="menuitem">🔗 Collega backend</button>
             <button id="open-account-link" class="main-menu-item" type="button" role="menuitem">📱 Collega account</button>
           </div>
@@ -454,10 +456,42 @@
     </div>
   </dialog>
 
+  <dialog id="logs-dialog" class="logs-dialog">
+    <div class="link-dialog-content">
+      <div class="link-dialog-header">
+        <h2>Log</h2>
+        <button id="close-logs-dialog" class="link-dialog-close" type="button" aria-label="Chiudi">×</button>
+      </div>
+      <section class="logs-diagnostics" aria-labelledby="logs-diag-title">
+        <div class="logs-diag-header">
+          <h3 id="logs-diag-title" class="link-section-title">Stato trascrizione</h3>
+          <button id="logs-check-key" class="primary-button" type="button">Verifica chiave</button>
+        </div>
+        <dl id="logs-diag" class="logs-diag"></dl>
+        <div id="logs-check-result" class="logs-check-result" hidden></div>
+        <div id="logs-recent" class="logs-recent"></div>
+      </section>
+      <div class="logs-toolbar">
+        <select id="logs-filter" aria-label="Filtro">
+          <option value="transcription">Trascrizione</option>
+          <option value="all">Tutti</option>
+          <option value="errors">Solo avvisi ed errori</option>
+        </select>
+        <label class="logs-auto"><input id="logs-auto-refresh" type="checkbox" checked> Auto</label>
+        <button id="logs-refresh" class="primary-button" type="button">Aggiorna</button>
+        <button id="logs-copy" class="primary-button" type="button">Copia</button>
+        <button id="logs-clear" class="primary-button" type="button">Svuota</button>
+      </div>
+      <div id="logs-status" class="link-option-status logs-status" aria-live="polite"></div>
+      <div id="logs-list" class="logs-list" role="log"></div>
+    </div>
+  </dialog>
+
   <script src="reconcile.js?v=8" defer></script>
   <script src="outbox.js?v=1" defer></script>
   <script src="message_cache.js?v=1" defer></script>
   <script src="app.js?v=138" defer></script>
   <script src="gmail.js?v=29" defer></script>
+  <script src="logs.js?v=1" defer></script>
 </body>
 </html>

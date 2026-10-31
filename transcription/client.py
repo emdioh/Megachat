@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
+import logging
 import os
 import subprocess
 import tempfile
@@ -10,6 +12,8 @@ from pathlib import Path
 from typing import ClassVar
 
 import aiohttp
+
+logger = logging.getLogger(__name__)
 
 _MAX_AUDIO_SIZE = 25 * 1024 * 1024
 
@@ -28,6 +32,7 @@ def _transcode_to_mp3(path: Path) -> Path:
             "Formato audio non supportato dal provider e ffmpeg non disponibile "
             "per la transcodifica"
         )
+    logger.info("Trascrizione: transcodifica %s in mp3 con ffmpeg", path.name)
     fd, tmp_path = tempfile.mkstemp(suffix=".mp3")
     os.close(fd)
     try:
@@ -130,23 +135,56 @@ class CloudTranscriptionClient:
 
         timeout = aiohttp.ClientTimeout(total=self.timeout)
         headers = {"Authorization": f"Bearer {self.api_key}", **self.extra_headers}
-        with upload_path.open("rb") as audio_file:
-            form.add_field("file", audio_file, filename=upload_path.name)
-            async with (
-                aiohttp.ClientSession(timeout=timeout) as session,
-                session.post(
-                    f"{self.base_url}/audio/transcriptions",
-                    data=form,
-                    headers=headers,
-                ) as response,
-            ):
-                if response.status != 200:
-                    body = (await response.text())[:200]
-                    raise TranscriptionError(
-                        f"Errore trascrizione HTTP {response.status}: {body}"
-                    )
-                data = await response.json()
-        return data.get("text", "").strip()
+        url = f"{self.base_url}/audio/transcriptions"
+        logger.info(
+            "Trascrizione: POST %s model=%s file=%s (%d byte) lingua=%s",
+            url,
+            self.model,
+            upload_path.name,
+            upload_path.stat().st_size,
+            self.language or "auto",
+        )
+        try:
+            with upload_path.open("rb") as audio_file:
+                form.add_field("file", audio_file, filename=upload_path.name)
+                async with (
+                    aiohttp.ClientSession(timeout=timeout) as session,
+                    session.post(url, data=form, headers=headers) as response,
+                ):
+                    if response.status != 200:
+                        body = _error_body(await response.text()).replace(
+                            self.api_key, "***"
+                        )
+                        logger.warning(
+                            "Trascrizione: risposta HTTP %s: %s",
+                            response.status,
+                            body,
+                        )
+                        raise TranscriptionError(
+                            f"Errore trascrizione HTTP {response.status}: {body}"
+                        )
+                    try:
+                        data = await response.json(content_type=None)
+                    except ValueError:
+                        body = _error_body(await response.text())
+                        raise TranscriptionError(f"Risposta non JSON: {body}") from None
+        except (aiohttp.ClientError, TimeoutError) as exc:
+            raise TranscriptionError(
+                f"Errore di rete: {type(exc).__name__}: {exc}"
+            ) from None
+        if not isinstance(data, dict):
+            raise TranscriptionError(f"Risposta non valida: {str(data)[:200]}")
+        text = data.get("text")
+        logger.info(
+            "Trascrizione: risposta HTTP 200, campi=%s, testo di %s caratteri",
+            sorted(data),
+            len(text) if isinstance(text, str) else "?",
+        )
+        if not isinstance(text, str):
+            raise TranscriptionError(
+                f"Risposta senza campo 'text': {_error_body(json.dumps(data))}"
+            )
+        return text.strip()
 
     def transcribe(self, audio_path: str | os.PathLike[str]) -> str:
         return asyncio.run(self.transcribe_async(audio_path))

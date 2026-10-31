@@ -161,6 +161,12 @@ class ChatCore(DynamicAddressBookMixin, WhatsAppSessionGuardMixin):
     def start(self) -> None:
         """Start the event pump and the connect workers (same gating as the
         old TUI ``on_mount``)."""
+        try:
+            from server import logbuffer
+
+            logbuffer.install()
+        except Exception:
+            logger.debug("Log buffer install failed", exc_info=True)
         self._start_pump()
         try:
             self.api.transcription.init()

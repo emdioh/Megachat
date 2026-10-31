@@ -482,6 +482,14 @@ class ClientLogRequest(BaseModel):
     source: str = "client"
 
 
+class ServerLogsRequest(BaseModel):
+    """Recent log lines: only those after ``after`` (``seq``), at least ``level``."""
+
+    after: int = 0
+    limit: int = 500
+    level: str = ""
+
+
 class StatusOut(BaseModel):
     status: str
 

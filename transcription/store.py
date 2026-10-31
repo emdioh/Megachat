@@ -61,3 +61,20 @@ def set(
             conn.commit()
         finally:
             conn.close()
+
+
+def recent(limit: int = 10) -> list[dict[str, Any]]:
+    """Most recently updated records (diagnostics)."""
+    _init_db()
+    with _DB_LOCK:
+        conn = sqlite3.connect(backend.DB_FILE)
+        conn.row_factory = sqlite3.Row
+        try:
+            rows = conn.execute(
+                "SELECT protocol, attachment_id, status, text, error, model, "
+                "updated_at FROM transcriptions ORDER BY updated_at DESC LIMIT ?",
+                (int(limit),),
+            ).fetchall()
+        finally:
+            conn.close()
+    return [dict(row) for row in rows]
