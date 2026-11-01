@@ -32,6 +32,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+import instance
 from server import lock
 from server.paths import default_socket_path, runtime_file_path
 from server.socket_client import IncompatibleServer, ServerUnavailable, SocketClient
@@ -51,7 +52,7 @@ __all__ = [
 
 #: stdout/stderr of a spawned ``megachat serve`` (the server's own log stays
 #: ``/tmp/signal-tui.log``).
-SERVE_LOG = Path("/tmp/megachat-serve.log")
+SERVE_LOG = Path(instance.log_file("megachat-serve.log"))
 #: Seconds to wait for a spawned server's socket.
 SPAWN_TIMEOUT_S = 30.0
 #: Seconds to wait for a live server to answer the first handshake.
@@ -245,7 +246,7 @@ def _is_ours(path: Path, proc: subprocess.Popen, exited: bool) -> bool:
 
 def _log_hint(log_path: Path, offset: int) -> str:
     tail = _tail(log_path, offset)
-    hint = f"\nServer log: /tmp/signal-tui.log, output: {log_path}"
+    hint = f"\nServer log: {instance.log_file('signal-tui.log')}, output: {log_path}"
     return hint + (f"\n{tail}" if tail else "")
 
 

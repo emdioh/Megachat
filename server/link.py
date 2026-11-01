@@ -34,6 +34,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import instance
 from models import DEFAULT_SIGNAL_DEVICE_NAME
 
 logger = logging.getLogger(__name__)
@@ -126,7 +127,11 @@ def list_signal_accounts() -> list[str]:
     from protocols import rpc as signal_rpc
 
     result = subprocess.run(
-        [str(signal_rpc.find_signal_cli()), "listAccounts"],
+        [
+            str(signal_rpc.find_signal_cli()),
+            *instance.signal_cli_config_args(),
+            "listAccounts",
+        ],
         capture_output=True,
         text=True,
         timeout=30,
@@ -167,7 +172,8 @@ def persist_signal_account(account: str) -> None:
     """Atomically save the linked account while preserving other settings."""
     from protocols import rpc as signal_rpc
 
-    config_file = signal_rpc.PROJECT_DIR / "config.json"
+    config_file = (instance.home() or signal_rpc.PROJECT_DIR) / "config.json"
+    config_file.parent.mkdir(parents=True, exist_ok=True)
     config: dict[str, object] = {}
     if config_file.exists():
         try:
@@ -343,7 +349,13 @@ class LinkService:
         except Exception:
             sess.accounts_before = set()
             logger.debug("Could not snapshot Signal accounts", exc_info=True)
-        args = [str(find_signal_cli()), "link", "-n", sess.device_name]
+        args = [
+            str(find_signal_cli()),
+            *instance.signal_cli_config_args(),
+            "link",
+            "-n",
+            sess.device_name,
+        ]
         logger.info("Starting signal-cli link: %s", args)
         proc = subprocess.Popen(
             args,

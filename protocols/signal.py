@@ -28,6 +28,7 @@ from typing import Literal
 
 from PIL import Image
 
+import instance
 from filename_utils import sanitize_filename
 from models import (
     MEDIA_QUOTE_PLACEHOLDERS,
@@ -46,7 +47,7 @@ from .config import get_address_book_ttl_s
 from .media_utils import MAX_AVATAR_BYTES, sniff_image_content_type
 
 logger = logging.getLogger(__name__)
-_fh = logging.FileHandler("/tmp/signal-sse.log", mode="w")
+_fh = logging.FileHandler(instance.log_file("signal-sse.log"), mode="w")
 _fh.setLevel(logging.DEBUG)
 _fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
 logger.addHandler(_fh)
@@ -323,6 +324,7 @@ class SignalBackend(ChatBackend):
             self.daemon_proc = subprocess.Popen(
                 [
                     str(signal_cli),
+                    *instance.signal_cli_config_args(),
                     "-u",
                     self.user_number,
                     "daemon",

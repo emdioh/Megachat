@@ -5,12 +5,17 @@ All tests use in-memory / tmp_path to avoid touching real files or daemons.
 
 from __future__ import annotations
 
+import os
 import sqlite3
 import sys
 from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
+
+# A shell that selected a Megachat instance must not redirect the suite's
+# config/DB/lock lookups into that instance (see instance.py).
+os.environ.pop("MEGACHAT_HOME", None)
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 

@@ -14,6 +14,8 @@ import subprocess
 import urllib.request
 from pathlib import Path
 
+import instance
+
 logger = logging.getLogger(__name__)
 
 # ─── Constants ────────────────────────────────────────────────────────────────
@@ -38,7 +40,7 @@ def _get_user_number() -> str:
     num = os.environ.get("SIGNAL_USER_NUMBER")
     if num:
         return num
-    config_file = PROJECT_DIR / "config.json"
+    config_file = (instance.home() or PROJECT_DIR) / "config.json"
     if config_file.exists():
         try:
             with open(config_file) as f:
@@ -60,16 +62,27 @@ def _require_user_number() -> str:
 
 
 USER_NUMBER = _get_user_number()  # "" se non configurato, il numero altrimenti
-DAEMON_HTTP_PORT = 8080
+
+
+def _daemon_port() -> int:
+    """signal-cli daemon HTTP port: ``$SIGNAL_DAEMON_PORT`` (default 8080)."""
+    try:
+        port = int(os.environ.get("SIGNAL_DAEMON_PORT", "") or 8080)
+    except ValueError:
+        return 8080
+    return port if 1 <= port <= 65535 else 8080
+
+
+DAEMON_HTTP_PORT = _daemon_port()
 SUBPROCESS_TIMEOUT = 120
 DAEMON_URL = f"http://127.0.0.1:{DAEMON_HTTP_PORT}/api/v1/rpc"
 SSE_URL = f"http://127.0.0.1:{DAEMON_HTTP_PORT}/api/v1/events"
+# signal-cli data dir: ~/.local/share/signal-cli, or <MEGACHAT_HOME>/signal-cli
+# (passed to signal-cli as ``--config``, see ``instance.signal_cli_config_args``)
 # Directory where signal-cli stores downloaded attachments
-SIGNAL_CLI_ATTACHMENTS_DIR = (
-    Path.home() / ".local" / "share" / "signal-cli" / "attachments"
-)
+SIGNAL_CLI_ATTACHMENTS_DIR = instance.signal_cli_dir() / "attachments"
 # Directory where signal-cli stores contact avatars
-SIGNAL_CLI_AVATARS_DIR = Path.home() / ".local" / "share" / "signal-cli" / "avatars"
+SIGNAL_CLI_AVATARS_DIR = instance.signal_cli_dir() / "avatars"
 # ─── Signal CLI ──────────────────────────────────────────────────────────────
 
 
@@ -124,7 +137,7 @@ def _run_subprocess(args: list[str]) -> str:
     num = _require_user_number()  # prima il numero (stesso ordine dell'import attuale)
     cli = find_signal_cli()  # poi il binario
     result = subprocess.run(  # noqa: PLW1510 — return code checked explicitly below
-        [str(cli), "-u", num] + args,
+        [str(cli), *instance.signal_cli_config_args(), "-u", num] + args,
         capture_output=True,
         text=True,
         timeout=SUBPROCESS_TIMEOUT,

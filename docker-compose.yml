@@ -29,7 +29,9 @@
 services:
   whatsapp:
     image: "${WAHA_IMAGE:-devlikeapro/waha:latest}"
-    container_name: signal-tui-whatsapp
+    # Overridable so several Megachat instances can each run their own WAHA
+    # (scripts/megachat_instance.sh sets these from the instance .env).
+    container_name: "${WAHA_CONTAINER_NAME:-signal-tui-whatsapp}"
     restart: unless-stopped
     ports:
       # External port defaults to 3005 (configurable via WHATSAPP_API_PORT);
@@ -65,10 +67,11 @@ services:
     env_file:
       # Credentials (WAHA_API_KEY, dashboard/swagger auth) persist here so they
       # are NOT regenerated on every container start.  See .env.example.
-      - .env
+      # MEGACHAT_ENV_FILE points a secondary instance at its own .env.
+      - "${MEGACHAT_ENV_FILE:-.env}"
     volumes:
       # Persist session auth + media across container restarts / updates.
-      - ./whatsapp-data:/app/.sessions
+      - "${WAHA_DATA_PATH:-./whatsapp-data}:/app/.sessions"
     networks:
       - default
 

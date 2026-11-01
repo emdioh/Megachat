@@ -29,3 +29,5 @@ system_tuning_root.sh
 # Checklist validazione manuale kitty — locale, non distribuita
 docs/CHECKLIST_MANUAL_KITTY.md
 
+# Extra Megachat instances (scripts/megachat_instance.sh): config, secrets, data
+instances/

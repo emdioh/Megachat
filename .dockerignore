@@ -16,3 +16,4 @@ config.json
 # signal-cli downloads / logs
 bin/
 *.log
+instances/

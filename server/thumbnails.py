@@ -15,6 +15,7 @@ import os
 import threading
 from pathlib import Path
 
+import instance
 from server.media import _is_thumbnail_candidate
 
 logger = logging.getLogger(__name__)
@@ -26,6 +27,9 @@ _THUMB_LOCKS_GUARD = threading.Lock()
 
 
 def _web_thumb_dir(proto: str) -> Path:
+    instance_cache = instance.cache_dir()
+    if instance_cache is not None:
+        return instance_cache / "web-thumbs" / proto
     cache_home = Path(
         os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")
     ).expanduser()

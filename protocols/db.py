@@ -12,6 +12,7 @@ import threading
 import time
 from pathlib import Path
 
+import instance
 from models import (
     _status_rank,
     is_caption_like,
@@ -23,7 +24,7 @@ from models import (
 
 logger = logging.getLogger(__name__)
 
-CACHE_DIR = Path.home() / ".local" / "share" / "signal-tui-client"
+CACHE_DIR = instance.data_dir()  # <MEGACHAT_HOME>/data when set
 CACHE_FILE = CACHE_DIR / "messages.json"
 DB_FILE = CACHE_DIR / "messages.db"
 

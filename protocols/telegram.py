@@ -26,6 +26,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any, Literal
 
+import instance
 from models import (
     PROTOCOL_TELEGRAM,
     ChatContact,
@@ -52,7 +53,7 @@ from .media_utils import MAX_AVATAR_BYTES, sniff_image_content_type
 logger = logging.getLogger(__name__)
 
 # Log Telethon messages to a file to avoid Textual stderr suppression.
-_log_fh = logging.FileHandler("/tmp/telegram.log", mode="w")
+_log_fh = logging.FileHandler(instance.log_file("telegram.log"), mode="w")
 _log_fh.setLevel(logging.DEBUG)
 _log_fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
 logger.addHandler(_log_fh)

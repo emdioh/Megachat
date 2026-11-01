@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 # ─── Download server (temporary HTTP) ───────────────────────────────────────
 
-DOWNLOAD_PORT = 10042
+DOWNLOAD_PORT = int(os.environ.get("MEGACHAT_DOWNLOAD_PORT", "") or 10042)
 _DOWNLOAD_SERVER: socketserver.TCPServer | None = None
 _DOWNLOAD_URL_BASE: str | None = None
 _TEMP_DOWNLOAD_DIR: Path | None = None

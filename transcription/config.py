@@ -223,7 +223,7 @@ def auto_transcribe_effective(protocol: str, contact_id: str) -> bool:
 def _update_config(mutate) -> None:
     """Load the whole ``config.json``, apply *mutate*, write it back."""
     with _write_lock:
-        config_path = _cfg.PROJECT_DIR / "config.json"
+        config_path = _cfg.config_path()
         data = _cfg._load_config()
         mutate(data)
         with config_path.open("w", encoding="utf-8") as config_file:

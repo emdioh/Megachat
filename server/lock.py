@@ -6,7 +6,8 @@ the headless server (``megachat serve``, spawned on demand by the TUI) or, for
 a client never takes it, so several TUIs may share one server.
 
 The location is ``/tmp/signal-tui.lock`` unless ``$MEGACHAT_LOCK_FILE`` is set
-(tests and isolated setups; a child process inherits it).  Check-and-write is
+(tests and isolated setups; a child process inherits it) or ``$MEGACHAT_HOME``
+selects an instance (``<home>/run/signal-tui.lock``, see :mod:`instance`).  Check-and-write is
 serialised with an ``flock`` on ``<lock>.guard``, so two processes started at
 the same moment cannot both win.
 """
@@ -14,6 +15,8 @@ the same moment cannot both win.
 import contextlib
 import logging
 import os
+
+import instance
 
 try:  # POSIX only; without it the lock degrades to the unguarded check
     import fcntl
@@ -23,7 +26,9 @@ except ImportError:  # pragma: no cover
 logger = logging.getLogger("signal_tui")
 
 LOCK_ENV = "MEGACHAT_LOCK_FILE"
-LOCK_FILE = os.environ.get(LOCK_ENV) or "/tmp/signal-tui.lock"
+#: ``$MEGACHAT_LOCK_FILE``, else ``<MEGACHAT_HOME>/run/signal-tui.lock``, else
+#: ``/tmp/signal-tui.lock``.
+LOCK_FILE = instance.lock_file()
 
 
 @contextlib.contextmanager
@@ -61,6 +66,7 @@ def _acquire_lock() -> bool:
     False if another instance is already running.
     """
     try:
+        os.makedirs(os.path.dirname(LOCK_FILE) or ".", exist_ok=True)
         with _guard():
             if os.path.exists(LOCK_FILE):
                 with open(LOCK_FILE) as f:

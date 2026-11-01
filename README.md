@@ -43,6 +43,7 @@ A terminal-based (TUI) multi-protocol messaging client built with [Textual](http
   - [Message delivery status](#message-delivery-status)
   - [Download mode](#download-mode)
   - [Contact grouping and unread filters](#contact-grouping-and-unread-filters)
+- [Multiple instances on one machine](#multiple-instances-on-one-machine)
 - [Native inline images (kitty graphics protocol)](#native-inline-images-kitty-graphics-protocol)
 - [Performance profiling](#performance-profiling)
 - [Testing](#testing)
@@ -946,6 +947,56 @@ reopen the shell).
 
 > **Compatibility:** bash, zsh, and ash are supported; other shells (fish, dash/sh) are not — see
 > [docs/ALIASES.md](docs/ALIASES.md).
+
+## Multiple instances on one machine
+
+One checkout can run several fully isolated servers — e.g. a second one for a friend who only
+wants their WhatsApp voice notes transcribed automatically (the transcription is posted in the
+chat as a quoted reply, so it shows up in the official WhatsApp app on the phone).
+
+An instance is a directory selected with `MEGACHAT_HOME`. When it is set, every piece of
+per-user state lives under it instead of the default locations:
+
+| Path | Content |
+|---|---|
+| `config.json`, `.env` | settings and secrets (instead of the project ones) |
+| `data/` | `messages.db`, WhatsApp/Telegram media, `telegram.session` |
+| `signal-cli/` | signal-cli data (passed as `--config`) |
+| `run/` | lock file, `server.sock` |
+| `logs/` | `signal-tui.log`, `megachat-serve.log`, ... (instead of `/tmp`) |
+
+The instance `.env` is loaded into the environment at startup (never overriding variables
+already set), so it also carries the ports: `WHATSAPP_API_PORT`, `CLIENT_WEBHOOK_PORT`,
+`SIGNAL_DAEMON_PORT` (signal-cli, default 8080), `MEGACHAT_DOWNLOAD_PORT` (default 10042).
+Without `MEGACHAT_HOME` nothing changes. Each instance has its own WAHA container:
+`docker-compose.yml` reads `WAHA_CONTAINER_NAME`, `WAHA_DATA_PATH` and `MEGACHAT_ENV_FILE`
+(all defaulting to the historical values).
+
+`scripts/megachat_instance.sh` does all of this for you:
+
+```bash
+scripts/megachat_instance.sh create amico   # instances/amico/ with free ports + random WAHA key
+$EDITOR instances/amico/.env                # OPENAI_API_KEY=... (or OpenRouter / Gemini)
+scripts/megachat_instance.sh up amico       # its own WAHA container (megachat-amico-whatsapp)
+scripts/megachat_instance.sh link amico     # QR code: scan it with the friend's WhatsApp
+scripts/megachat_instance.sh start amico    # headless server, no web UI (`serve --no-web`)
+scripts/megachat_instance.sh status         # every instance: server + WAHA
+scripts/megachat_instance.sh logs amico     # tail the server log (`logs amico waha` for WAHA)
+scripts/megachat_instance.sh stop amico
+scripts/megachat_instance.sh systemd amico  # prints a systemd user unit to start it at boot
+```
+
+`create` writes a WhatsApp-only setup (`SIGNAL_ENABLED=0`, no Telegram) with automatic
+transcription on for every WhatsApp chat (`"auto_transcribe": {"whatsapp": true}`). The friend
+can still control it from the phone, writing in a chat: `!transcription off` / `on` (that chat),
+`!transcription global off` / `on` (every chat), or replying `!t` to a voice note. Ports are the
+defaults shifted by the instance offset (1, 2, ...: WAHA `3005+10N`, webhook `8088+10N`,
+signal-cli `8080+10N`, web `4242+N`). Instances live in `instances/` (git-ignored; override with
+`MEGACHAT_INSTANCES_DIR`). To use the TUI or other tools on an instance, select it first:
+`eval "$(scripts/megachat_instance.sh env amico)"`.
+
+> `launcher.py`, `install.sh`, the shell aliases and the handover scripts still manage only the
+> main instance.
 
 ## Native inline images (kitty graphics protocol)
 

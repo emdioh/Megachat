@@ -12,6 +12,8 @@ import os
 import socketserver
 import threading
 
+import instance  # noqa: F401 — loads the instance .env (CLIENT_WEBHOOK_PORT)
+
 logger = logging.getLogger(__name__)
 
 # ─── WAHA webhook server (event-driven / push) ──────────────────────────────

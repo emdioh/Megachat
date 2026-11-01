@@ -174,8 +174,11 @@ def _save_qr_png(qr, session_name: str) -> str:
     if not isinstance(qr, bytes):
         return ""
     project_dir = os.path.dirname(os.path.abspath(__file__))
+    instance_home = os.environ.get("MEGACHAT_HOME", "").strip()
     candidates = [
-        os.path.join(project_dir, "whatsapp-data"),
+        os.path.join(os.path.expanduser(instance_home), "run")
+        if instance_home
+        else os.path.join(project_dir, "whatsapp-data"),
         os.path.join(os.path.expanduser("~"), ".cache", "signal-tui-client"),
         os.path.join(project_dir, ".docker"),
         "/tmp",

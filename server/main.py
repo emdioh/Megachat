@@ -22,6 +22,7 @@ import threading
 from pathlib import Path
 from typing import Any
 
+import instance
 from server import socket_adapter
 from server.bus import EventBus
 from server.core import ChatCore
@@ -29,7 +30,7 @@ from server.lock import LOCK_FILE, _acquire_lock, _release_lock
 
 logger = logging.getLogger("signal_tui")
 
-LOG_FILE = "/tmp/signal-tui.log"
+LOG_FILE = instance.log_file("signal-tui.log")
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:

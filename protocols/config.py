@@ -31,10 +31,25 @@ import threading
 import time
 from pathlib import Path
 
+import instance
 from models import DEFAULT_THUMBNAIL_MAX_COLS, DEFAULT_THUMBNAIL_MAX_LINES
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 logger = logging.getLogger(__name__)
+
+
+def settings_dir() -> Path:
+    """Directory holding ``config.json`` and ``.env``.
+
+    ``$MEGACHAT_HOME`` when set (one directory per instance, see
+    :mod:`instance`), else the project directory.
+    """
+    return instance.home() or PROJECT_DIR
+
+
+def config_path() -> Path:
+    """The ``config.json`` of this instance (it may not exist yet)."""
+    return settings_dir() / "config.json"
 
 
 def _load_dotenv() -> dict:
@@ -45,7 +60,7 @@ def _load_dotenv() -> dict:
     into the WAHA container via ``env_file``, without requiring the user to
     export it twice.
     """
-    env_file = PROJECT_DIR / ".env"
+    env_file = settings_dir() / ".env"
     if not env_file.exists():
         return {}
     data: dict[str, str] = {}
@@ -64,7 +79,7 @@ def _load_dotenv() -> dict:
 
 def _load_config() -> dict:
     """Return the parsed ``config.json`` (or an empty dict)."""
-    config_file = PROJECT_DIR / "config.json"
+    config_file = config_path()
     if not config_file.exists():
         return {}
     try:
@@ -320,8 +335,11 @@ def get_telegram_session_path() -> Path:
     """Return the path where the Telethon ``.session`` file is stored.
 
     Uses ``XDG_DATA_HOME`` (default ``~/.local/share``) +
-    ``signal-tui-client/telegram.session``.
+    ``signal-tui-client/telegram.session``; with ``$MEGACHAT_HOME`` set,
+    ``<home>/data/telegram.session``.
     """
+    if instance.home() is not None:
+        return instance.data_dir() / "telegram.session"
     data_dir = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share"))
     return data_dir / "signal-tui-client" / "telegram.session"
 

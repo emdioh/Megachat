@@ -43,6 +43,7 @@ def _global_exception_handler(exc_type, exc_value, exc_traceback):
 
 sys.excepthook = _global_exception_handler
 
+import instance
 from emoji_picker import (
     replace_emoji_aliases,  # noqa: F401 (re-exported for test patching)
 )
@@ -69,8 +70,8 @@ logger.setLevel(logging.DEBUG)
 #: The TUI's own log when it is a client.  The server logs to
 #: ``/tmp/signal-tui.log`` (``server.main.LOG_FILE``); ``--in-process`` keeps
 #: logging there, since the TUI is then the core.
-TUI_LOG_FILE = "/tmp/megachat-tui.log"
-CORE_LOG_FILE = "/tmp/signal-tui.log"
+TUI_LOG_FILE = instance.log_file("megachat-tui.log")
+CORE_LOG_FILE = instance.log_file("signal-tui.log")
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:

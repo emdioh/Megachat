@@ -16,13 +16,16 @@ SOCKET_ENV = "MEGACHAT_SOCKET"
 
 def default_socket_path(env: dict[str, str] | None = None) -> Path:
     """Where the server listens: ``$MEGACHAT_SOCKET``, else
-    ``$XDG_RUNTIME_DIR/megachat/server.sock``, else
+    ``$MEGACHAT_HOME/run/server.sock``, else ``$XDG_RUNTIME_DIR/megachat/server.sock``, else
     ``~/.local/state/megachat/server.sock``.  (An explicit ``--socket`` path
     overrides all of these at the call site.)"""
     env = os.environ if env is None else env
     override = env.get(SOCKET_ENV)
     if override:
         return Path(override).expanduser()
+    home = env.get("MEGACHAT_HOME", "").strip()
+    if home:
+        return Path(home).expanduser().resolve() / "run" / "server.sock"
     runtime = env.get("XDG_RUNTIME_DIR")
     if runtime and os.path.isabs(runtime):
         return Path(runtime) / "megachat" / "server.sock"

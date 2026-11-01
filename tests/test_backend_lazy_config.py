@@ -39,11 +39,16 @@ def test_import_clean_without_config_in_ci_environment(tmp_path: Path) -> None:
     )
     shutil.copy2(PROJECT_ROOT / "filename_utils.py", tmp_path)
     shutil.copy2(PROJECT_ROOT / "models.py", tmp_path)
+    shutil.copy2(PROJECT_ROOT / "instance.py", tmp_path)
 
     code = (
         "import protocols.rpc as r; print(repr(r.USER_NUMBER), repr(r.SIGNAL_CLI_PATH))"
     )
-    env = {k: v for k, v in os.environ.items() if k != "SIGNAL_USER_NUMBER"}
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if k not in ("SIGNAL_USER_NUMBER", "MEGACHAT_HOME")
+    }
     env["PYTHONPATH"] = str(tmp_path)
 
     result = subprocess.run(
