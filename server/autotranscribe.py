@@ -68,6 +68,28 @@ class _Quote:
     text: str = ""
 
 
+#: Voice notes are Opus in Ogg: an "audio" with this format is a voice note
+#: whose push-to-talk flag the backend did not see (WAHA flat payloads).
+_VOICE_EXTENSIONS = (".oga", ".ogg", ".opus")
+_VOICE_MIMES = ("audio/ogg", "audio/opus")
+
+
+def _is_voice(message: dict) -> bool:
+    kind = message.get("media_kind")
+    if kind == "voice":
+        return True
+    if kind != "audio":
+        return False
+    mime = str(message.get("content_type") or "").lower().split(";", 1)[0].strip()
+    if mime in _VOICE_MIMES:
+        return True
+    for field in ("attachment_id", "attachment_info", "filename"):
+        value = str(message.get(field) or "").lower().split("?", 1)[0]
+        if value.endswith(_VOICE_EXTENSIONS):
+            return True
+    return False
+
+
 def _onoff(value: bool) -> str:
     return "attiva" if value else "disattiva"
 
@@ -212,7 +234,7 @@ class AutoTranscriber:
             return
         self._seen.append(identity)
 
-        if message.get("media_kind") == "voice":
+        if _is_voice(message):
             self._run(self._on_voice, protocol, contact_id, message)
             return
         text = message.get("text")
@@ -378,7 +400,7 @@ class AutoTranscriber:
         quoted = self._find_quoted(protocol, contact_id, message)
         if (
             quoted is None
-            or quoted.get("media_kind") != "voice"
+            or quoted.get("media_kind") not in ("voice", "audio")
             or not quoted.get("attachment_id")
         ):
             self._post(reply, _T_HINT)
@@ -452,7 +474,7 @@ class AutoTranscriber:
             queries.append(
                 (
                     base + "AND (msg_id = ? OR msg_id LIKE '%_' || ?) "
-                    "ORDER BY (media_kind = 'voice') DESC LIMIT 1",
+                    "ORDER BY (media_kind IN ('voice', 'audio')) DESC LIMIT 1",
                     (protocol, *keys, rid, rid),
                 )
             )
@@ -460,7 +482,7 @@ class AutoTranscriber:
             queries.append(
                 (
                     base + "AND timestamp = ? "
-                    "ORDER BY (media_kind = 'voice') DESC LIMIT 1",
+                    "ORDER BY (media_kind IN ('voice', 'audio')) DESC LIMIT 1",
                     (protocol, *keys, quote_ts),
                 )
             )

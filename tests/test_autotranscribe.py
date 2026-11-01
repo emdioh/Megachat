@@ -623,3 +623,20 @@ def test_ops_reject_invalid(name, req):
     with pytest.raises(ApiError) as exc:
         api.call_json(name, req)
     assert exc.value.code == "invalid_request"
+
+
+@pytest.mark.parametrize(
+    ("att", "content_type", "submitted"),
+    [
+        # WAHA flat payload: the voice note arrives as "audio" (no ptt flag).
+        ("http://localhost:3000/api/files/default/x.oga", None, True),
+        ("a1.bin", "audio/ogg; codecs=opus", True),
+        ("a1.opus", "", True),
+        ("song.mp3", "audio/mpeg", False),
+    ],
+)
+def test_audio_in_ogg_opus_counts_as_voice(att, content_type, submitted):
+    enable()
+    tr, api = make()
+    tr.handle_message(voice(att=att, media_kind="audio", content_type=content_type))
+    assert bool(api.transcription.service.submitted) is submitted

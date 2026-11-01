@@ -527,6 +527,31 @@ def _wa_security_notice_text(
     return "Il codice di sicurezza di un contatto è cambiato."
 
 
+def _wa_is_voice_note(raw: dict) -> bool:
+    """Whether *raw* is a push-to-talk voice note (not a plain audio file).
+
+    WAHA engines mark it differently: WEBJS ``type``/``_data.type == "ptt"``,
+    NOWEB ``_data.message.audioMessage.ptt``, GOWS
+    ``_data.Message.audioMessage.PTT``; some payloads carry ``media.ptt``.
+    """
+    data = raw.get("_data") if isinstance(raw.get("_data"), dict) else {}
+    for value in (raw.get("type"), data.get("type")):
+        if str(value or "").lower() in ("ptt", "voice"):
+            return True
+    media = raw.get("media")
+    if isinstance(media, dict) and (media.get("ptt") or media.get("PTT")):
+        return True
+    for container in (raw, data):
+        for key in ("message", "Message"):
+            message = container.get(key)
+            if not isinstance(message, dict):
+                continue
+            audio = message.get("audioMessage") or message.get("AudioMessage")
+            if isinstance(audio, dict) and (audio.get("ptt") or audio.get("PTT")):
+                return True
+    return False
+
+
 def _event_from_message(
     raw: dict,
     contacts_by_jid: dict | None = None,
@@ -663,6 +688,8 @@ def _event_from_message(
                 or ""
             )
             kind = media_kind_from_mime(mime) or "document"
+            if kind == "audio" and (att.get("ptt") or _wa_is_voice_note(raw)):
+                kind = "voice"
             att_type = msg_type_for_media_kind(kind)
             item_caption = caption or att.get("caption")
             att_info, _ = _wa_media_name_and_caption(
@@ -692,7 +719,11 @@ def _event_from_message(
                     elif media_key == "videoMessage":
                         kind = "gif" if media.get("gifPlayback") else "video"
                     elif media_key == "audioMessage":
-                        kind = "voice" if media.get("ptt") else "audio"
+                        kind = (
+                            "voice"
+                            if media.get("ptt") or _wa_is_voice_note(raw)
+                            else "audio"
+                        )
                     elif media_key == "stickerMessage":
                         kind = "sticker"
                     else:
@@ -731,6 +762,8 @@ def _event_from_message(
             if kind is None and raw.get("stickerMessage") is not None:
                 kind = "sticker"
             kind = kind or "document"
+            if kind == "audio" and _wa_is_voice_note(raw):
+                kind = "voice"
             att_type = msg_type_for_media_kind(kind)
             att_id = media.get("id") or media.get("url")
             item_caption = caption or media.get("caption")
