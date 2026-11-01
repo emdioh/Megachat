@@ -18,7 +18,28 @@ logger = logging.getLogger(__name__)
 _MAX_AUDIO_SIZE = 25 * 1024 * 1024
 
 # Formati accettati dall'API OpenAI (i vocali Signal sono .oga/opus → transcodifica).
-_SUPPORTED_EXTENSIONS = {".mp3", ".mp4", ".mpeg", ".mpga", ".m4a", ".wav", ".webm"}
+_SUPPORTED_EXTENSIONS = {
+    ".mp3",
+    ".mp4",
+    ".mpeg",
+    ".mpga",
+    ".m4a",
+    ".wav",
+    ".webm",
+    ".ogg",
+    ".flac",
+}
+
+#: Ogg/Opus voice notes (WhatsApp/Signal ``.oga``, Telegram ``.opus``): the API
+#: accepts Ogg, it just needs the ``.ogg`` file name, so no ffmpeg is needed.
+_OGG_ALIASES = {".oga", ".opus"}
+
+
+def _is_format_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return "unsupported file format" in text or (
+        "format" in text and ("http 400" in text or "http 415" in text)
+    )
 
 
 class TranscriptionError(Exception):
@@ -108,18 +129,29 @@ class CloudTranscriptionClient:
 
         upload_path = path
         cleanup = False
-        if path.suffix.lower() not in _SUPPORTED_EXTENSIONS:
-            upload_path = _transcode_to_mp3(path)
-            cleanup = True
+        suffix = path.suffix.lower()
+        if suffix in _OGG_ALIASES:
+            first = self._upload(path, filename=f"{path.stem}.ogg")
+        else:
+            if suffix not in _SUPPORTED_EXTENSIONS:
+                upload_path = _transcode_to_mp3(path)
+                cleanup = True
+            first = self._upload(upload_path)
 
         try:
             try:
-                return await self._upload(upload_path)
+                return await first
             except TranscriptionError as exc:
-                # L'API può rifiutare formati non documentati (es. .aac): se non
-                # abbiamo ancora transcodificato, riprova con ffmpeg.
-                if cleanup or "Unsupported file format" not in str(exc):
+                # L'API può rifiutare formati non documentati (es. .aac) o il
+                # modello non accettare Ogg: se non abbiamo ancora
+                # transcodificato, riprova con ffmpeg (se c'è).
+                if cleanup or not _is_format_error(exc):
                     raise
+                if not _ffmpeg_available():
+                    raise TranscriptionError(
+                        f"{exc} (il provider rifiuta il formato e ffmpeg non è "
+                        "installato per convertirlo in mp3)"
+                    ) from None
                 upload_path = _transcode_to_mp3(path)
                 cleanup = True
                 return await self._upload(upload_path)
@@ -127,7 +159,7 @@ class CloudTranscriptionClient:
             if cleanup:
                 upload_path.unlink(missing_ok=True)
 
-    async def _upload(self, upload_path: Path) -> str:
+    async def _upload(self, upload_path: Path, filename: str | None = None) -> str:
         form = aiohttp.FormData()
         form.add_field("model", self.model)
         if self.language:
@@ -140,13 +172,15 @@ class CloudTranscriptionClient:
             "Trascrizione: POST %s model=%s file=%s (%d byte) lingua=%s",
             url,
             self.model,
-            upload_path.name,
+            filename or upload_path.name,
             upload_path.stat().st_size,
             self.language or "auto",
         )
         try:
             with upload_path.open("rb") as audio_file:
-                form.add_field("file", audio_file, filename=upload_path.name)
+                form.add_field(
+                    "file", audio_file, filename=filename or upload_path.name
+                )
                 async with (
                     aiohttp.ClientSession(timeout=timeout) as session,
                     session.post(url, data=form, headers=headers) as response,

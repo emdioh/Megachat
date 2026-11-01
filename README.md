@@ -650,6 +650,9 @@ The settings use the same names as the sibling project botty. OpenAI and OpenRou
 OpenAI-compatible multipart `POST {base}/audio/transcriptions`; Gemini uses the native
 `models/{model}:generateContent` with the audio inline (max about 15 MB, formats WAV, MP3,
 AIFF, AAC, OGG, FLAC; anything else is transcoded to MP3 with ffmpeg).
+For OpenAI and OpenRouter, Ogg/Opus voice notes (`.oga`, `.opus`) are uploaded as `.ogg`
+without ffmpeg; other formats outside MP3/MP4/M4A/WAV/WebM/OGG/FLAC, or a format the provider
+rejects, are transcoded to MP3 with ffmpeg when it is installed.
 
 Design notes in `docs/DESIGN_AUTO_TRANSCRIBE.md` and `docs/DESIGN_TRANSCRIPTION_PROVIDERS.md`.
 
