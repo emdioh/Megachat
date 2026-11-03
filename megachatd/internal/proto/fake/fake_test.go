@@ -23,7 +23,7 @@ func TestFakeBasics(t *testing.T) {
 	if ok, _ := f.EditMessage(ctx, "c", id, "yo"); !ok {
 		t.Fatal("edit own message")
 	}
-	if h, _ := f.FetchHistory(ctx, "c", 0); len(h) != 1 || h[0].Text != "yo" {
+	if h, _ := f.FetchHistory(ctx, "c", 0); len(h) != 1 || h[0].Text == nil || *h[0].Text != "yo" {
 		t.Fatalf("%+v", h)
 	}
 	rctx, rcancel := context.WithCancel(ctx)

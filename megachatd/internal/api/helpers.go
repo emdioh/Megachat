@@ -22,6 +22,9 @@ func IsProtocol(p string) bool {
 	return p == ProtocolSignal || p == ProtocolWhatsApp || p == ProtocolTelegram
 }
 
+// Ptr returns a pointer to v (for nullable wire members).
+func Ptr[T any](v T) *T { return &v }
+
 // Limits shared by several operations.
 const (
 	MaxTextLength    = 64 * 1024 // messages.send / messages.edit text, characters

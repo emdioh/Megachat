@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/emdioh/megachat/megachatd/internal/api"
 	"github.com/emdioh/megachat/megachatd/internal/proto"
 	"github.com/emdioh/megachat/megachatd/internal/proto/fake"
 )
@@ -150,7 +151,7 @@ func TestCapabilityRouting(t *testing.T) {
 	m := proto.New()
 	f := fake.New("telegram")
 	f.AddAttachment("a1", "/tmp/a1", []byte("0123456789"))
-	f.AddHistory("c", proto.Message{ID: "7", ContactID: "c", IsMine: true, Text: "old"})
+	f.AddHistory("c", proto.Message{ID: api.Ptr("7"), IsMine: api.Ptr(true), Text: api.Ptr("old")})
 	f.SetPairing(true, "tg://login?token=x")
 	f.SetTwoFactorPassword("pw")
 	m.Register(f)

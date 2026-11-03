@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/emdioh/megachat/megachatd/internal/api"
 	"github.com/emdioh/megachat/megachatd/internal/proto"
 )
 
@@ -305,11 +306,18 @@ func (b *Backend) SendMessage(ctx context.Context, contactID, text string, q pro
 	id := b.newID()
 	ts, _ := strconv.ParseInt(id, 10, 64)
 	b.mu.Lock()
-	b.messages[contactID] = append(b.messages[contactID], proto.Message{
-		ID: id, ContactID: contactID, Protocol: b.protocol, Text: text, IsMine: true,
-		Sender: "me", Timestamp: ts, QuoteText: q.Message, MsgType: "text", Status: proto.StatusSent,
-		ReplyToMessageID: q.ReplyToMessageID,
-	})
+	m := proto.Message{
+		ID: api.Ptr(id), Protocol: api.Ptr(b.protocol), Text: api.Ptr(text), IsMine: api.Ptr(true),
+		Sender: api.Ptr("me"), Timestamp: api.Ptr(ts), MsgType: api.Ptr(api.MsgTypeText),
+		Status: api.Ptr(proto.StatusSent),
+	}
+	if q.Message != "" {
+		m.QuoteText = api.Ptr(q.Message)
+	}
+	if q.ReplyToMessageID != "" {
+		m.ReplyToMessageID = api.Ptr(q.ReplyToMessageID)
+	}
+	b.messages[contactID] = append(b.messages[contactID], m)
 	b.mu.Unlock()
 	return id, nil
 }
@@ -426,8 +434,8 @@ func (b *Backend) EditMessage(ctx context.Context, contactID, messageID, newText
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	for i, m := range b.messages[contactID] {
-		if m.ID == messageID && m.IsMine {
-			b.messages[contactID][i].Text = newText
+		if str(m.ID) == messageID && m.IsMine != nil && *m.IsMine {
+			b.messages[contactID][i].Text = api.Ptr(newText)
 			return true, nil
 		}
 	}
@@ -441,16 +449,16 @@ func (b *Backend) ApplyEdit(contactID, messageID, newText string, o proto.ApplyE
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	for i, m := range b.messages[contactID] {
-		if m.ID == messageID {
-			if m.Text == newText {
+		if str(m.ID) == messageID {
+			if str(m.Text) == newText {
 				return nil, nil
 			}
-			b.messages[contactID][i].Text = newText
-			mine := m.IsMine
+			b.messages[contactID][i].Text = api.Ptr(newText)
+			mine := m.IsMine != nil && *m.IsMine
 			if o.IsMine != nil {
 				mine = *o.IsMine
 			}
-			return &proto.EditResult{MessageID: m.ID, Timestamp: m.Timestamp, OldText: m.Text, Text: newText, IsMine: mine}, nil
+			return &proto.EditResult{MessageID: str(m.ID), Timestamp: i64(m.Timestamp), OldText: str(m.Text), Text: newText, IsMine: mine}, nil
 		}
 	}
 	return nil, nil
@@ -609,4 +617,19 @@ func (b *Backend) StartPresenceSubscribe(ctx context.Context) error {
 
 func (b *Backend) SendTyping(ctx context.Context, contactID string, started bool) error {
 	return b.record("SendTyping", map[string]any{"contact": contactID, "started": started})
+}
+
+// str and i64 deref nullable wire members (nil = Python None -> zero value).
+func str(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
+}
+
+func i64(p *int64) int64 {
+	if p == nil {
+		return 0
+	}
+	return *p
 }

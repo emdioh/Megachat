@@ -8,38 +8,44 @@
 // replace them with aliases (type Contact = api.Contact ...) or conversions.
 package proto
 
-// Protocol identifiers (models.PROTOCOL_*).
+import "github.com/emdioh/megachat/megachatd/internal/api"
+
+// Protocol identifiers (models.PROTOCOL_*); api is the source of truth.
 const (
-	ProtocolSignal   = "signal"
-	ProtocolWhatsApp = "whatsapp"
-	ProtocolTelegram = "telegram"
+	ProtocolSignal   = api.ProtocolSignal
+	ProtocolWhatsApp = api.ProtocolWhatsApp
+	ProtocolTelegram = api.ProtocolTelegram
 )
 
-// Message delivery statuses (ChatMessage.status).
+// Message delivery statuses (ChatMessage.status); see api.Status*.
 const (
-	StatusPending   = "pending"
-	StatusFailed    = "failed"
-	StatusSent      = "sent"
-	StatusDelivered = "delivered"
-	StatusRead      = "read"
+	StatusPending   = api.StatusPending
+	StatusFailed    = api.StatusFailed
+	StatusSent      = api.StatusSent
+	StatusDelivered = api.StatusDelivered
+	StatusRead      = api.StatusRead
 )
 
-// Event types a backend emits (ChatEvent.type).
+// Event types a backend emits (ChatEvent.type). They equal the api bus event
+// types except EventSentMirror: the internal backend event is spelled
+// "sent-mirror" (core.py maps it to the wire "sent_mirror", api.EventSentMirror).
 const (
-	EventMessage        = "message"
-	EventMessageEdit    = "message_edit"
-	EventReactionUpdate = "reaction_update"
-	EventTyping         = "typing"
-	EventReceipt        = "receipt"
-	EventContactUpdate  = "contact_update"
+	EventMessage        = api.EventMessage
+	EventMessageEdit    = api.EventMessageEdit
+	EventReactionUpdate = api.EventReactionUpdate
+	EventTyping         = api.EventTyping
+	EventReceipt        = api.EventReceipt
+	EventContactUpdate  = api.EventContactUpdate
 	EventSentMirror     = "sent-mirror"
-	EventLidWarmupDone  = "lid_warmup_done"
+	EventLidWarmupDone  = api.EventLidWarmupDone
 )
 
 // ContactCacheKey is models.contact_cache_key: "<protocol>:<id>".
-func ContactCacheKey(protocol, id string) string { return protocol + ":" + id }
+func ContactCacheKey(protocol, id string) string { return api.CacheKey(protocol, id) }
 
-// Contact mirrors models.ChatContact.
+// Contact mirrors models.ChatContact. It is the in-process domain contact;
+// its wire snapshot (cache_key and last_message_ts derived) is api.ContactWire,
+// see ToWire.
 type Contact struct {
 	ID          string
 	DisplayName string
@@ -51,6 +57,14 @@ type Contact struct {
 
 // CacheKey is unique across protocols.
 func (c Contact) CacheKey() string { return ContactCacheKey(c.Protocol, c.ID) }
+
+// ToWire converts to the wire snapshot api.ContactWire.
+func (c Contact) ToWire() api.ContactWire {
+	return api.ContactWire{
+		ID: c.ID, DisplayName: c.DisplayName, Protocol: c.Protocol,
+		CacheKey: c.CacheKey(), LastMessageTs: c.LastMessageTS(), Extras: c.Extras,
+	}
+}
 
 // Phone is the normalised phone number from Extras["phone"], or "".
 func (c Contact) Phone() string {
@@ -84,30 +98,13 @@ func (c Contact) WithExtra(key string, value any) Contact {
 	return c
 }
 
-// Message mirrors models.ChatMessage. Timestamp is Unix milliseconds. The
-// optional string fields are "" when None in Python.
-type Message struct {
-	ID                  string
-	ContactID           string
-	Protocol            string
-	Text                string
-	IsMine              bool
-	Sender              string
-	Timestamp           int64
-	QuoteText           string
-	MsgType             string // "text", "image", "sticker", "attachment" (default "text")
-	AttachmentInfo      string
-	AttachmentID        string
-	ContentType         string
-	Status              string // default "sent"
-	ReplyToMessageID    string
-	QuoteAttachmentID   string
-	QuoteAttachmentPath string
-	QuoteContentType    string
-	MediaKind           string
-}
+// Message is the wire cache-entry message (models.ChatMessage as it crosses
+// the wire). Optional Python None fields are nil pointers; the owning contact
+// is given by the call (FetchHistory's contactID), not stored on the message.
+type Message = api.CacheMessage
 
-// Event mirrors models.ChatEvent: a normalised event from a backend.
+// Event mirrors models.ChatEvent: the internal envelope a backend emits
+// (no wire counterpart; the api bus Event is the post-processing envelope).
 // Payload shapes per Type are documented on ChatEvent in models.py.
 type Event struct {
 	Type      string
