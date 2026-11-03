@@ -1,0 +1,53 @@
+{
+ "schema": [
+  [
+   "index",
+   "idx_messages_contact",
+   "messages",
+   "CREATE INDEX idx_messages_contact ON messages(protocol, contact_number, timestamp)"
+  ],
+  [
+   "index",
+   "idx_reactions_contact",
+   "reactions",
+   "CREATE INDEX idx_reactions_contact\n                    ON reactions(protocol, contact_number)\n                "
+  ],
+  [
+   "index",
+   "idx_reactions_identity",
+   "reactions",
+   "CREATE UNIQUE INDEX idx_reactions_identity\n                    ON reactions(protocol, contact_number,\n                                 IFNULL(target_msg_id, ''),\n                                 IFNULL(target_timestamp, 0), author_key)\n                "
+  ],
+  [
+   "table",
+   "messages",
+   "messages",
+   "CREATE TABLE messages (\n                    id INTEGER PRIMARY KEY AUTOINCREMENT,\n                    protocol TEXT NOT NULL DEFAULT 'signal',\n                    contact_number TEXT NOT NULL,\n                    text TEXT,\n                    is_mine INTEGER NOT NULL DEFAULT 0,\n                    sender TEXT,\n                    timestamp INTEGER NOT NULL,\n                    quote_text TEXT,\n                    msg_type TEXT DEFAULT 'text',\n                    attachment_info TEXT,\n                    attachment_id TEXT,\n                    content_type TEXT,\n                    media_kind TEXT,\n                    quote_attachment_id TEXT,\n                    quote_attachment_path TEXT,\n                    quote_content_type TEXT,\n                    read INTEGER DEFAULT 0,\n                    status TEXT DEFAULT 'read',\n                    msg_id TEXT,\n                    quote_timestamp INTEGER,\n                    quote_author TEXT,\n                    reply_to_message_id TEXT,\n                    edited INTEGER NOT NULL DEFAULT 0,\n                    batch_id TEXT,\n                    batch_index INTEGER\n                )"
+  ],
+  [
+   "table",
+   "reactions",
+   "reactions",
+   "CREATE TABLE reactions (\n                    id INTEGER PRIMARY KEY AUTOINCREMENT,\n                    protocol TEXT NOT NULL,\n                    contact_number TEXT NOT NULL,\n                    target_msg_id TEXT,\n                    target_timestamp INTEGER,\n                    emoji TEXT NOT NULL,\n                    author_key TEXT NOT NULL DEFAULT '',\n                    author TEXT NOT NULL DEFAULT '',\n                    is_mine INTEGER NOT NULL DEFAULT 0,\n                    count INTEGER NOT NULL DEFAULT 1,\n                    timestamp INTEGER NOT NULL\n                )"
+  ],
+  [
+   "index",
+   "sqlite_autoindex_transcriptions_1",
+   "transcriptions",
+   null
+  ],
+  [
+   "table",
+   "sqlite_sequence",
+   "sqlite_sequence",
+   "CREATE TABLE sqlite_sequence(name,seq)"
+  ],
+  [
+   "table",
+   "transcriptions",
+   "transcriptions",
+   "CREATE TABLE transcriptions (\n                    protocol TEXT NOT NULL,\n                    attachment_id TEXT NOT NULL,\n                    status TEXT NOT NULL DEFAULT 'pending',\n                    text TEXT,\n                    error TEXT,\n                    model TEXT,\n                    updated_at REAL NOT NULL,\n                    PRIMARY KEY (protocol, attachment_id)\n                )"
+  ]
+ ],
+ "user_version": 5
+}
