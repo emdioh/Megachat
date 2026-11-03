@@ -1002,12 +1002,23 @@ instance `config.json` (`enabled`, `host`, `port`, `token`); `url` adds the sect
 instances (restart the server afterwards). It also works for the main instance if you add that
 section to its `config.json`.
 
-**systemd.** `scripts/megachat_instance.sh install amico` (same as `systemd amico install`) writes
-`~/.config/systemd/user/megachat-amico.service` (server + `docker start` of its WAHA container,
-restart on failure), enables and starts it; then `start`, `stop` and `status` go through
-`systemctl --user`. Run `sudo loginctl enable-linger $USER` once so user services start at boot
-without a login. `uninstall amico` (or `systemd amico uninstall`) removes the unit, `systemd amico status` shows it,
-`systemd amico print` only prints it.
+**Start at boot (systemd or OpenRC).** `scripts/megachat_instance.sh install amico` installs a
+service that starts the server (and `docker start`s its WAHA container) at boot and restarts it if
+it dies, then starts it; `start`, `stop` and `status` go through the service afterwards and
+`uninstall amico` removes it (data untouched). It picks the machine's init system
+(`MEGACHAT_INIT=systemd|openrc` forces one):
+
+- **systemd**: a user unit `~/.config/systemd/user/megachat-amico.service`; run
+  `sudo loginctl enable-linger $USER` once so it starts at boot without a login.
+- **OpenRC (Alpine)**: `/etc/init.d/megachat-amico`, supervised by `supervise-daemon`, added to
+  the `default` runlevel; the server still runs as your user (`command_user`). Writing it needs
+  root: run the script as root or have `doas`/`sudo`. On Alpine install the prerequisites with
+  `apk add bash python3 docker docker-cli-compose` and `rc-update add docker default`.
+
+`openrc amico …` / `systemd amico …` (`install|uninstall|status|print`) act on one of them only.
+
+`start` prints the port and link of the status/QR page; `list` shows every instance with its
+offset, WAHA port and status page port.
 
 **Docker compose files and CPU/RAM limits.** `up`, `down` and `destroy` combine the compose files
 like `launcher.py` does: `docker-compose.yml`, then `docker-compose.resources.yml` (CPU/RAM caps,

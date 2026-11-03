@@ -11,6 +11,10 @@
 # Full guide (in Italian): scripts/megachat_instance.sh help [COMMAND|all]
 # The help texts live in help_text() below.
 # =============================================================================
+if [ -z "${BASH_VERSION:-}" ]; then
+    echo "❌ megachat_instance.sh needs bash (Alpine: apk add bash)" >&2
+    exit 1
+fi
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -52,7 +56,7 @@ require_instance() {
 # Value of KEY in an .env file (last occurrence wins, quotes stripped).
 env_value() {
     local file="$1" key="$2"
-    sed -n "s/^[[:space:]]*\(export[[:space:]]\+\)\{0,1\}${key}=//p" "$file" \
+    sed -n "s/^[[:space:]]*\(export[[:space:]][[:space:]]*\)\{0,1\}${key}=//p" "$file" \
         | tail -n 1 | sed -e 's/^"\(.*\)"$/\1/' -e "s/^'\(.*\)'$/\1/"
 }
 
@@ -446,12 +450,14 @@ cmd_start() {
     shift || true
     if pid="$(server_pid "$dir")"; then
         info "instance '$name' is already running (PID $pid)"
+        print_status_page "$name" "$dir"
         return 0
     fi
-    if unit_installed "$name"; then
-        [ $# -eq 0 ] || die "instance '$name' runs under systemd: no extra ARGS (re-run 'systemd $name install' after changing config.json)"
-        systemctl --user start "$(unit_name "$name")"
-        echo "✅ instance '$name' started via systemd ($(unit_name "$name"))"
+    if service_installed "$name"; then
+        [ $# -eq 0 ] || die "instance '$name' runs as a service: no extra ARGS (re-run 'install $name' after changing config.json)"
+        service_start "$name"
+        echo "✅ instance '$name' started via $(service_kind "$name") ($(service_name "$name"))"
+        print_status_page "$name" "$dir"
         return 0
     fi
     local args=()
@@ -465,6 +471,7 @@ cmd_start() {
     for i in $(seq 1 20); do
         if pid="$(server_pid "$dir")"; then
             echo "✅ instance '$name' started (PID $pid) — logs: $0 logs $name"
+            print_status_page "$name" "$dir"
             return 0
         fi
         sleep 0.5
@@ -475,10 +482,9 @@ cmd_start() {
 cmd_stop() {
     local name="${1:-}" dir pid
     dir="$(require_instance "$name")"
-    if unit_installed "$name" \
-        && systemctl --user is-active --quiet "$(unit_name "$name")"; then
-        systemctl --user stop "$(unit_name "$name")"
-        echo "✅ instance '$name' stopped via systemd"
+    if service_installed "$name" && service_active "$name"; then
+        service_stop "$name"
+        echo "✅ instance '$name' stopped via $(service_kind "$name")"
         return 0
     fi
     if ! pid="$(server_pid "$dir")"; then
@@ -508,13 +514,11 @@ status_one() {
         && docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "$container"; then
         waha="running ($container, port $(env_value "$dir/.env" WHATSAPP_API_PORT))"
     fi
-    local unit="-"
-    if unit_installed "$name"; then
-        unit="$(systemctl --user is-enabled "$(unit_name "$name")" 2>/dev/null || true)"
-        unit="${unit:-installed}"
-    fi
-    printf '%-16s server: %-22s WAHA: %-44s systemd: %s\n' \
-        "$name" "$server" "$waha" "$unit"
+    local enabled port token qr="off"
+    read -r enabled port token <<< "$(status_page_info "$dir")"
+    [ "$enabled" = 1 ] && qr="port $port"
+    printf '%-16s server: %-22s WAHA: %-44s QR page: %-10s service: %s\n' \
+        "$name" "$server" "$waha" "$qr" "$(service_state "$name")"
 }
 
 cmd_status() {
@@ -535,9 +539,22 @@ cmd_status() {
 }
 
 cmd_list() {
-    local dir
+    local dir name enabled port token qr
     for dir in "$INSTANCES_DIR"/*/; do
-        [ -f "$dir/.env" ] && basename "$dir"
+        [ -f "$dir/.env" ] || continue
+        dir="${dir%/}"
+        name="$(basename "$dir")"
+        read -r enabled port token <<< "$(status_page_info "$dir")"
+        if [ -e "$dir/.destroyed" ]; then
+            qr="destroyed"
+        elif [ "$enabled" = 1 ]; then
+            qr="status/QR page port $port"
+        else
+            qr="status/QR page off"
+        fi
+        printf '%-16s offset %-3s WAHA %-6s %s\n' "$name" \
+            "$(env_value "$dir/.env" MEGACHAT_PORT_OFFSET)" \
+            "$(env_value "$dir/.env" WHATSAPP_API_PORT)" "$qr"
     done
     return 0
 }
@@ -566,8 +583,29 @@ public_host() {
         return
     fi
     local ip
-    ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+    ip="$(hostname -I 2>/dev/null | awk '{print $1}')" || ip=""
+    if [ -z "$ip" ] && command -v ip >/dev/null 2>&1; then
+        ip="$(ip -4 -o addr show scope global 2>/dev/null \
+            | awk '{sub(/\/.*/, "", $4); print $4; exit}')" || ip=""
+    fi
     echo "${ip:-$(hostname)}"
+}
+
+# "ENABLED PORT TOKEN" of the instance status page (read only).
+status_page_info() {
+    "$(python_bin)" "$REPO_DIR/scripts/instance_config.py" show "$1/config.json" \
+        2>/dev/null || echo "0 - -"
+}
+
+# One line about the status page, printed by start.
+print_status_page() {
+    local name="$1" dir="$2" enabled port token
+    read -r enabled port token <<< "$(status_page_info "$dir")"
+    if [ "$enabled" = 1 ]; then
+        echo "📊 status/QR page on port $port: http://$(public_host):$port/$token/"
+    else
+        info "status/QR page disabled (enable it with: $0 url $name, then restart)"
+    fi
 }
 
 cmd_url() {
@@ -584,16 +622,127 @@ cmd_url() {
     fi
 }
 
-# ── systemd (user units) ─────────────────────────────────────────────────
+# ── services: systemd (user units) or OpenRC (Alpine) ────────────────────
+# `install NAME` picks the init system of the machine: systemd when it is
+# running (/run/systemd/system), OpenRC when rc-service/openrc-run exist
+# (Alpine), else none.  MEGACHAT_INIT=systemd|openrc|none forces it.
+
+OPENRC_DIR="${MEGACHAT_OPENRC_DIR:-/etc/init.d}"
+OPENRC_RUNLEVELS="${MEGACHAT_OPENRC_RUNLEVELS:-/etc/runlevels}"
+
+init_system() {
+    case "${MEGACHAT_INIT:-}" in
+        systemd|openrc|none) echo "$MEGACHAT_INIT"; return 0 ;;
+        "") ;;
+        *) die "MEGACHAT_INIT must be systemd, openrc or none" ;;
+    esac
+    if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
+        echo systemd
+    elif command -v rc-service >/dev/null 2>&1 \
+        && { command -v openrc-run >/dev/null 2>&1 || [ -x /sbin/openrc-run ]; }; then
+        echo openrc
+    else
+        echo none
+    fi
+}
+
+service_name() { echo "megachat-$1"; }
+
+# Which kind of service is installed for NAME ("systemd", "openrc" or "").
+service_kind() {
+    if [ -f "$(unit_path "$1")" ] && command -v systemctl >/dev/null 2>&1; then
+        echo systemd
+    elif [ -f "$OPENRC_DIR/$(service_name "$1")" ]; then
+        echo openrc
+    fi
+}
+
+service_installed() { [ -n "$(service_kind "$1")" ]; }
+
+service_active() {
+    case "$(service_kind "$1")" in
+        systemd) systemctl --user is-active --quiet "$(unit_name "$1")" ;;
+        openrc) rc-service "$(service_name "$1")" status >/dev/null 2>&1 ;;
+        *) return 1 ;;
+    esac
+}
+
+service_start() {
+    case "$(service_kind "$1")" in
+        systemd) systemctl --user start "$(unit_name "$1")" ;;
+        openrc) as_root rc-service "$(service_name "$1")" start ;;
+    esac
+}
+
+service_stop() {
+    case "$(service_kind "$1")" in
+        systemd) systemctl --user stop "$(unit_name "$1")" ;;
+        openrc) as_root rc-service "$(service_name "$1")" stop ;;
+    esac
+}
+
+# One word for `status`: "systemd:enabled", "openrc:default", ... or "-".
+service_state() {
+    local kind state
+    kind="$(service_kind "$1")"
+    case "$kind" in
+        systemd)
+            state="$(systemctl --user is-enabled "$(unit_name "$1")" 2>/dev/null || true)"
+            echo "systemd:${state:-installed}"
+            ;;
+        openrc)
+            if [ -e "$OPENRC_RUNLEVELS/default/$(service_name "$1")" ]; then
+                echo "openrc:enabled"
+            else
+                echo "openrc:installed"
+            fi
+            ;;
+        *) echo "-" ;;
+    esac
+}
+
+# Run a command as root (directly, or through doas / sudo).
+as_root() {
+    if [ "$(id -u)" = 0 ]; then
+        "$@"
+    elif command -v doas >/dev/null 2>&1; then
+        doas "$@"
+    elif command -v sudo >/dev/null 2>&1; then
+        sudo "$@"
+    else
+        die "root needed for: $* (run this script as root, or install doas/sudo)"
+    fi
+}
+
+# The user that owns the instance (not root when called through sudo/doas).
+service_user() {
+    if [ "$(id -u)" = 0 ] && [ -n "${SUDO_USER:-${DOAS_USER:-}}" ]; then
+        echo "${SUDO_USER:-$DOAS_USER}"
+    else
+        id -un
+    fi
+}
+
+# Stop a server started by hand before a service takes it over.
+stop_manual_server() {
+    local name="$1" dir="$2" pid
+    if pid="$(server_pid "$dir")" && ! service_active "$name"; then
+        info "stopping the copy started by hand (PID $pid) before handing it to the service"
+        kill -TERM "$pid"
+        local i
+        for i in $(seq 1 30); do
+            kill -0 "$pid" 2>/dev/null || break
+            sleep 0.5
+        done
+    fi
+}
+
+# ── systemd ──
 
 unit_name() { echo "megachat-$1.service"; }
 
 unit_path() {
     echo "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/$(unit_name "$1")"
-}
-
-unit_installed() {
-    command -v systemctl >/dev/null 2>&1 && [ -f "$(unit_path "$1")" ]
 }
 
 render_unit() {
@@ -603,7 +752,7 @@ render_unit() {
     container="$(env_value "$dir/.env" WAHA_CONTAINER_NAME)"
     cat <<UNIT
 # Generated by scripts/megachat_instance.sh for instance "$name".
-# Regenerate with: $REPO_DIR/scripts/megachat_instance.sh systemd $name install
+# Regenerate with: $REPO_DIR/scripts/megachat_instance.sh install $name
 [Unit]
 Description=Megachat instance $name (WhatsApp + transcription)
 After=network-online.target
@@ -628,20 +777,11 @@ UNIT
 }
 
 systemd_install() {
-    local name="$1" dir="$2" path unit pid
-    command -v systemctl >/dev/null 2>&1 || die "systemctl not found"
+    local name="$1" dir="$2" path unit
+    command -v systemctl >/dev/null 2>&1 || die "systemctl not found (on Alpine use: $0 openrc $name install)"
     path="$(unit_path "$name")"
     unit="$(unit_name "$name")"
-    if pid="$(server_pid "$dir")" \
-        && ! systemctl --user is-active --quiet "$unit" 2>/dev/null; then
-        info "stopping the copy started by hand (PID $pid) before handing it to systemd"
-        kill -TERM "$pid"
-        local i
-        for i in $(seq 1 30); do
-            kill -0 "$pid" 2>/dev/null || break
-            sleep 0.5
-        done
-    fi
+    stop_manual_server "$name" "$dir"
     mkdir -p "$(dirname "$path")"
     render_unit "$name" "$dir" > "$path"
     systemctl --user daemon-reload
@@ -678,6 +818,129 @@ cmd_systemd() {
         status) systemctl --user status --no-pager "$(unit_name "$name")" ;;
         print) render_unit "$name" "$dir" ;;
         *) die "systemd: expected install, uninstall, status or print" ;;
+    esac
+}
+
+# ── OpenRC (Alpine) ──
+
+render_openrc() {
+    local name="$1" dir="$2" args user group user_home container docker_bin
+    args="$(serve_args "$dir" | tr '\n' ' ')"
+    user="$(service_user)"
+    group="$(id -gn "$user" 2>/dev/null)" || group="$user"
+    user_home="$(getent passwd "$user" 2>/dev/null | cut -d: -f6)" || user_home=""
+    user_home="${user_home:-$HOME}"
+    container="$(env_value "$dir/.env" WAHA_CONTAINER_NAME)"
+    docker_bin="$(command -v docker || echo /usr/bin/docker)"
+    cat <<RC
+#!/sbin/openrc-run
+# Generated by scripts/megachat_instance.sh for instance "$name".
+# Regenerate with: $REPO_DIR/scripts/megachat_instance.sh install $name
+
+name="megachat-$name"
+description="Megachat instance $name (WhatsApp + transcription)"
+
+# supervise-daemon restarts the server if it dies.
+supervisor=supervise-daemon
+respawn_delay=10
+respawn_max=0
+retry="SIGTERM/30/SIGKILL/5"
+
+command="/usr/bin/env"
+command_args="MEGACHAT_HOME='$dir' HOME='$user_home' PYTHONUNBUFFERED=1 '$(python_bin)' '$REPO_DIR/megachat.py' serve ${args% }"
+command_user="$user:$group"
+directory="$REPO_DIR"
+output_log="$dir/logs/service.log"
+error_log="$dir/logs/service.log"
+
+depend() {
+    need net
+    after docker
+}
+
+start_pre() {
+    # Its WAHA container (restart: unless-stopped): make sure it is up.
+    if [ -x "$docker_bin" ]; then
+        "$docker_bin" start "$container" >/dev/null 2>&1 \\
+            || ewarn "could not start the WAHA container $container"
+    fi
+    checkpath --directory --owner "$user:$group" "$dir/logs"
+    return 0
+}
+RC
+}
+
+openrc_install() {
+    local name="$1" dir="$2" svc tmp
+    command -v rc-service >/dev/null 2>&1 || die "rc-service not found: is this an OpenRC system?"
+    svc="$(service_name "$name")"
+    stop_manual_server "$name" "$dir"
+    tmp="$dir/run/$svc.openrc"
+    render_openrc "$name" "$dir" > "$tmp"
+    as_root install -m 0755 "$tmp" "$OPENRC_DIR/$svc"
+    rm -f "$tmp"
+    as_root rc-update add "$svc" default
+    as_root rc-service "$svc" restart
+    echo "✅ $svc installed in $OPENRC_DIR, enabled at boot (runlevel default) and started"
+    echo "   Output of the service: $dir/logs/service.log"
+}
+
+openrc_uninstall() {
+    local name="$1" svc
+    svc="$(service_name "$name")"
+    if [ ! -f "$OPENRC_DIR/$svc" ]; then
+        info "$svc is not installed"
+        return 0
+    fi
+    as_root rc-service "$svc" stop || true
+    as_root rc-update del "$svc" default || true
+    as_root rm -f "$OPENRC_DIR/$svc"
+    echo "✅ $svc removed (the instance data is untouched)"
+}
+
+cmd_openrc() {
+    local name="${1:-}" action="${2:-print}" dir
+    dir="$(require_instance "$name")"
+    case "$action" in
+        install) openrc_install "$name" "$dir" ;;
+        uninstall|remove) openrc_uninstall "$name" ;;
+        status) rc-service "$(service_name "$name")" status ;;
+        print) render_openrc "$name" "$dir" ;;
+        *) die "openrc: expected install, uninstall, status or print" ;;
+    esac
+}
+
+# ── install / uninstall (whatever the machine uses) ──
+
+cmd_install() {
+    local name="${1:-}" dir kind
+    dir="$(require_instance "$name")"
+    kind="$(init_system)"
+    case "$kind" in
+        systemd) systemd_install "$name" "$dir" ;;
+        openrc) openrc_install "$name" "$dir" ;;
+        *)
+            die "no systemd or OpenRC on this machine: start it with '$0 start $name'" \
+                "(or force one with MEGACHAT_INIT=systemd|openrc)"
+            ;;
+    esac
+}
+
+cmd_uninstall() {
+    local name="${1:-}" dir
+    dir="$(require_instance "$name")"
+    case "$(service_kind "$name")" in
+        systemd) systemd_uninstall "$name" ;;
+        openrc) openrc_uninstall "$name" ;;
+        *) info "no service installed for '$name'" ;;
+    esac
+}
+
+# Remove whatever service NAME has (used by destroy).
+service_remove() {
+    case "$(service_kind "$1")" in
+        systemd) systemd_uninstall "$1" ;;
+        openrc) openrc_uninstall "$1" ;;
     esac
 }
 
@@ -726,9 +989,7 @@ cmd_destroy() {
     fi
 
     if [ ! -e "$dir/.destroyed" ]; then
-        if unit_installed "$name"; then
-            systemd_uninstall "$name"
-        fi
+        service_remove "$name"
         local pid
         if pid="$(server_pid "$dir")"; then
             kill -TERM "$pid"
@@ -797,13 +1058,14 @@ COMANDI
     create NOME [--offset N] [--no-docker-limits] [--compose-file FILE ...]
                                       crea (o ricrea dopo destroy) un'istanza
     destroy NOME [--purge] [--yes]    spegne e cancella, tenendo .env e config.json
-    list                              elenca le istanze
+    list                              elenca le istanze con le porte (WAHA, pagina QR)
 
-  Avvio automatico (systemd)
+  Avvio automatico (servizio: systemd, oppure OpenRC su Alpine)
     install NOME                      installa e avvia il servizio: parte al boot
-                                      e riparte da solo (= systemd NOME install)
+                                      e riparte da solo (sceglie systemd/OpenRC)
     uninstall NOME                    rimuove il servizio (i dati restano)
-    systemd NOME [install|uninstall|status|print]
+    openrc NOME [install|uninstall|status|print]    solo OpenRC (Alpine)
+    systemd NOME [install|uninstall|status|print]   solo systemd
 
   WhatsApp (container WAHA dell'istanza)
     up NOME [--no-docker-limits] [--compose-file FILE ...]
@@ -812,10 +1074,10 @@ COMANDI
     link NOME                         collega WhatsApp con il QR code nel terminale
 
   Server Megachat dell'istanza
-    start NOME                        avvia il server in background (o via systemd)
+    start NOME                        avvia il server in background (o via servizio)
     stop NOME                         ferma il server
     serve NOME [ARGS]                 avvia il server in primo piano (debug)
-    status [NOME]                     stato di server, WAHA e systemd
+    status [NOME]                     stato di server, WAHA e servizio
     logs NOME [server|waha]           segue i log
 
   Accesso
@@ -923,7 +1185,9 @@ TXT
             cat <<'TXT'
 list
 
-  Stampa i nomi delle istanze (anche quelle distrutte con config conservata).
+  Stampa le istanze (anche quelle distrutte con config conservata) con
+  offset, porta WAHA e porta della pagina di stato/QR, es.:
+    amico1           offset 1   WAHA 3015   status/QR page port 4301
   Le istanze stanno in $MEGACHAT_INSTANCES_DIR (default: <repo>/instances,
   esclusa da git).
 TXT
@@ -1013,9 +1277,10 @@ TXT
 start NOME [ARGS]
 
   Avvia il server dell'istanza in background (`megachat.py serve --no-web`),
-  log in instances/NOME/logs/. Se è installato il servizio systemd
-  (`systemd NOME install`) usa `systemctl --user start` (in quel caso niente
-  ARGS: cambia config.json e reinstalla il servizio).
+  log in instances/NOME/logs/, e stampa porta e link della pagina di
+  stato/QR da mandare all'amico. Se è installato il servizio (`install NOME`)
+  lo avvia tramite systemd o OpenRC (in quel caso niente ARGS: cambia
+  config.json e rilancia `install NOME`).
 
   ARGS sono passati a `megachat serve`, es. --debug o --web-port 4250 (con
   --web-* la web UI completa viene avviata).
@@ -1025,8 +1290,8 @@ TXT
             cat <<'TXT'
 stop NOME
 
-  Ferma il server (SIGTERM, attende fino a 15 s). Via systemctl se il
-  servizio systemd è attivo. Il container WAHA resta acceso: per fermarlo
+  Ferma il server (SIGTERM, attende fino a 15 s). Tramite systemd/OpenRC se
+  è installato il servizio. Il container WAHA resta acceso: per fermarlo
   anche lui usa `down NOME`.
 TXT
             ;;
@@ -1080,29 +1345,47 @@ url NOME
   aggiunge la sezione a config.json: poi riavvia il server (stop + start).
 TXT
             ;;
-        install|uninstall)
-            help_text systemd
-            ;;
-        systemd)
+        install|uninstall|systemd|openrc)
             cat <<'TXT'
-install NOME          (= systemd NOME install)
-uninstall NOME        (= systemd NOME uninstall)
+install NOME
+uninstall NOME
+openrc NOME [install|uninstall|status|print]
 systemd NOME [install|uninstall|status|print]
 
-  install    scrive ~/.config/systemd/user/megachat-NOME.service, lo abilita e
-             lo avvia (se il server era stato avviato a mano viene fermato e
-             preso in carico da systemd). Il servizio fa `docker start` del
-             container WAHA e avvia il server; riparte da solo se si blocca.
-             Da quel momento start/stop/status usano systemctl.
-  uninstall  ferma, disabilita e cancella il servizio (dati intatti)
-  status     systemctl --user status megachat-NOME
-  print      (default) stampa soltanto il file del servizio
+  `install NOME` fa partire il server dell'istanza al boot e lo riavvia se si
+  blocca, con il sistema di init della macchina:
+    systemd   se è attivo (/run/systemd/system): servizio *utente*
+              ~/.config/systemd/user/megachat-NOME.service
+    OpenRC    su Alpine (rc-service / openrc-run): servizio di sistema
+              /etc/init.d/megachat-NOME, nel runlevel default, gestito da
+              supervise-daemon; il server gira comunque con il TUO utente
+              (command_user), non come root
+  Se il server era stato avviato a mano viene fermato e preso in carico dal
+  servizio. Il servizio fa `docker start` del container WAHA e avvia il server.
+  Da quel momento start/stop/status passano dal servizio.
+  `uninstall NOME` lo ferma, lo disabilita e lo cancella (dati intatti).
+  MEGACHAT_INIT=systemd|openrc forza la scelta.
 
-  Perché parta al boot senza che tu faccia login, una volta sola:
-    sudo loginctl enable-linger $USER
-  Il tuo utente deve poter usare docker (gruppo docker).
-  Dopo aver cambiato config.json (es. web UI) rilancia `install`.
-  Log anche in: journalctl --user -u megachat-NOME
+  openrc / systemd NOME AZIONE agiscono su quel sistema soltanto:
+    install | uninstall | status | print (default: stampa il file del servizio)
+
+  OpenRC (Alpine):
+    - serve root per scrivere in /etc/init.d e usare rc-update/rc-service:
+      lancia lo script come root, oppure con doas/sudo installati lo script
+      li usa da solo
+    - prerequisiti: apk add bash python3 docker docker-cli-compose
+                    rc-update add docker default
+    - output del servizio: instances/NOME/logs/service.log
+    - comandi diretti: rc-service megachat-NOME start|stop|restart|status
+                       rc-update show default
+
+  systemd:
+    - perché parta al boot senza che tu faccia login, una volta sola:
+        sudo loginctl enable-linger $USER
+    - il tuo utente deve poter usare docker (gruppo docker)
+    - log anche in: journalctl --user -u megachat-NOME
+
+  Dopo aver cambiato config.json (es. web UI) rilancia `install NOME`.
 TXT
             ;;
         env)
@@ -1158,7 +1441,7 @@ TXT
     esac
 }
 
-HELP_TOPICS="create destroy list up down docker link start stop serve status logs url systemd env"
+HELP_TOPICS="create destroy list install up down docker link start stop serve status logs url env"
 
 usage() {
     local topic="${1:-overview}" code="${2:-0}" t
@@ -1175,7 +1458,7 @@ usage() {
     elif help_text "$topic" > /dev/null 2>&1; then
         help_text "$topic" | sed "s|@S@|$self|g"
     else
-        echo "Nessuna guida per '$topic'. Argomenti: $HELP_TOPICS install uninstall troubleshooting all" >&2
+        echo "Nessuna guida per '$topic'. Argomenti: $HELP_TOPICS troubleshooting all" >&2
         code=1
     fi
     exit "$code"
@@ -1205,8 +1488,9 @@ main() {
         env) cmd_env "$@" ;;
         url) cmd_url "$@" ;;
         systemd) cmd_systemd "$@" ;;
-        install) cmd_systemd "${1:-}" install ;;
-        uninstall) cmd_systemd "${1:-}" uninstall ;;
+        openrc) cmd_openrc "$@" ;;
+        install) cmd_install "$@" ;;
+        uninstall) cmd_uninstall "$@" ;;
         help) usage "${1:-overview}" 0 ;;
         -h|--help|"") usage overview 0 ;;
         *) echo "❌ comando sconosciuto: $cmd" >&2; echo >&2; usage overview 1 ;;

@@ -2,12 +2,16 @@
 """``config.json`` helper for scripts/megachat_instance.sh (stdlib only).
 
     instance_config.py status-page CONFIG_JSON OFFSET
+    instance_config.py show CONFIG_JSON
 
 Makes sure CONFIG_JSON has an enabled ``status_page`` section (instances
 created before the status page existed lack it): missing keys get their
 defaults (``host`` 0.0.0.0, ``port`` 4300+OFFSET, a random ``token``), present
 ones are kept.  Prints ``PORT TOKEN``; exit code 0 = unchanged, 10 = the file
 was updated (the server must be restarted to serve the page).
+
+``show`` only reads: prints ``ENABLED PORT TOKEN`` of the status page
+(``1``/``0``, ``-`` for a missing port or token).
 """
 
 from __future__ import annotations
@@ -49,7 +53,25 @@ def ensure_status_page(path: Path, offset: int) -> tuple[int, str, bool]:
     return int(section["port"]), str(section["token"]), changed
 
 
+def show_status_page(path: Path) -> str:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        data = {}
+    section = data.get("status_page") if isinstance(data, dict) else None
+    if not isinstance(section, dict):
+        section = {}
+    enabled = "1" if section.get("enabled") is True and section.get("token") else "0"
+    port = section.get("port")
+    port = str(port) if isinstance(port, int) and 1 <= port <= 65535 else "-"
+    token = str(section.get("token") or "-")
+    return f"{enabled} {port} {token}"
+
+
 def main(argv: list[str]) -> int:
+    if len(argv) == 2 and argv[0] == "show":
+        print(show_status_page(Path(argv[1])))
+        return 0
     if len(argv) != 3 or argv[0] != "status-page":
         print(__doc__, file=sys.stderr)
         return 2

@@ -21,7 +21,7 @@ def run(tmp_path: Path):
     fakebin = tmp_path / "bin"
     fakebin.mkdir()
     log = tmp_path / "calls.log"
-    for tool in ("docker", "systemctl"):
+    for tool in ("docker", "systemctl", "rc-service", "rc-update"):
         stub = fakebin / tool
         stub.write_text(f'#!/bin/sh\necho "{tool} $*" >> "{log}"\nexit 0\n')
         stub.chmod(0o755)
@@ -30,13 +30,22 @@ def run(tmp_path: Path):
         "PATH": f"{fakebin}:{os.environ['PATH']}",
         "MEGACHAT_INSTANCES_DIR": str(tmp_path / "instances"),
         "XDG_CONFIG_HOME": str(tmp_path / "xdg"),
+        "MEGACHAT_OPENRC_DIR": str(tmp_path / "initd"),
+        "MEGACHAT_OPENRC_RUNLEVELS": str(tmp_path / "runlevels"),
+        "MEGACHAT_PUBLIC_HOST": "myhost",
+        "MEGACHAT_INIT": "systemd",
     }
-    env.pop("MEGACHAT_HOME", None)
+    # The suite's own lock/socket overrides would hide the instance's ones.
+    for key in ("MEGACHAT_HOME", "MEGACHAT_LOCK_FILE", "MEGACHAT_SOCKET"):
+        env.pop(key, None)
+    (tmp_path / "initd").mkdir()
 
-    def _run(*args: str, stdin: str = "", check: bool = True):
+    def _run(
+        *args: str, stdin: str = "", check: bool = True, extra: dict | None = None
+    ):
         result = subprocess.run(
             ["bash", str(SCRIPT), *args],
-            env=env,
+            env={**env, **(extra or {})},
             input=stdin,
             capture_output=True,
             text=True,
@@ -199,3 +208,63 @@ def test_top_level_install_alias(run, tmp_path: Path) -> None:
     overview = _run("help").stdout
     assert "install NOME" in overview and "--no-docker-limits" in overview
     assert "WAHA_COMPOSE_FILES" in _run("help", "docker").stdout
+
+
+def test_openrc_install_start_stop_uninstall(run, tmp_path: Path) -> None:
+    _run, _, log = run
+    openrc = {"MEGACHAT_INIT": "openrc"}
+    _run("create", "amico")
+    service = tmp_path / "initd" / "megachat-amico"
+    printed = _run("openrc", "amico", "print", extra=openrc).stdout
+    assert printed.startswith("#!/sbin/openrc-run")
+    assert "supervisor=supervise-daemon" in printed
+    assert "MEGACHAT_HOME=" in printed and "serve --no-web" in printed
+    assert (
+        subprocess.run(["sh", "-n"], input=printed, text=True, check=False).returncode
+        == 0
+    )
+
+    _run("install", "amico", extra=openrc)
+    assert service.read_text() == printed
+    calls = log.read_text()
+    assert "rc-update add megachat-amico default" in calls
+    assert "rc-service megachat-amico restart" in calls
+    assert "service: openrc:installed" in _run("status", "amico").stdout
+
+    out = _run("start", "amico", extra=openrc).stdout
+    assert "via openrc" in out and "rc-service megachat-amico start" in log.read_text()
+    _run("stop", "amico", extra=openrc)  # rc-service stub: status 0 = active
+    assert "rc-service megachat-amico stop" in log.read_text()
+
+    _run("uninstall", "amico", extra=openrc)
+    assert not service.exists()
+    assert "rc-update del megachat-amico default" in log.read_text()
+
+
+def test_install_without_init_system(run) -> None:
+    _run, _, _ = run
+    _run("create", "amico")
+    result = _run("install", "amico", check=False, extra={"MEGACHAT_INIT": "none"})
+    assert result.returncode != 0 and "start amico" in result.stderr
+
+
+def test_start_and_list_show_the_status_page_port(run) -> None:
+    _run, root, _ = run
+    _run("create", "amico1")
+    _run("create", "amico2")
+    token = json.loads((root / "amico1" / "config.json").read_text())["status_page"][
+        "token"
+    ]
+    out = _run("start", "amico1").stdout
+    try:
+        assert f"port 4301: http://myhost:4301/{token}/" in out
+        listed = _run("list").stdout.splitlines()
+        assert (
+            listed[0].split()[0] == "amico1" and "status/QR page port 4301" in listed[0]
+        )
+        assert "WAHA 3025" in listed[1] and "port 4302" in listed[1]
+        assert "QR page: port 4301" in _run("status", "amico1").stdout
+    finally:
+        _run("stop", "amico1")
+    _run("destroy", "amico2", "--yes")
+    assert "destroyed" in _run("list").stdout.splitlines()[1]
