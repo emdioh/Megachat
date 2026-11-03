@@ -146,3 +146,56 @@ def test_help(run) -> None:
     assert (root / "amico" / "data").is_dir()
     assert _run("help", "nope", check=False).returncode == 1
     assert _run("nope", check=False).returncode == 1
+
+
+def _compose_calls(log: Path) -> list[str]:
+    return [line for line in log.read_text().splitlines() if "docker compose" in line]
+
+
+def test_docker_limits_and_extra_compose_files(run, tmp_path: Path) -> None:
+    _run, root, log = run
+    extra = tmp_path / "nolimits.yml"
+    extra.write_text("services:\n  whatsapp: {}\n")
+
+    _run("create", "a1")
+    _run("up", "a1")
+    assert "-f docker-compose.resources.yml" in _compose_calls(log)[-1].replace(
+        str(PROJECT_ROOT) + "/", ""
+    )
+
+    _run("up", "a1", "--no-docker-limits", "--compose-file", str(extra))
+    last = _compose_calls(log)[-1]
+    assert "resources.yml" not in last and last.endswith(f"-f {extra} up -d")
+
+    _run("create", "a2", "--no-docker-limits", "--compose-file", str(extra))
+    env = (root / "a2" / ".env").read_text()
+    assert "\nWAHA_DOCKER_LIMITS=0\n" in env
+    assert f"\nWAHA_COMPOSE_FILES={extra}\n" in env
+    _run("up", "a2")
+    last = _compose_calls(log)[-1]
+    assert "resources.yml" not in last and f"-f {extra}" in last
+
+    # A missing extra file stops before docker is called.
+    calls = len(_compose_calls(log))
+    assert _run("up", "a1", "--compose-file", "/nope.yml", check=False).returncode != 0
+    (root / "a2" / ".env").write_text(env.replace(str(extra), "missing.yml"))
+    assert _run("up", "a2", check=False).returncode != 0
+    assert len(_compose_calls(log)) == calls
+
+    # A recreated instance keeps its .env: docker options are refused.
+    _run("destroy", "a1", "--yes")
+    assert _run("create", "a1", "--no-docker-limits", check=False).returncode != 0
+
+
+def test_top_level_install_alias(run, tmp_path: Path) -> None:
+    _run, _, log = run
+    _run("create", "amico")
+    _run("install", "amico")
+    unit = tmp_path / "xdg" / "systemd" / "user" / "megachat-amico.service"
+    assert unit.exists()
+    assert "systemctl --user enable megachat-amico.service" in log.read_text()
+    _run("uninstall", "amico")
+    assert not unit.exists()
+    overview = _run("help").stdout
+    assert "install NOME" in overview and "--no-docker-limits" in overview
+    assert "WAHA_COMPOSE_FILES" in _run("help", "docker").stdout

@@ -91,20 +91,33 @@ waha_image() {
 }
 
 cmd_create() {
-    local name="${1:-}" offset=""
+    local name="${1:-}" offset="" limits="" files=()
     shift || true
     while [ $# -gt 0 ]; do
         case "$1" in
             --offset) offset="${2:-}"; shift 2 ;;
             --offset=*) offset="${1#--offset=}"; shift ;;
+            --no-docker-limits) limits=0; shift ;;
+            --docker-limits) limits=1; shift ;;
+            --compose-file)
+                [ -n "${2:-}" ] || die "--compose-file needs a file"
+                files+=("$(abs_compose_file "$2")"); shift 2 ;;
+            --compose-file=*)
+                files+=("$(abs_compose_file "${1#--compose-file=}")"); shift ;;
             *) die "unknown option: $1" ;;
         esac
     done
+    local compose_list=""
+    if [ "${#files[@]}" -gt 0 ]; then
+        compose_list="$(IFS=:; echo "${files[*]}")"
+    fi
     local dir
     dir="$(instance_dir "$name")"
     if [ -e "$dir/.env" ]; then
         [ -e "$dir/.destroyed" ] \
             || die "instance '$name' already exists ($dir); 'destroy $name' first to rebuild it"
+        [ -z "$limits" ] && [ -z "$compose_list" ] \
+            || die "instance '$name' keeps its .env: set WAHA_DOCKER_LIMITS / WAHA_COMPOSE_FILES there"
         recreate_instance "$name" "$dir" "$offset"
         return 0
     fi
@@ -123,6 +136,35 @@ cmd_create() {
     api_key="$(random_secret)"
     dash_pw="$(random_secret)"
     swagger_pw="$(random_secret)"
+
+    # Docker settings: options first, else inherited from the main .env (so a
+    # host that needs WAHA_DOCKER_LIMITS=0, e.g. an LXC container, keeps it).
+    local main_env="$REPO_DIR/.env" inherited=""
+    if [ -z "$limits" ] && [ -f "$main_env" ]; then
+        if is_off "$(env_value "$main_env" WAHA_DOCKER_LIMITS)"; then
+            limits=0
+            inherited="WAHA_DOCKER_LIMITS=0"
+        fi
+    fi
+    if [ "${#files[@]}" -eq 0 ] && [ -f "$main_env" ]; then
+        local main_files entry path resolved=()
+        main_files="$(env_value "$main_env" WAHA_COMPOSE_FILES)"
+        local IFS=:
+        for entry in $main_files; do
+            [ -n "$entry" ] || continue
+            path="${entry/#\~/$HOME}"
+            [[ "$path" = /* ]] || path="$REPO_DIR/$path"
+            resolved+=("$path")
+        done
+        unset IFS
+        if [ "${#resolved[@]}" -gt 0 ]; then
+            compose_list="$(IFS=:; echo "${resolved[*]}")"
+            inherited="${inherited:+$inherited, }WAHA_COMPOSE_FILES"
+        fi
+    fi
+    local limits_line="# WAHA_DOCKER_LIMITS=0" files_line="# WAHA_COMPOSE_FILES=docker-compose.local.yml"
+    [ "$limits" = 0 ] && limits_line="WAHA_DOCKER_LIMITS=0"
+    [ -n "$compose_list" ] && files_line="WAHA_COMPOSE_FILES=$compose_list"
 
     umask 077
     cat > "$dir/.env" <<EOF
@@ -144,6 +186,14 @@ WHATSAPP_SWAGGER_PASSWORD=$swagger_pw
 WHATSAPP_API_PORT=$((3005 + 10 * offset))
 WHATSAPP_API_URL=http://127.0.0.1:$((3005 + 10 * offset))
 CLIENT_WEBHOOK_PORT=$((8088 + 10 * offset))
+
+# ── Docker compose files of its WAHA container ───────────────────────────
+# WAHA_DOCKER_LIMITS=0 skips the CPU/RAM caps of docker-compose.resources.yml
+# (needed e.g. in an LXC container without the memory cgroup).
+# WAHA_COMPOSE_FILES: extra compose files layered last (their values win),
+# ":"-separated, relative to the repository. Applied by up/down/destroy.
+$limits_line
+$files_line
 
 # ── Other ports (only used if the matching feature is enabled) ────────────
 SIGNAL_DAEMON_PORT=$((8080 + 10 * offset))
@@ -167,6 +217,10 @@ EOF
     chmod 600 "$dir/.env" "$dir/config.json"
 
     echo "✅ Instance '$name' created in $dir (port offset $offset)"
+    [ -z "$inherited" ] || info "from the main .env: $inherited"
+    local desc
+    desc="$(describe_compose "$dir")" || desc="(see WAHA_COMPOSE_FILES in $dir/.env)"
+    info "WAHA compose files: $desc"
     next_steps "$name" "$dir"
 }
 
@@ -220,31 +274,116 @@ next_steps() {
     echo "  2. $0 up $name        # start its WhatsApp container"
     echo "  3. $0 link $name      # scan the QR with your friend's WhatsApp"
     echo "  4. $0 start $name     # start the server (headless, no web UI)"
-    echo "     or: $0 systemd $name install   # start it at boot with systemd"
+    echo "     or: $0 install $name   # start it at boot with systemd"
     echo "  5. $0 url $name       # status/QR page link to send to your friend"
+}
+
+# ── docker compose files ─────────────────────────────────────────────────
+# Same rules as launcher.py: docker-compose.yml, then the CPU/RAM overlay
+# docker-compose.resources.yml (unless WAHA_DOCKER_LIMITS=0 or
+# --no-docker-limits), then the extra files of WAHA_COMPOSE_FILES
+# (":"-separated, relative to the repository) and of --compose-file.
+
+# One-run overrides, set by parse_docker_opts.
+RUN_NO_LIMITS=0
+RUN_COMPOSE_FILES=()
+
+is_off() {
+    case "$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')" in
+        0|false|no|off) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# Absolute path of a compose file given on the command line (must exist).
+abs_compose_file() {
+    local file="$1"
+    [ -f "$file" ] || die "compose file not found: $file"
+    (cd "$(dirname "$file")" && echo "$(pwd)/$(basename "$file")")
+}
+
+# Parse --no-docker-limits / --compose-file F out of "$@"; the remaining
+# arguments are left in REST_ARGS.
+parse_docker_opts() {
+    REST_ARGS=()
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --no-docker-limits) RUN_NO_LIMITS=1 ;;
+            --compose-file)
+                [ -n "${2:-}" ] || die "--compose-file needs a file"
+                RUN_COMPOSE_FILES+=("$(abs_compose_file "$2")")
+                shift
+                ;;
+            --compose-file=*) RUN_COMPOSE_FILES+=("$(abs_compose_file "${1#--compose-file=}")") ;;
+            *) REST_ARGS+=("$1") ;;
+        esac
+        shift
+    done
+}
+
+# The "-f FILE" list for an instance, one argument per line.
+compose_files() {
+    local dir="$1" entry path
+    echo "-f"
+    echo "$REPO_DIR/docker-compose.yml"
+    if [ "$RUN_NO_LIMITS" != 1 ] && ! is_off "$(env_value "$dir/.env" WAHA_DOCKER_LIMITS)" \
+        && [ -f "$REPO_DIR/docker-compose.resources.yml" ]; then
+        echo "-f"
+        echo "$REPO_DIR/docker-compose.resources.yml"
+    fi
+    local IFS=:
+    for entry in $(env_value "$dir/.env" WAHA_COMPOSE_FILES); do
+        [ -n "$entry" ] || continue
+        path="${entry/#\~/$HOME}"
+        [[ "$path" = /* ]] || path="$REPO_DIR/$path"
+        [ -f "$path" ] || die "WAHA_COMPOSE_FILES: file not found: $path (see $dir/.env)"
+        echo "-f"
+        echo "$path"
+    done
+    unset IFS
+    for path in "${RUN_COMPOSE_FILES[@]}"; do
+        echo "-f"
+        echo "$path"
+    done
 }
 
 compose() {
     local dir="$1"
     shift
-    local files=(-f "$REPO_DIR/docker-compose.yml")
-    local limits
-    limits="$(env_value "$dir/.env" WAHA_DOCKER_LIMITS)"
-    if [ "${limits:-1}" != "0" ] && [ -f "$REPO_DIR/docker-compose.resources.yml" ]; then
-        files+=(-f "$REPO_DIR/docker-compose.resources.yml")
-    fi
+    local files=() list
+    list="$(compose_files "$dir")" || exit 1
+    mapfile -t files <<< "$list"
     (cd "$REPO_DIR" && docker compose -p "megachat-$(basename "$dir")" \
         --env-file "$dir/.env" "${files[@]}" "$@")
 }
 
+# Human-readable list of the compose files in use.
+describe_compose() {
+    local dir="$1" line out=() list
+    list="$(compose_files "$dir")" || exit 1
+    while IFS= read -r line; do
+        [ "$line" = "-f" ] || out+=("${line#"$REPO_DIR/"}")
+    done <<< "$list"
+    local joined="" item
+    for item in "${out[@]}"; do joined="${joined:+$joined + }$item"; done
+    echo "$joined"
+}
+
 cmd_up() {
     local dir
+    parse_docker_opts "$@"
+    set -- "${REST_ARGS[@]+"${REST_ARGS[@]}"}"
     dir="$(require_instance "${1:-}")"
+    local desc
+    desc="$(describe_compose "$dir")" || exit 1
+    info "compose files: $desc"
     compose "$dir" up -d
 }
 
 cmd_down() {
     local dir
+    parse_docker_opts "$@"
+    set -- "${REST_ARGS[@]+"${REST_ARGS[@]}"}"
     dir="$(require_instance "${1:-}")"
     compose "$dir" down
 }
@@ -558,6 +697,8 @@ remove_tree() {
 }
 
 cmd_destroy() {
+    parse_docker_opts "$@"
+    set -- "${REST_ARGS[@]+"${REST_ARGS[@]}"}"
     local name="${1:-}" purge=0 yes=0 dir
     shift || true
     while [ $# -gt 0 ]; do
@@ -653,12 +794,20 @@ USO
 
 COMANDI
   Creazione e rimozione
-    create NOME [--offset N]          crea (o ricrea dopo destroy) un'istanza
+    create NOME [--offset N] [--no-docker-limits] [--compose-file FILE ...]
+                                      crea (o ricrea dopo destroy) un'istanza
     destroy NOME [--purge] [--yes]    spegne e cancella, tenendo .env e config.json
     list                              elenca le istanze
 
+  Avvio automatico (systemd)
+    install NOME                      installa e avvia il servizio: parte al boot
+                                      e riparte da solo (= systemd NOME install)
+    uninstall NOME                    rimuove il servizio (i dati restano)
+    systemd NOME [install|uninstall|status|print]
+
   WhatsApp (container WAHA dell'istanza)
-    up NOME                           avvia il container
+    up NOME [--no-docker-limits] [--compose-file FILE ...]
+                                      avvia il container
     down NOME                         ferma e rimuove il container (sessione conservata)
     link NOME                         collega WhatsApp con il QR code nel terminale
 
@@ -669,10 +818,8 @@ COMANDI
     status [NOME]                     stato di server, WAHA e systemd
     logs NOME [server|waha]           segue i log
 
-  Accesso e automazione
+  Accesso
     url NOME                          link della pagina di stato/QR da mandare all'amico
-    systemd NOME [install|uninstall|status|print]
-                                      avvio automatico al boot con systemd (utente)
     env NOME                          stampa `export MEGACHAT_HOME=...`
 
 AVVIO RAPIDO (un amico)
@@ -683,7 +830,7 @@ AVVIO RAPIDO (un amico)
   3. Avvia il suo WhatsApp (container WAHA):
        @S@ up amico
   4. Avvia il server, sempre attivo anche dopo un reboot:
-       @S@ systemd amico install
+       @S@ install amico
      (oppure, senza systemd: @S@ start amico)
   5. Manda all'amico il link della sua pagina di stato: lì vede se è
      collegato e, se serve, il QR (o un codice) per collegare WhatsApp:
@@ -697,7 +844,7 @@ TXT
             ;;
         create)
             cat <<'TXT'
-create NOME [--offset N]
+create NOME [--offset N] [--no-docker-limits] [--compose-file FILE ...]
 
   Crea instances/NOME/ con:
     .env          porte, chiave API di WAHA (casuale), provider di trascrizione
@@ -727,9 +874,21 @@ create NOME [--offset N]
   chiavi, impostazioni e link della pagina di stato. --offset non è ammesso in
   questo caso (le porte si cambiano modificando il .env).
 
+  Container WAHA (vedi `help docker`):
+    --no-docker-limits    scrive WAHA_DOCKER_LIMITS=0 nel .env: niente limiti
+                          CPU/RAM di docker-compose.resources.yml
+    --docker-limits       forza i limiti anche se il .env principale li toglie
+    --compose-file FILE   file compose aggiuntivo (ripetibile), salvato in
+                          WAHA_COMPOSE_FILES con percorso assoluto
+  Senza queste opzioni create copia WAHA_DOCKER_LIMITS=0 e WAHA_COMPOSE_FILES
+  dal .env principale del progetto, se ci sono: un host che ne ha bisogno
+  (es. LXC) funziona subito anche per le istanze degli amici.
+
   Esempi:
     @S@ create amico
     @S@ create mario --offset 5
+    @S@ create luca --no-docker-limits
+    @S@ create anna --compose-file docker-compose.local.yml
 TXT
             ;;
         destroy)
@@ -771,15 +930,58 @@ TXT
             ;;
         up)
             cat <<'TXT'
-up NOME
+up NOME [--no-docker-limits] [--compose-file FILE ...]
 
-  Avvia (o aggiorna) il container WAHA dell'istanza, chiamato
-  megachat-NOME-whatsapp, con:
-    docker compose -p megachat-NOME --env-file instances/NOME/.env up -d
-  Il container ha `restart: unless-stopped`, quindi riparte da solo con docker.
-  Limiti CPU/RAM di docker-compose.resources.yml applicati di default; metti
-  WAHA_DOCKER_LIMITS=0 nel .env dell'istanza per non usarli (es. in LXC).
-  La sessione WhatsApp sta in instances/NOME/whatsapp-data/.
+  Avvia (o aggiorna, se cambi i file compose) il container WAHA
+  dell'istanza, chiamato megachat-NOME-whatsapp:
+    docker compose -p megachat-NOME --env-file instances/NOME/.env \
+      -f docker-compose.yml [-f docker-compose.resources.yml] [-f ...] up -d
+  Stampa i file compose usati. Il container ha `restart: unless-stopped`,
+  quindi riparte da solo con docker. La sessione WhatsApp sta in
+  instances/NOME/whatsapp-data/.
+
+  Le opzioni valgono solo per questa esecuzione (per renderle permanenti
+  usa il .env dell'istanza, vedi `help docker`):
+    --no-docker-limits    senza docker-compose.resources.yml
+    --compose-file FILE   aggiunge FILE in fondo (ripetibile)
+TXT
+            ;;
+        docker)
+            cat <<'TXT'
+FILE DOCKER COMPOSE E LIMITI CPU/RAM (container WAHA)
+
+  Ogni comando che usa docker compose (up, down, destroy) combina, in ordine:
+    1. docker-compose.yml               il servizio WAHA
+    2. docker-compose.resources.yml     limiti 1.5 CPU / 4 GB RAM, saltato se
+                                        WAHA_DOCKER_LIMITS=0 o --no-docker-limits
+    3. WAHA_COMPOSE_FILES               file tuoi, separati da ":", relativi
+                                        alla cartella del progetto o assoluti
+    4. --compose-file FILE              file aggiunti solo per questa volta
+  I file successivi vincono sui precedenti (stesse regole di launcher.py).
+
+  Impostazioni permanenti, in instances/NOME/.env:
+    WAHA_DOCKER_LIMITS=0
+    WAHA_COMPOSE_FILES=docker-compose.local.yml:/etc/megachat/waha.yml
+  Dopo averle cambiate: @S@ up NOME (ricrea il container con la nuova
+  configurazione; la sessione WhatsApp resta).
+
+  Quando togliere i limiti: se il container non parte con
+    "error setting cgroup config ... memory.max: no such file or directory"
+  (Proxmox/LXC senza nesting): WAHA_DOCKER_LIMITS=0.
+
+  Limiti diversi invece di nessuno: un file con i tuoi valori, es.
+    # docker-compose.local.yml
+    services:
+      whatsapp:
+        deploy:
+          resources:
+            limits:
+              cpus: '1'
+              memory: 1024M
+  e WAHA_COMPOSE_FILES=docker-compose.local.yml (oppure --compose-file).
+
+  Se il .env principale del progetto ha WAHA_DOCKER_LIMITS=0 o
+  WAHA_COMPOSE_FILES, `create` li copia nella nuova istanza.
 TXT
             ;;
         down)
@@ -878,8 +1080,13 @@ url NOME
   aggiunge la sezione a config.json: poi riavvia il server (stop + start).
 TXT
             ;;
+        install|uninstall)
+            help_text systemd
+            ;;
         systemd)
             cat <<'TXT'
+install NOME          (= systemd NOME install)
+uninstall NOME        (= systemd NOME uninstall)
 systemd NOME [install|uninstall|status|print]
 
   install    scrive ~/.config/systemd/user/megachat-NOME.service, lo abilita e
@@ -951,7 +1158,7 @@ TXT
     esac
 }
 
-HELP_TOPICS="create destroy list up down link start stop serve status logs url systemd env"
+HELP_TOPICS="create destroy list up down docker link start stop serve status logs url systemd env"
 
 usage() {
     local topic="${1:-overview}" code="${2:-0}" t
@@ -968,7 +1175,7 @@ usage() {
     elif help_text "$topic" > /dev/null 2>&1; then
         help_text "$topic" | sed "s|@S@|$self|g"
     else
-        echo "Nessuna guida per '$topic'. Argomenti: $HELP_TOPICS troubleshooting all" >&2
+        echo "Nessuna guida per '$topic'. Argomenti: $HELP_TOPICS install uninstall troubleshooting all" >&2
         code=1
     fi
     exit "$code"
@@ -998,6 +1205,8 @@ main() {
         env) cmd_env "$@" ;;
         url) cmd_url "$@" ;;
         systemd) cmd_systemd "$@" ;;
+        install) cmd_systemd "${1:-}" install ;;
+        uninstall) cmd_systemd "${1:-}" uninstall ;;
         help) usage "${1:-overview}" 0 ;;
         -h|--help|"") usage overview 0 ;;
         *) echo "❌ comando sconosciuto: $cmd" >&2; echo >&2; usage overview 1 ;;

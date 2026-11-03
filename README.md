@@ -1002,12 +1002,22 @@ instance `config.json` (`enabled`, `host`, `port`, `token`); `url` adds the sect
 instances (restart the server afterwards). It also works for the main instance if you add that
 section to its `config.json`.
 
-**systemd.** `scripts/megachat_instance.sh systemd amico install` writes
+**systemd.** `scripts/megachat_instance.sh install amico` (same as `systemd amico install`) writes
 `~/.config/systemd/user/megachat-amico.service` (server + `docker start` of its WAHA container,
 restart on failure), enables and starts it; then `start`, `stop` and `status` go through
 `systemctl --user`. Run `sudo loginctl enable-linger $USER` once so user services start at boot
-without a login. `systemd amico uninstall` removes the unit, `systemd amico status` shows it,
+without a login. `uninstall amico` (or `systemd amico uninstall`) removes the unit, `systemd amico status` shows it,
 `systemd amico print` only prints it.
+
+**Docker compose files and CPU/RAM limits.** `up`, `down` and `destroy` combine the compose files
+like `launcher.py` does: `docker-compose.yml`, then `docker-compose.resources.yml` (CPU/RAM caps,
+skipped with `WAHA_DOCKER_LIMITS=0`), then `WAHA_COMPOSE_FILES` (`:`-separated, relative to the
+repository), all read from the instance `.env`. `create NAME --no-docker-limits` and
+`create NAME --compose-file FILE` (repeatable) write those settings; without them `create` copies
+`WAHA_DOCKER_LIMITS=0` / `WAHA_COMPOSE_FILES` from the main `.env`, so a host that needs them (e.g.
+an LXC container without the memory cgroup) works for the friends' instances too. `up NAME
+--no-docker-limits --compose-file FILE` applies them for one run only. `help docker` has the
+details.
 
 **Destroying an instance.** `scripts/megachat_instance.sh destroy amico` (asks you to type the
 name; `--yes` skips that) stops the server, removes its systemd unit and its WAHA container, and
