@@ -328,6 +328,24 @@ class WhatsAppRESTClient:
                     return val
         return None
 
+    def request_pairing_code(self, phone_number: str) -> str | None:
+        """Ask WAHA for a pairing code ("link with phone number instead").
+
+        ``POST /api/{session}/auth/request-code`` while the session waits for a
+        QR scan: the code (e.g. ``ABCD-EFGH``) is typed in WhatsApp → Linked
+        devices → Link with phone number.  *phone_number* is digits only, with
+        the country code.  Returns ``None`` on error.
+        """
+        result = self._request(
+            "POST",
+            f"/api/{self.session_name}/auth/request-code",
+            {"phoneNumber": phone_number},
+        )
+        if not isinstance(result, dict):
+            return None
+        code = result.get("code")
+        return code if isinstance(code, str) and code else None
+
     # ── Contacts ──────────────────────────────────────────────────────
 
     def _normalize_chat(self, chat: dict) -> dict | None:

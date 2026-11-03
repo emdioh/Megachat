@@ -142,3 +142,17 @@ def test_import_time_constants_follow_instance(tmp_path: Path) -> None:
         str(home / "run" / "signal-tui.lock"),
         str(home / "signal-cli" / "attachments"),
     ]
+
+
+def test_long_instance_path_gets_a_short_socket(tmp_path: Path) -> None:
+    deep = tmp_path / ("x" * 120) / "amico"
+    env = {"MEGACHAT_HOME": str(deep), "XDG_RUNTIME_DIR": "/run/user/1000"}
+    sock = instance.socket_file(env)
+    assert sock is not None and sock.parent == Path("/run/user/1000/megachat")
+    assert sock.name.startswith("amico-") and sock.suffix == ".sock"
+    assert sock == instance.socket_file(env)  # stable
+    other = instance.socket_file({**env, "MEGACHAT_HOME": str(deep.parent / "b")})
+    assert other != sock
+    env.pop("XDG_RUNTIME_DIR")
+    fallback = instance.socket_file(env)
+    assert fallback is not None and fallback.parent.name.startswith("megachat-")

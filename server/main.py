@@ -120,6 +120,48 @@ def _shutdown(core: ChatCore, web_handle: Any, socket_handle: Any = None) -> Non
     core.shutdown(stop_adapters)
 
 
+def _start_status_page() -> Any:
+    """Start the minimal status/QR page when ``config.json`` enables it.
+
+    Never fatal: a missing token or a busy port is logged and the server runs
+    without it.
+    """
+    from protocols.config import (
+        status_page_enabled,
+        status_page_host,
+        status_page_port,
+        status_page_token,
+    )
+
+    if not status_page_enabled():
+        return None
+    from server import status_page
+
+    token = status_page_token()
+    if not token:
+        logger.error("Status page enabled but status_page.token is empty: not started")
+        print(
+            "⚠️  Status page: status_page.token is empty, not started.", file=sys.stderr
+        )
+        return None
+    home = instance.home()
+    try:
+        handle = status_page.start(
+            status_page_host(),
+            status_page_port(),
+            token,
+            name=home.name if home is not None else "",
+        )
+    except OSError as exc:
+        logger.error("Status page failed to start: %s", exc)
+        print(f"⚠️  Status page failed to start: {exc}", file=sys.stderr)
+        return None
+    line = f"📊 Status page: {handle.url}"
+    logger.info(line)
+    print(line, flush=True)
+    return handle
+
+
 def serve(
     argv: list[str] | None = None, *, stop_event: threading.Event | None = None
 ) -> int:
@@ -147,6 +189,7 @@ def serve(
     core: ChatCore | None = None
     web_handle: Any = None
     socket_handle: Any = None
+    status_handle: Any = None
     previous_handlers: dict[int, Any] = {}
     exit_code = 0
     try:
@@ -155,6 +198,7 @@ def serve(
         # ``server.shutdown`` ends the serve loop like SIGINT does.
         core.api.shutdown_hook = stop.set
         core.start()
+        status_handle = _start_status_page()
 
         if not args.no_socket:
             try:
@@ -242,5 +286,9 @@ def serve(
             signal.signal(sig, handler)
         if core is not None:
             _shutdown(core, web_handle, socket_handle)
+        if status_handle is not None:
+            from server import status_page
+
+            status_page.stop(status_handle)
         _release_lock()
     return exit_code

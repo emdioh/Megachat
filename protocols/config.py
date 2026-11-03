@@ -657,6 +657,44 @@ def web_token() -> str:
     return str(value) if value is not None else ""
 
 
+# ─── Status page (server/status_page.py) ────────────────────────────────────
+
+
+def _status_page_config() -> dict:
+    value = _load_config().get("status_page", {})
+    return value if isinstance(value, dict) else {}
+
+
+def status_page_enabled() -> bool:
+    """Whether the minimal status/QR page is enabled (default off)."""
+    value = _status_page_config().get("enabled", False)
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return value is True
+
+
+def status_page_host() -> str:
+    """Bind host of the status page (default ``127.0.0.1``)."""
+    value = _status_page_config().get("host")
+    host = str(value).strip() if value is not None else ""
+    return host or "127.0.0.1"
+
+
+def status_page_port() -> int:
+    """Port of the status page (default ``4300``)."""
+    try:
+        port = int(_status_page_config().get("port", 4300))
+    except (TypeError, ValueError):
+        return 4300
+    return port if 1 <= port <= 65535 else 4300
+
+
+def status_page_token() -> str:
+    """Secret path segment of the status page (``""`` = not configured)."""
+    value = _status_page_config().get("token", "")
+    return str(value).strip() if value is not None else ""
+
+
 # ─── Gmail configuration ───────────────────────────────────────────────────
 
 

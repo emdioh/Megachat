@@ -9,6 +9,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+import instance
+
 __all__ = ["SOCKET_ENV", "default_socket_path", "runtime_file_path"]
 
 SOCKET_ENV = "MEGACHAT_SOCKET"
@@ -16,16 +18,17 @@ SOCKET_ENV = "MEGACHAT_SOCKET"
 
 def default_socket_path(env: dict[str, str] | None = None) -> Path:
     """Where the server listens: ``$MEGACHAT_SOCKET``, else
-    ``$MEGACHAT_HOME/run/server.sock``, else ``$XDG_RUNTIME_DIR/megachat/server.sock``, else
+    ``$MEGACHAT_HOME/run/server.sock`` (shortened when too long, see
+    :func:`instance.socket_file`), else ``$XDG_RUNTIME_DIR/megachat/server.sock``, else
     ``~/.local/state/megachat/server.sock``.  (An explicit ``--socket`` path
     overrides all of these at the call site.)"""
     env = os.environ if env is None else env
     override = env.get(SOCKET_ENV)
     if override:
         return Path(override).expanduser()
-    home = env.get("MEGACHAT_HOME", "").strip()
-    if home:
-        return Path(home).expanduser().resolve() / "run" / "server.sock"
+    instance_socket = instance.socket_file(env)
+    if instance_socket is not None:
+        return instance_socket
     runtime = env.get("XDG_RUNTIME_DIR")
     if runtime and os.path.isabs(runtime):
         return Path(runtime) / "megachat" / "server.sock"

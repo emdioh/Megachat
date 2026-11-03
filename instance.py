@@ -30,7 +30,9 @@ import this module before any module that reads those environment variables.
 
 from __future__ import annotations
 
+import hashlib
 import os
+from collections.abc import Mapping
 from pathlib import Path
 
 __all__ = [
@@ -119,10 +121,33 @@ def lock_file() -> str:
     return "/tmp/signal-tui.lock"
 
 
-def socket_file() -> Path | None:
-    """Default server socket of this instance, or ``None`` (XDG default)."""
-    root = home()
-    return root / "run" / "server.sock" if root is not None else None
+#: ``sun_path`` limit (104 bytes on BSD/macOS, NUL included), as in
+#: ``server.socket_adapter``.
+_MAX_SOCKET_PATH_BYTES = 103
+
+
+def socket_file(env: Mapping[str, str] | None = None) -> Path | None:
+    """Default server socket of this instance, or ``None`` (XDG default).
+
+    ``<home>/run/server.sock`` — unless that path is too long for a Unix
+    socket (deep instance directories): then a short per-instance name in
+    ``$XDG_RUNTIME_DIR/megachat/`` (else ``/tmp/megachat-<uid>/``).
+    """
+    env = os.environ if env is None else env
+    raw = env.get(HOME_ENV, "").strip()
+    if not raw:
+        return None
+    root = Path(raw).expanduser().resolve()
+    preferred = root / "run" / "server.sock"
+    if len(os.fsencode(preferred)) <= _MAX_SOCKET_PATH_BYTES:
+        return preferred
+    digest = hashlib.sha1(os.fsencode(root)).hexdigest()[:8]
+    runtime = env.get("XDG_RUNTIME_DIR", "")
+    if runtime and os.path.isabs(runtime):
+        base = Path(runtime) / "megachat"
+    else:
+        base = Path("/tmp") / f"megachat-{os.getuid()}"
+    return base / f"{root.name[:32]}-{digest}.sock"
 
 
 def log_file(name: str) -> str:

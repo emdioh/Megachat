@@ -972,7 +972,8 @@ Without `MEGACHAT_HOME` nothing changes. Each instance has its own WAHA containe
 `docker-compose.yml` reads `WAHA_CONTAINER_NAME`, `WAHA_DATA_PATH` and `MEGACHAT_ENV_FILE`
 (all defaulting to the historical values).
 
-`scripts/megachat_instance.sh` does all of this for you:
+`scripts/megachat_instance.sh` does all of this for you (`scripts/megachat_instance.sh help` prints a
+step-by-step guide in Italian, `help COMMAND` or `help all` the details of every command):
 
 ```bash
 scripts/megachat_instance.sh create amico   # instances/amico/ with free ports + random WAHA key
@@ -980,11 +981,39 @@ $EDITOR instances/amico/.env                # OPENAI_API_KEY=... (or OpenRouter 
 scripts/megachat_instance.sh up amico       # its own WAHA container (megachat-amico-whatsapp)
 scripts/megachat_instance.sh link amico     # QR code: scan it with the friend's WhatsApp
 scripts/megachat_instance.sh start amico    # headless server, no web UI (`serve --no-web`)
-scripts/megachat_instance.sh status         # every instance: server + WAHA
+scripts/megachat_instance.sh url amico      # link to the friend's status/QR page
+scripts/megachat_instance.sh status         # every instance: server, WAHA, systemd
 scripts/megachat_instance.sh logs amico     # tail the server log (`logs amico waha` for WAHA)
 scripts/megachat_instance.sh stop amico
-scripts/megachat_instance.sh systemd amico  # prints a systemd user unit to start it at boot
 ```
+
+Repeat `create` with other names (`amico1`, `amico2`, …) for more friends: each one gets the next
+free port offset.
+
+**Status page.** Every instance created by the script serves a minimal page (no web UI, no
+FastAPI: `server/status_page.py`, stdlib) at `http://<host>:<4300+N>/<token>/` — `url` prints it
+(set `MEGACHAT_PUBLIC_HOST` to the name/IP your friends use). It shows whether WhatsApp is linked
+(and as which account), the pairing QR when it is not (refreshed in place), a *link with phone
+number* form that asks WAHA for a pairing code (for when the page is open on the phone itself),
+a button to start or restart a stopped/failed session, and the transcription settings. The random
+token in the path is the only credential, so expose it through a VPN, a tunnel or a TLS reverse
+proxy rather than in clear on the internet. It is configured by the `status_page` section of the
+instance `config.json` (`enabled`, `host`, `port`, `token`); `url` adds the section to older
+instances (restart the server afterwards). It also works for the main instance if you add that
+section to its `config.json`.
+
+**systemd.** `scripts/megachat_instance.sh systemd amico install` writes
+`~/.config/systemd/user/megachat-amico.service` (server + `docker start` of its WAHA container,
+restart on failure), enables and starts it; then `start`, `stop` and `status` go through
+`systemctl --user`. Run `sudo loginctl enable-linger $USER` once so user services start at boot
+without a login. `systemd amico uninstall` removes the unit, `systemd amico status` shows it,
+`systemd amico print` only prints it.
+
+**Destroying an instance.** `scripts/megachat_instance.sh destroy amico` (asks you to type the
+name; `--yes` skips that) stops the server, removes its systemd unit and its WAHA container, and
+deletes its messages, media, WhatsApp session and logs, but keeps `.env` and `config.json`:
+`create amico` afterwards rebuilds it with the same ports, keys, status page link and settings
+(WhatsApp has to be linked again). `destroy amico --purge` deletes the whole directory.
 
 `create` writes a WhatsApp-only setup (`SIGNAL_ENABLED=0`, no Telegram) with automatic
 transcription on for every WhatsApp chat (`"auto_transcribe": {"whatsapp": true}`). The friend
@@ -992,7 +1021,9 @@ can still control it from the phone, writing in a chat: `!transcription off` / `
 `!transcription global off` / `on` (every chat), or replying `!t` to a voice note. Ports are the
 defaults shifted by the instance offset (1, 2, ...: WAHA `3005+10N`, webhook `8088+10N`,
 signal-cli `8080+10N`, web `4242+N`). Instances live in `instances/` (git-ignored; override with
-`MEGACHAT_INSTANCES_DIR`). To use the TUI or other tools on an instance, select it first:
+`MEGACHAT_INSTANCES_DIR`). When the instance path is too long for a Unix socket, its socket
+moves to `$XDG_RUNTIME_DIR/megachat/<name>-<hash>.sock` (else `/tmp/megachat-<uid>/`). To use the
+TUI or other tools on an instance, select it first:
 `eval "$(scripts/megachat_instance.sh env amico)"`.
 
 > `launcher.py`, `install.sh`, the shell aliases and the handover scripts still manage only the
