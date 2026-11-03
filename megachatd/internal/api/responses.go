@@ -46,7 +46,7 @@ const (
 
 // LogRecord is one element of server.logs records (logbuffer ring, 2000 max).
 // time is Unix seconds (float); level is a logging level name (DEBUG, INFO,
-// WARNING, ERROR, CRITICAL); message is secret-redacted and cut to 2000 chars.
+// WARNING, ERROR, CRITICAL); message is secret-redacted and cut to 4000 chars.
 type LogRecord struct {
 	Seq     int64   `json:"seq"`
 	Time    float64 `json:"time"`
