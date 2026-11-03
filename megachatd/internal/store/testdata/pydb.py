@@ -4,6 +4,7 @@ Usage:
     python3 -I pydb.py init  <db>                 # run _init_db, dump
     python3 -I pydb.py run   <db> <func> [json]   # run db._<func>(*args, **kwargs), dump
     python3 -I pydb.py dump  <db>                 # dump only
+    python3 -I pydb.py predicates < strings.json  # models.py predicate results
 
 The dump is JSON: schema rows of sqlite_master (sorted by name), user_version
 and every row of messages / reactions / transcriptions ordered by rowid.
@@ -42,7 +43,29 @@ def dump(path):
         conn.close()
 
 
+def predicates():
+    """stdin: JSON list of strings -> results of the models.py predicates."""
+    import models
+
+    out = []
+    for text in json.load(sys.stdin):
+        out.append(
+            {
+                "caption": models.is_caption_like(text),
+                "synthetic": models.is_whatsapp_synthetic_media_text(text),
+                "synthetic_strict_x": models.is_whatsapp_synthetic_media_text(
+                    text, attachment_id="x", require_attachment_match=True
+                ),
+                "mirror": models.is_sent_mirror_attachment_id(text),
+                "dup": models.is_duplicate_media_identity(text, text),
+            }
+        )
+    json.dump(out, sys.stdout)
+
+
 def main():
+    if sys.argv[1] == "predicates":
+        return predicates()
     cmd, db = sys.argv[1], Path(sys.argv[2]).resolve()
     d.DB_FILE = db
     d.CACHE_DIR = db.parent
