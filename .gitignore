@@ -29,3 +29,10 @@ system_tuning_root.sh
 # Checklist validazione manuale kitty — locale, non distribuita
 docs/CHECKLIST_MANUAL_KITTY.md
 
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key
+.beads/proxieddb/
+*.gate.lock*
