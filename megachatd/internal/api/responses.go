@@ -261,16 +261,22 @@ type TranscribeConfigOut struct {
 	Enabled bool `json:"enabled"`
 }
 
-// TranscribeStatusOut is transcribe.status: the stored record
-// (status "ok" | "pending" | "error", text, error, model, updated_at) or, when
-// nothing is stored, {"status":"unknown"} only (the other members are then
-// absent, hence omitempty).
+// TranscribeStatusOut is transcribe.status when a record is stored: status is
+// "ok" | "pending" | "error"; text, error, model and updated_at are the SQLite
+// columns and travel as null when unset. When nothing is stored the result is
+// TranscribeStatusUnknownOut instead.
 type TranscribeStatusOut struct {
 	Status    string   `json:"status"`
-	Text      *string  `json:"text,omitempty"`
-	Error     *string  `json:"error,omitempty"`
-	Model     *string  `json:"model,omitempty"`
-	UpdatedAt *float64 `json:"updated_at,omitempty"`
+	Text      *string  `json:"text"`
+	Error     *string  `json:"error"`
+	Model     *string  `json:"model"`
+	UpdatedAt *float64 `json:"updated_at"`
+}
+
+// TranscribeStatusUnknownOut is transcribe.status for an unknown attachment:
+// {"status":"unknown"}.
+type TranscribeStatusUnknownOut struct {
+	Status string `json:"status"`
 }
 
 // TranscribeSubmitOut is transcribe.submit: {"status":"pending"} or
@@ -329,43 +335,51 @@ func (o TranscribeSettingsOut) MarshalJSON() ([]byte, error) {
 	return json.Marshal(alias(o))
 }
 
-// TranscribeRecentRow is an element of TranscribeDiagnosticsOut.Recent. When
-// the store cannot be read the list is the single element
-// {"status":"db_error","error":"..."} (protocol/attachment_id absent).
+// TranscribeRecentRow is an element of TranscribeDiagnosticsOut.Recent (the
+// ten most recently updated records).
 type TranscribeRecentRow struct {
-	Protocol     *string  `json:"protocol,omitempty"`
-	AttachmentID *string  `json:"attachment_id,omitempty"`
+	Protocol     string   `json:"protocol"`
+	AttachmentID string   `json:"attachment_id"`
 	Status       string   `json:"status"`
-	Text         *string  `json:"text,omitempty"`
-	Error        *string  `json:"error,omitempty"`
-	Model        *string  `json:"model,omitempty"`
-	UpdatedAt    *float64 `json:"updated_at,omitempty"`
+	Text         *string  `json:"text"`
+	Error        *string  `json:"error"`
+	Model        *string  `json:"model"`
+	UpdatedAt    *float64 `json:"updated_at"`
+}
+
+// TranscribeDBErrorRow is the single element of Recent when the store cannot be
+// read: {"status":"db_error","error":"..."}.
+type TranscribeDBErrorRow struct {
+	Status string `json:"status"`
+	Error  string `json:"error"`
 }
 
 // TranscribeDiagnosticsOut is transcribe.diagnostics (never the API key).
 type TranscribeDiagnosticsOut struct {
-	Provider       string                `json:"provider"`
-	APIKeySet      bool                  `json:"api_key_set"`
-	Model          string                `json:"model"`
-	BaseURL        string                `json:"base_url"`
-	ServiceActive  bool                  `json:"service_active"`
-	ServiceClient  *string               `json:"service_client"`
-	ServiceModel   *string               `json:"service_model"`
-	ServiceBase    *string               `json:"service_base_url"`
-	WorkerAlive    bool                  `json:"worker_alive"`
-	QueueSize      *int                  `json:"queue_size"`
-	AutoTranscribe map[string]bool       `json:"auto_transcribe"`
-	AutoListener   bool                  `json:"auto_listener"`
-	FFmpeg         bool                  `json:"ffmpeg"`
-	EnvOverrides   []string              `json:"env_overrides"`
-	Recent         []TranscribeRecentRow `json:"recent"`
+	Provider       string          `json:"provider"`
+	APIKeySet      bool            `json:"api_key_set"`
+	Model          string          `json:"model"`
+	BaseURL        string          `json:"base_url"`
+	ServiceActive  bool            `json:"service_active"`
+	ServiceClient  *string         `json:"service_client"`
+	ServiceModel   *string         `json:"service_model"`
+	ServiceBase    *string         `json:"service_base_url"`
+	WorkerAlive    bool            `json:"worker_alive"`
+	QueueSize      *int            `json:"queue_size"`
+	AutoTranscribe map[string]bool `json:"auto_transcribe"`
+	AutoListener   bool            `json:"auto_listener"`
+	FFmpeg         bool            `json:"ffmpeg"`
+	EnvOverrides   []string        `json:"env_overrides"`
+	Recent         any             `json:"recent"`
 }
 
 // MarshalJSON emits env_overrides / recent as [] and auto_transcribe as {}.
 func (o TranscribeDiagnosticsOut) MarshalJSON() ([]byte, error) {
 	type alias TranscribeDiagnosticsOut
 	o.EnvOverrides = EmptyIfNil(o.EnvOverrides)
-	o.Recent = EmptyIfNil(o.Recent)
+	if o.Recent == nil {
+		o.Recent = []TranscribeRecentRow{}
+	}
 	o.AutoTranscribe = EmptyMapIfNil(o.AutoTranscribe)
 	return json.Marshal(alias(o))
 }
@@ -414,7 +428,7 @@ type GmailSummary struct {
 	From           string   `json:"from"`
 	To             string   `json:"to"`
 	Subject        string   `json:"subject"`
-	DateTs         *float64 `json:"date_ts"`
+	DateTs         *int64   `json:"date_ts"`
 	Snippet        string   `json:"snippet"`
 	HasAttachments bool     `json:"has_attachments"`
 	Seen           bool     `json:"seen"`
@@ -467,7 +481,7 @@ type GmailMessageDetail struct {
 	To          string                `json:"to"`
 	Cc          string                `json:"cc"`
 	Subject     string                `json:"subject"`
-	DateTs      *float64              `json:"date_ts"`
+	DateTs      *int64                `json:"date_ts"`
 	MessageID   string                `json:"message_id"`
 	InReplyTo   string                `json:"in_reply_to"`
 	References  string                `json:"references"`

@@ -21,6 +21,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"time"
 
 	_ "modernc.org/sqlite" // driver "sqlite"
@@ -52,6 +53,8 @@ type Store struct {
 	path  string
 	log   *slog.Logger
 	clock func() time.Time
+	// dirty: this process wrote rows that RepairMediaKinds may need to classify.
+	dirty atomic.Bool
 }
 
 // Option customises Open.

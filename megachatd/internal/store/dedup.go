@@ -11,6 +11,9 @@ import (
 // DedupMessages removes exact duplicates ((protocol, contact, timestamp, text,
 // is_mine) tuples), keeping the lowest rowid.  Returns rows removed.
 func (s *Store) DedupMessages(ctx context.Context) (int, error) {
+	if err := s.settle(ctx); err != nil {
+		return 0, err
+	}
 	var removed int64
 	err := s.withTx(ctx, func(tx *sql.Tx) error {
 		res, err := tx.ExecContext(ctx, `
@@ -46,6 +49,9 @@ var idMergeFields = []string{
 // others; “edited“ becomes the maximum.  Partitions whose timestamps span
 // more than EchoMatchWindowMs are logged and left untouched.  Idempotent.
 func (s *Store) DedupMessagesByID(ctx context.Context) (int, error) {
+	if err := s.settle(ctx); err != nil {
+		return 0, err
+	}
 	removed := 0
 	err := s.withTx(ctx, func(tx *sql.Tx) error {
 		divergent, err := queryRowMaps(ctx, tx,
@@ -135,6 +141,9 @@ func (s *Store) DedupMessagesByID(ctx context.Context) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	if removed > 0 {
+		s.markDirty()
+	}
 	return removed, nil
 }
 
@@ -142,6 +151,9 @@ func (s *Store) DedupMessagesByID(ctx context.Context) (int, error) {
 // a WAHA-URL row and its client-side “sent-*“ mirror (same msg_id) into the
 // durable “sent-*“ row.  Scope: protocol='whatsapp' AND is_mine=1.
 func (s *Store) DedupOutgoingAttachmentMirrors(ctx context.Context) (int, error) {
+	if err := s.settle(ctx); err != nil {
+		return 0, err
+	}
 	removed := 0
 	err := s.withTx(ctx, func(tx *sql.Tx) error {
 		groups, err := queryRowMaps(ctx, tx,
@@ -272,6 +284,9 @@ func (s *Store) DedupOutgoingAttachmentMirrors(ctx context.Context) (int, error)
 	if err != nil {
 		return 0, err
 	}
+	if removed > 0 {
+		s.markDirty()
+	}
 	return removed, nil
 }
 
@@ -290,6 +305,9 @@ func firstTruthy(a, b *string) string {
 // Survivor and field merge follow pickSurvivorAndMerge; real captions are
 // never dropped.
 func (s *Store) DedupIncomingAttachmentMirrors(ctx context.Context) (int, error) {
+	if err := s.settle(ctx); err != nil {
+		return 0, err
+	}
 	removed := 0
 	err := s.withTx(ctx, func(tx *sql.Tx) error {
 		groups, err := queryRowMaps(ctx, tx,
@@ -378,6 +396,9 @@ func (s *Store) DedupIncomingAttachmentMirrors(ctx context.Context) (int, error)
 	if err != nil {
 		return 0, err
 	}
+	if removed > 0 {
+		s.markDirty()
+	}
 	return removed, nil
 }
 
@@ -400,6 +421,9 @@ type GhostGroup struct {
 
 // DetectGhostOutgoingText reports (and logs) suspicious outgoing text pairs.
 func (s *Store) DetectGhostOutgoingText(ctx context.Context) ([]GhostGroup, error) {
+	if err := s.settle(ctx); err != nil {
+		return nil, err
+	}
 	const common = "FROM messages " +
 		"WHERE protocol = 'whatsapp' " +
 		"AND is_mine = 1 AND msg_type = 'text' " +
@@ -472,10 +496,16 @@ func ResetStartupMaintenance() {
 // callers block until the first run completes.  force re-runs unconditionally.
 // If the work fails the marker is dropped so a later call retries.
 func (s *Store) RunStartupMaintenance(ctx context.Context, force bool) error {
+	if err := s.settle(ctx); err != nil {
+		return err
+	}
 	startupMu.Lock()
 	defer startupMu.Unlock()
 	if force {
 		delete(startupDone, s.path)
+	}
+	if err := s.RepairMediaKinds(ctx); err != nil {
+		return err
 	}
 	if !force && startupDone[s.path] {
 		return nil

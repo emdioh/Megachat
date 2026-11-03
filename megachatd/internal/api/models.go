@@ -159,22 +159,23 @@ const (
 // CacheMessage is the canonical "cache entry" message dict (CONTRACTS §2):
 // the shape of the raw message payload in the "message" event, of the rows of
 // messages.window / messages.snapshot, and of the items of receipt.updated.
-// Every member is optional (backends differ); keys that are not modelled here
-// are kept in Extra and re-emitted unchanged. The nested "contact" (when a
+// The first twelve members (id .. status) are always present in a backend
+// payload and travel as null when unset; the others are conditional (omitempty).
+// Keys that are not modelled here are kept in Extra and re-emitted unchanged. The nested "contact" (when a
 // backend put a ChatContact there) travels as ContactWire.
 type CacheMessage struct {
-	ID                  *string      `json:"id,omitempty"`
-	Text                *string      `json:"text,omitempty"`
-	IsMine              *bool        `json:"is_mine,omitempty"`
-	Sender              *string      `json:"sender,omitempty"`
-	Timestamp           *int64       `json:"timestamp,omitempty"`
-	QuoteText           *string      `json:"quote_text,omitempty"`
-	MsgType             *string      `json:"msg_type,omitempty"`
-	AttachmentInfo      *string      `json:"attachment_info,omitempty"`
-	AttachmentID        *string      `json:"attachment_id,omitempty"`
-	ContentType         *string      `json:"content_type,omitempty"`
-	Read                *bool        `json:"read,omitempty"`
-	Status              *string      `json:"status,omitempty"`
+	ID                  *string      `json:"id"`
+	Text                *string      `json:"text"`
+	IsMine              *bool        `json:"is_mine"`
+	Sender              *string      `json:"sender"`
+	Timestamp           *int64       `json:"timestamp"`
+	QuoteText           *string      `json:"quote_text"`
+	MsgType             *string      `json:"msg_type"`
+	AttachmentInfo      *string      `json:"attachment_info"`
+	AttachmentID        *string      `json:"attachment_id"`
+	ContentType         *string      `json:"content_type"`
+	Read                *bool        `json:"read"`
+	Status              *string      `json:"status"`
 	QuoteTimestamp      *int64       `json:"quote_timestamp,omitempty"`
 	QuoteAuthor         *string      `json:"quote_author,omitempty"`
 	ReplyToMessageID    *string      `json:"reply_to_message_id,omitempty"`

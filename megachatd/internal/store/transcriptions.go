@@ -19,6 +19,9 @@ type Transcription struct {
 
 // GetTranscription returns the stored record, or nil when absent.
 func (s *Store) GetTranscription(ctx context.Context, protocol, attachmentID string) (*Transcription, error) {
+	if err := s.settle(ctx); err != nil {
+		return nil, err
+	}
 	t := Transcription{Protocol: protocol, AttachmentID: attachmentID}
 	var text, errText, model sql.NullString
 	err := s.db.QueryRowContext(ctx,
@@ -39,6 +42,9 @@ func (s *Store) GetTranscription(ctx context.Context, protocol, attachmentID str
 // updated_at with the current time.  An empty Status is stored as given; the
 // Python callers always pass one.
 func (s *Store) SetTranscription(ctx context.Context, t Transcription) error {
+	if err := s.settle(ctx); err != nil {
+		return err
+	}
 	now := float64(s.clock().UnixNano()) / 1e9
 	_, err := s.db.ExecContext(ctx, `
                 INSERT INTO transcriptions (
@@ -56,6 +62,9 @@ func (s *Store) SetTranscription(ctx context.Context, t Transcription) error {
 
 // RecentTranscriptions returns the most recently updated records.
 func (s *Store) RecentTranscriptions(ctx context.Context, limit int) ([]Transcription, error) {
+	if err := s.settle(ctx); err != nil {
+		return nil, err
+	}
 	rows, err := s.db.QueryContext(ctx,
 		"SELECT protocol, attachment_id, status, text, error, model, "+
 			"updated_at FROM transcriptions ORDER BY updated_at DESC LIMIT ?", limit)

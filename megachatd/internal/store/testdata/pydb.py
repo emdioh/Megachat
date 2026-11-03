@@ -2,7 +2,7 @@
 
 Usage:
     python3 -I pydb.py init  <db>                 # run _init_db, dump
-    python3 -I pydb.py run   <db> <func> [json]   # run db._<func>(*args), dump
+    python3 -I pydb.py run   <db> <func> [json]   # run db._<func>(*args, **kwargs), dump
     python3 -I pydb.py dump  <db>                 # dump only
 
 The dump is JSON: schema rows of sqlite_master (sorted by name), user_version
@@ -50,8 +50,10 @@ def main():
     if cmd == "init":
         d._init_db()
     elif cmd == "run":
-        args = json.loads(sys.argv[4]) if len(sys.argv) > 4 else []
-        result = getattr(d, "_" + sys.argv[3])(*args)
+        spec = json.loads(sys.argv[4]) if len(sys.argv) > 4 else []
+        # ``[a, b]`` -> positional; ``{"args": [...], "kwargs": {...}}`` -> both.
+        args, kwargs = (spec["args"], spec.get("kwargs", {})) if isinstance(spec, dict) else (spec, {})
+        result = getattr(d, "_" + sys.argv[3])(*args, **kwargs)
     elif cmd != "dump":
         raise SystemExit("unknown command")
     out = dump(db)

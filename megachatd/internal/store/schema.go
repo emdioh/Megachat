@@ -152,70 +152,12 @@ func migrateProtocolSchema(ctx context.Context, ex execer) error {
 	if columns, err = messageColumnSet(ctx, ex); err != nil {
 		return err
 	}
-	hasAll := columns["media_kind"] && columns["attachment_id"] && columns["attachment_info"]
-	hasCandidate := false
-	if hasAll {
-		conds := []string{
-			"media_kind='document'",
-			"(media_kind IS NULL AND (attachment_id IS NOT NULL " +
-				"OR attachment_info IS NOT NULL))",
-		}
-		if columns["msg_type"] {
-			conds = append(conds, "(media_kind IS NULL AND msg_type='attachment')")
-		}
-		var one int
-		err := ex.QueryRowContext(ctx,
-			"SELECT 1 FROM messages WHERE "+strings.Join(conds, " OR ")+" LIMIT 1").Scan(&one)
-		switch {
-		case err == nil:
-			hasCandidate = true
-		case isNoRows(err):
-		default:
-			return err
-		}
-	}
-
 	version, err := schemaVersion(ctx, ex)
 	if err != nil {
 		return err
 	}
-
-	if hasAll && hasCandidate {
-		if err := exec("UPDATE messages SET media_kind='audio' WHERE media_kind='document' AND " +
-			audioCorrectionPredicate); err != nil {
-			return err
-		}
-		if err := exec("UPDATE messages SET media_kind='audio' WHERE media_kind IS NULL AND " +
-			audioCorrectionPredicate); err != nil {
-			return err
-		}
-		if err := exec("UPDATE messages SET media_kind='video' WHERE media_kind IS NULL AND " +
-			videoCorrectionPredicate); err != nil {
-			return err
-		}
-		if columns["msg_type"] {
-			if err := exec("UPDATE messages SET media_kind='image' WHERE media_kind IS NULL " +
-				"AND COALESCE(msg_type, '') != 'image' " +
-				"AND (LOWER(COALESCE(attachment_id, '')) LIKE '%.jpg' " +
-				"OR LOWER(COALESCE(attachment_id, '')) LIKE '%.jpeg' " +
-				"OR LOWER(COALESCE(attachment_id, '')) LIKE '%.png' " +
-				"OR LOWER(COALESCE(attachment_id, '')) LIKE '%.webp' " +
-				"OR LOWER(COALESCE(attachment_id, '')) LIKE '%.heic' " +
-				"OR LOWER(LTRIM(COALESCE(attachment_info, ''))) LIKE 'image/%')"); err != nil {
-				return err
-			}
-			if version >= LegacyMigrationVersion {
-				if err := exec("UPDATE messages SET media_kind='document' " +
-					"WHERE media_kind IS NULL " +
-					"AND COALESCE(msg_type, '') != 'image' " +
-					"AND (msg_type='attachment' OR attachment_id IS NOT NULL) " +
-					"AND LOWER(COALESCE(content_type, '')) NOT LIKE 'image/%' " +
-					"AND LOWER(LTRIM(COALESCE(attachment_info, ''))) " +
-					"NOT LIKE 'image/%'"); err != nil {
-					return err
-				}
-			}
-		}
+	if err := correctMediaKinds(ctx, ex, columns, version); err != nil {
+		return err
 	}
 
 	for _, c := range [][2]string{
@@ -321,4 +263,112 @@ func migrateProtocolSchema(ctx context.Context, ex execer) error {
 		}
 	}
 	return exec(fmt.Sprintf("PRAGMA user_version = %d", SchemaVersion))
+}
+
+// settle re-applies the media_kind correction pass when this process has
+// written rows that may need it.  Python re-ran _migrate_protocol_schema on
+// every _init_db() call, so rows saved with media_kind NULL were classified
+// by the next operation; the Go store reproduces that lazily (it only does
+// work after a write that can create such rows).
+func (s *Store) settle(ctx context.Context) error {
+	if !s.dirty.CompareAndSwap(true, false) {
+		return nil
+	}
+	if err := s.RepairMediaKinds(ctx); err != nil {
+		s.dirty.Store(true)
+		return err
+	}
+	return nil
+}
+
+// RepairMediaKinds runs the idempotent media_kind classification pass of the
+// schema migration (NULL / mis-typed "document" rows -> audio/video/image/
+// document).  It is a no-op on a table without the needed columns.
+func (s *Store) RepairMediaKinds(ctx context.Context) error {
+	return s.withTx(ctx, func(tx *sql.Tx) error {
+		columns, err := messageColumnSet(ctx, tx)
+		if err != nil {
+			return err
+		}
+		version, err := schemaVersion(ctx, tx)
+		if err != nil {
+			return err
+		}
+		return correctMediaKinds(ctx, tx, columns, version)
+	})
+}
+
+// markDirty records that rows touched by this process may need RepairMediaKinds.
+func (s *Store) markDirty() { s.dirty.Store(true) }
+
+// correctMediaKinds is the media_kind correction pass of
+// _migrate_protocol_schema.  Python executes it on every _init_db() call, not
+// only once per database.
+func correctMediaKinds(ctx context.Context, ex execer, columns map[string]bool, version int) error {
+	exec := func(q string) error {
+		_, err := ex.ExecContext(ctx, q)
+		return err
+	}
+	hasAll := columns["media_kind"] && columns["attachment_id"] && columns["attachment_info"]
+	hasCandidate := false
+	if hasAll {
+		conds := []string{
+			"media_kind='document'",
+			"(media_kind IS NULL AND (attachment_id IS NOT NULL " +
+				"OR attachment_info IS NOT NULL))",
+		}
+		if columns["msg_type"] {
+			conds = append(conds, "(media_kind IS NULL AND msg_type='attachment')")
+		}
+		var one int
+		err := ex.QueryRowContext(ctx,
+			"SELECT 1 FROM messages WHERE "+strings.Join(conds, " OR ")+" LIMIT 1").Scan(&one)
+		switch {
+		case err == nil:
+			hasCandidate = true
+		case isNoRows(err):
+		default:
+			return err
+		}
+	}
+
+	if hasAll && hasCandidate {
+		if err := exec("UPDATE messages SET media_kind='audio' WHERE media_kind='document' AND " +
+			audioCorrectionPredicate); err != nil {
+			return err
+		}
+		if err := exec("UPDATE messages SET media_kind='audio' WHERE media_kind IS NULL AND " +
+			audioCorrectionPredicate); err != nil {
+			return err
+		}
+		if err := exec("UPDATE messages SET media_kind='video' WHERE media_kind IS NULL AND " +
+			videoCorrectionPredicate); err != nil {
+			return err
+		}
+		if columns["msg_type"] {
+			if err := exec("UPDATE messages SET media_kind='image' WHERE media_kind IS NULL " +
+				"AND COALESCE(msg_type, '') != 'image' " +
+				"AND (LOWER(COALESCE(attachment_id, '')) LIKE '%.jpg' " +
+				"OR LOWER(COALESCE(attachment_id, '')) LIKE '%.jpeg' " +
+				"OR LOWER(COALESCE(attachment_id, '')) LIKE '%.png' " +
+				"OR LOWER(COALESCE(attachment_id, '')) LIKE '%.webp' " +
+				"OR LOWER(COALESCE(attachment_id, '')) LIKE '%.heic' " +
+				"OR LOWER(LTRIM(COALESCE(attachment_info, ''))) LIKE 'image/%')"); err != nil {
+				return err
+			}
+			if version >= LegacyMigrationVersion {
+				if err := exec("UPDATE messages SET media_kind='document' " +
+					"WHERE media_kind IS NULL " +
+					"AND COALESCE(msg_type, '') != 'image' " +
+					"AND (msg_type='attachment' OR attachment_id IS NOT NULL) " +
+					"AND LOWER(COALESCE(content_type, '')) NOT LIKE 'image/%' " +
+					"AND LOWER(LTRIM(COALESCE(attachment_info, ''))) " +
+					"NOT LIKE 'image/%'"); err != nil {
+					return err
+				}
+			}
+		}
+	}
+
+	return nil
 }

@@ -105,6 +105,12 @@ func collectMessages(rows *sql.Rows) ([]Message, error) {
 // DedupMessagesByID and DetectGhostOutgoingText.  Image rows have their text
 // blanked, as in the Python cache dicts.
 func (s *Store) LoadCache(ctx context.Context, protocol string) (map[string][]Message, error) {
+	if err := s.settle(ctx); err != nil {
+		return nil, err
+	}
+	if err := s.RepairMediaKinds(ctx); err != nil {
+		return nil, err
+	}
 	if _, err := s.DedupMessagesByID(ctx); err != nil {
 		return nil, err
 	}
@@ -179,6 +185,9 @@ func b2i(b bool) int {
 // new row was inserted.  The batch slot is deliberately not part of the
 // dedup key.  The row is stored read=is_mine.
 func (s *Store) AddMessage(ctx context.Context, m NewMessage) (id int64, inserted bool, err error) {
+	if err = s.settle(ctx); err != nil {
+		return 0, false, err
+	}
 	if m.Protocol == "" {
 		m.Protocol = "signal"
 	}
@@ -231,6 +240,9 @@ func (s *Store) AddMessage(ctx context.Context, m NewMessage) (id int64, inserte
 		inserted = true
 		return e
 	})
+	if inserted {
+		s.markDirty()
+	}
 	return id, inserted, err
 }
 
@@ -239,6 +251,9 @@ func (s *Store) AddMessage(ctx context.Context, m NewMessage) (id int64, inserte
 // msg_id NULL or ”), restricted to EchoMatchWindowMs around timestamp; ties
 // break on rowid.  Reports whether a row was updated.
 func (s *Store) UpdateMessageID(ctx context.Context, protocol, contact, text string, isMine bool, timestamp int64, msgID string) (bool, error) {
+	if err := s.settle(ctx); err != nil {
+		return false, err
+	}
 	if protocol == "" {
 		protocol = "signal"
 	}
@@ -281,6 +296,9 @@ func closestRowID(ctx context.Context, ex execer, protocol, contact, msgID strin
 // only the row currently carrying that attachment id is eligible (needed to
 // upgrade one slot of a multi-attachment batch).  Empty msgID -> false.
 func (s *Store) UpdateMessageAttachmentID(ctx context.Context, protocol, contact, msgID string, timestamp int64, attachmentID string, expected *string) (bool, error) {
+	if err := s.settle(ctx); err != nil {
+		return false, err
+	}
 	if msgID == "" {
 		return false, nil
 	}
@@ -305,12 +323,18 @@ func (s *Store) UpdateMessageAttachmentID(ctx context.Context, protocol, contact
 		ok = rowsAffected(res) > 0
 		return nil
 	})
+	if ok {
+		s.markDirty()
+	}
 	return ok, err
 }
 
 // UpdateMessageAttachmentInfo sets attachment_info on the closest row of
 // (protocol, contact, msgID).
 func (s *Store) UpdateMessageAttachmentInfo(ctx context.Context, protocol, contact, msgID string, timestamp int64, info string) (bool, error) {
+	if err := s.settle(ctx); err != nil {
+		return false, err
+	}
 	if msgID == "" {
 		return false, nil
 	}
@@ -327,6 +351,9 @@ func (s *Store) UpdateMessageAttachmentInfo(ctx context.Context, protocol, conta
 		ok = rowsAffected(res) > 0
 		return nil
 	})
+	if ok {
+		s.markDirty()
+	}
 	return ok, err
 }
 
@@ -334,6 +361,9 @@ func (s *Store) UpdateMessageAttachmentInfo(ctx context.Context, protocol, conta
 // attachment_id, msg_type and media_kind on the closest row of
 // (protocol, contact, msgID) provided the row has no attachment_id yet.
 func (s *Store) UpdateMessageMediaIdentity(ctx context.Context, protocol, contact, msgID string, timestamp int64, attachmentID, msgType string, mediaKind *string) (bool, error) {
+	if err := s.settle(ctx); err != nil {
+		return false, err
+	}
 	if msgID == "" {
 		return false, nil
 	}
@@ -353,6 +383,9 @@ func (s *Store) UpdateMessageMediaIdentity(ctx context.Context, protocol, contac
 		ok = rowsAffected(res) > 0
 		return nil
 	})
+	if ok {
+		s.markDirty()
+	}
 	return ok, err
 }
 
@@ -368,6 +401,9 @@ type MediaRow struct {
 // MessageMediaRow returns the media identity of (protocol, contact, msgID),
 // preferring rows that already have an attachment id; nil when missing.
 func (s *Store) MessageMediaRow(ctx context.Context, protocol, contact, msgID string) (*MediaRow, error) {
+	if err := s.settle(ctx); err != nil {
+		return nil, err
+	}
 	if msgID == "" {
 		return nil, nil
 	}
@@ -405,6 +441,9 @@ type QuoteFill struct {
 // (protocol, contact, msgID): a column is only written when it is currently
 // NULL/” (quote_timestamp: NULL).  Reports whether a row matched.
 func (s *Store) FillMessageQuoteFields(ctx context.Context, protocol, contact, msgID string, timestamp int64, q QuoteFill) (bool, error) {
+	if err := s.settle(ctx); err != nil {
+		return false, err
+	}
 	if msgID == "" {
 		return false, nil
 	}
@@ -448,6 +487,9 @@ func (s *Store) FillMessageQuoteFields(ctx context.Context, protocol, contact, m
 // MarkAsRead marks every message of the contact (plus alias keys, for the
 // WhatsApp @c.us/@lid union) of the protocol as read.
 func (s *Store) MarkAsRead(ctx context.Context, protocol, contact string, extraKeys ...string) error {
+	if err := s.settle(ctx); err != nil {
+		return err
+	}
 	if protocol == "" {
 		protocol = "signal"
 	}
@@ -473,6 +515,9 @@ func statusGuard(newStatus string) string {
 // (protocol, contact, timestamp[, text][, status IN expected]).  A status
 // never moves to a lower rank (pending/failed < sent < delivered < read).
 func (s *Store) UpdateMessageStatus(ctx context.Context, timestamp int64, status, protocol, contact string, text *string, expected []string) (bool, error) {
+	if err := s.settle(ctx); err != nil {
+		return false, err
+	}
 	where := "protocol = ? AND contact_number = ? AND timestamp = ?"
 	params := []any{protocol, contact, timestamp}
 	if text != nil {
@@ -495,6 +540,9 @@ func (s *Store) UpdateMessageStatus(ctx context.Context, timestamp int64, status
 // UpdateMessageStatusByID is UpdateMessageStatus keyed by msg_id; contact is
 // optional.
 func (s *Store) UpdateMessageStatusByID(ctx context.Context, msgID, status, protocol string, contact *string) (bool, error) {
+	if err := s.settle(ctx); err != nil {
+		return false, err
+	}
 	where := "protocol = ? AND msg_id = ?"
 	params := []any{protocol, msgID}
 	if contact != nil {
@@ -514,6 +562,9 @@ func (s *Store) UpdateMessageStatusByID(ctx context.Context, msgID, status, prot
 // timestamp) of (protocol, contact, text), with the same never-downgrade
 // guard.  Fallback for when the echo replaced the optimistic timestamp.
 func (s *Store) UpdateMessageStatusByText(ctx context.Context, text, status, protocol, contact string, expected []string) (bool, error) {
+	if err := s.settle(ctx); err != nil {
+		return false, err
+	}
 	where := "protocol = ? AND contact_number = ? AND text = ? AND is_mine = 1"
 	params := []any{protocol, contact, text}
 	if len(expected) > 0 {
@@ -549,6 +600,9 @@ type TextUpdate struct {
 
 // UpdateMessageText rewrites the text of existing rows and flags them edited.
 func (s *Store) UpdateMessageText(ctx context.Context, u TextUpdate) (bool, error) {
+	if err := s.settle(ctx); err != nil {
+		return false, err
+	}
 	var (
 		where  string
 		params []any
@@ -590,6 +644,9 @@ type ContactKey struct{ Protocol, Contact string }
 // CountUnread counts unread incoming messages per contact_number (all
 // protocols merged, like Python's _count_unread).
 func (s *Store) CountUnread(ctx context.Context) (map[string]int, error) {
+	if err := s.settle(ctx); err != nil {
+		return nil, err
+	}
 	rows, err := s.db.QueryContext(ctx,
 		"SELECT contact_number, COUNT(*) as cnt FROM messages "+
 			"WHERE is_mine = 0 AND read = 0 GROUP BY contact_number")
@@ -611,6 +668,9 @@ func (s *Store) CountUnread(ctx context.Context) (map[string]int, error) {
 
 // UnreadCounts counts unread incoming messages per (protocol, contact).
 func (s *Store) UnreadCounts(ctx context.Context) (map[ContactKey]int, error) {
+	if err := s.settle(ctx); err != nil {
+		return nil, err
+	}
 	rows, err := s.db.QueryContext(ctx,
 		"SELECT protocol, contact_number, COUNT(*) FROM messages "+
 			"WHERE is_mine = 0 AND read = 0 "+
@@ -641,6 +701,9 @@ func (s *Store) UnreadCounts(ctx context.Context) (map[ContactKey]int, error) {
 // The media-file prune that Python chains after this (protocols.media_prune)
 // is filesystem work and is not part of the store.
 func (s *Store) PruneCache(ctx context.Context, limit int, nowMs int64) (int, error) {
+	if err := s.settle(ctx); err != nil {
+		return 0, err
+	}
 	if limit > 0 && limit < MinPruneLimit {
 		s.log.Warn("MESSAGE_RETENTION_PER_CONTACT below minimum; clamped",
 			"limit", limit, "min", MinPruneLimit)

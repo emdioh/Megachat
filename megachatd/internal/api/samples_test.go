@@ -1,0 +1,37 @@
+package api
+
+// Samples generated from the Python implementation (pydantic models and
+// server.events_api.to_wire) with fixed inputs; see api_test.go.
+var pythonSamples = map[string]string{
+	"ContactWire":                 `{"id":"+391234567890","display_name":"Ada","protocol":"signal","cache_key":"signal:+391234567890","last_message_ts":1700000000000,"extras":{"phone":"391234567890","last_message_ts":1700000000000}}`,
+	"ContactOut":                  `{"id":"+39","display_name":"Ada","protocol":"signal","extras":{"phone":"39"},"last_message_ts":5,"unread":2}`,
+	"BlobOut":                     `{"path":"/tmp/a.jpg","content_type":"image/jpeg","size":10,"version":"1-10","immutable":true}`,
+	"BlobOutNull":                 `{"path":"/tmp/a","content_type":null,"size":null,"version":null,"immutable":false}`,
+	"AttachmentIn":                `{"path":"/tmp/x.png","filename":"x.png","content_type":null,"rejected":null}`,
+	"ServerConfigOut":             `{"thumbnail_max_lines":12,"thumbnail_max_cols":60,"picker_max_results":50,"picker_preferred_backend":"","wa_lazy_media":true}`,
+	"ClientsOut":                  `{"connections":2,"self_included":true,"web":0}`,
+	"LinkStatusOut":               `{"protocols":{"signal":{"available":true,"account":"+39","linked":true},"whatsapp":{"available":true,"account":"","linked":null},"telegram":{"available":false,"account":"","linked":null}}}`,
+	"LinkPollOut":                 `{"state":"waiting","needs_2fa":false,"qr":{"kind":"png","data":"AAAA"}}`,
+	"LinkPollOutNull":             `{"state":"done","needs_2fa":false,"qr":null}`,
+	"LinkStartOut":                `{"qr":{"kind":"url","data":"sgnl://linkdevice?uuid=x"}}`,
+	"ReactionsSetOut":             `{"ok":true,"reactions":[{"emoji":"👍","count":1,"is_mine":true,"authors":["You"]}]}`,
+	"LinkPreviewOut":              `{"url":"https://x","title":"t","description":"d","site_name":"s","has_image":true}`,
+	"ContactsAddressBookOut":      `{"contacts":[{"id":"+391234567890","display_name":"Ada","protocol":"signal","cache_key":"signal:+391234567890","last_message_ts":1700000000000,"extras":{"phone":"391234567890","last_message_ts":1700000000000}}],"errors":{"whatsapp":"down"}}`,
+	"MessagesWindowOut":           `{"messages":[{"id":"1","text":"hi","is_mine":true,"sender":"You","timestamp":1,"quote_text":null,"msg_type":"text","attachment_info":null,"attachment_id":null,"content_type":null,"read":true,"status":"sent","custom_key":7}],"refreshed":false}`,
+	"event.backend_status":        `{"protocol":"signal","text":"⏳","persistent":true}`,
+	"event.backend_ready":         `{"protocol":"signal","contacts":3}`,
+	"event.backend_done":          `{"protocol":"whatsapp","ok":false}`,
+	"event.backend_connecting":    `{"protocol":"signal"}`,
+	"event.message":               `{"protocol":"signal","contact_id":"+391234567890","contact":{"id":"+391234567890","display_name":"Ada","protocol":"signal","cache_key":"signal:+391234567890","last_message_ts":1700000000000,"extras":{"phone":"391234567890","last_message_ts":1700000000000}},"was_placeholder":false,"message":{"id":"1700000000000","text":"hello","is_mine":false,"sender":"Ada","timestamp":1700000000000,"quote_text":null,"msg_type":"text","attachment_info":null,"attachment_id":null,"content_type":null,"read":false,"status":"read","contact":{"id":"+391234567890","display_name":"Ada","protocol":"signal","cache_key":"signal:+391234567890","last_message_ts":1700000000000,"extras":{"phone":"391234567890","last_message_ts":1700000000000}}},"timestamp":1700000000000,"added":true,"changed":false}`,
+	"event.message_edit":          `{"protocol":"signal","contact_id":"+391234567890","contact":{"id":"+391234567890","display_name":"Ada","protocol":"signal","cache_key":"signal:+391234567890","last_message_ts":1700000000000,"extras":{"phone":"391234567890","last_message_ts":1700000000000}},"info":{"message_id":"1700000000000","timestamp":1700000000000,"old_text":"hello","text":"hello!","is_mine":false},"text":"hello!"}`,
+	"event.reaction_update":       `{"protocol":"signal","contact_id":"+391234567890","info":{"message_id":"1","timestamp":1700000000000,"reactions":[{"emoji":"👍","count":1,"is_mine":false,"authors":["Ada"]}]}}`,
+	"event.receipt":               `{"protocol":"signal","contact_id":"+391234567890","updated":[{"id":"1","text":"yo","is_mine":true,"sender":"You","timestamp":1700000000000,"quote_text":null,"msg_type":"text","attachment_info":null,"attachment_id":null,"content_type":null,"read":true,"status":"read"}]}`,
+	"event.typing":                `{"protocol":"signal","contact_id":"+391234567890","action":"STARTED"}`,
+	"event.contact_update":        `{"protocol":"signal","contact_id":"+391234567890","contact":{"id":"+391234567890","display_name":"Ada","protocol":"signal","cache_key":"signal:+391234567890","last_message_ts":1700000000000,"extras":{"phone":"391234567890","last_message_ts":1700000000000}},"display_name":"Ada","phone":"391234567890"}`,
+	"event.contact_update_merged": `{"protocol":"whatsapp","contact_id":"1@c.us","contact":{"id":"1@lid","display_name":"Z","protocol":"whatsapp","cache_key":"whatsapp:1@lid","last_message_ts":0,"extras":{}},"display_name":"Z","phone":null,"merged_into":"1@lid"}`,
+	"event.sent_mirror":           `{"protocol":"signal","contact_id":"+391234567890","contact":{"id":"+391234567890","display_name":"Ada","protocol":"signal","cache_key":"signal:+391234567890","last_message_ts":1700000000000,"extras":{"phone":"391234567890","last_message_ts":1700000000000}},"id":"1700000000001","timestamp":1700000000001,"batch_id":null}`,
+	"event.lid_warmup_done":       `{"protocol":"whatsapp","contact_id":""}`,
+	"event.web_push":              `{"event":{"type":"gmail_unread","payload":{"unread":3,"new_mail":true}}}`,
+	"event.gap_buffer":            `{"reason":"buffer","since":3}`,
+	"event.gap_overflow":          `{"reason":"overflow"}`,
+}

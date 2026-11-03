@@ -55,6 +55,9 @@ type ReactionTarget struct {
 // insert) or, with IsRemove, just deletes it.  It reports whether anything
 // changed (an add/change always does; a remove only if a row existed).
 func (s *Store) ApplyReactionDelta(ctx context.Context, d ReactionDelta) (bool, error) {
+	if err := s.settle(ctx); err != nil {
+		return false, err
+	}
 	var changed bool
 	err := s.withTx(ctx, func(tx *sql.Tx) error {
 		res, err := tx.ExecContext(ctx,
@@ -87,6 +90,9 @@ func (s *Store) ApplyReactionDelta(ctx context.Context, d ReactionDelta) (bool, 
 // ReplaceReactionsSnapshot replaces the aggregate ("__agg__*") rows of a
 // target with a complete protocol snapshot; per-author rows are preserved.
 func (s *Store) ReplaceReactionsSnapshot(ctx context.Context, protocol, contact string, targetMsgID *string, targetTS *int64, entries []ReactionEntry, ts int64) (bool, error) {
+	if err := s.settle(ctx); err != nil {
+		return false, err
+	}
 	var changed bool
 	err := s.withTx(ctx, func(tx *sql.Tx) error {
 		res, err := tx.ExecContext(ctx,
@@ -118,6 +124,9 @@ func (s *Store) ReplaceReactionsSnapshot(ctx context.Context, protocol, contact 
 
 // ReactionsForContact returns every persisted reaction of a chat ordered by id.
 func (s *Store) ReactionsForContact(ctx context.Context, protocol, contact string) ([]Reaction, error) {
+	if err := s.settle(ctx); err != nil {
+		return nil, err
+	}
 	rows, err := s.db.QueryContext(ctx,
 		"SELECT id, protocol, contact_number, target_msg_id, target_timestamp, emoji, "+
 			"author_key, author, is_mine, count, timestamp FROM reactions "+
@@ -148,6 +157,9 @@ func (s *Store) ReactionsForContact(ctx context.Context, protocol, contact strin
 // Signal matches by msg_id, falling back to timestamp for id-less rows;
 // other protocols match by msg_id only.  nil when not cached.
 func (s *Store) ResolveReactionTargetRow(ctx context.Context, protocol, contact string, targetMsgID *string, targetTS *int64) (*ReactionTarget, error) {
+	if err := s.settle(ctx); err != nil {
+		return nil, err
+	}
 	var row *sql.Row
 	if protocol == "signal" {
 		row = s.db.QueryRowContext(ctx,
@@ -180,6 +192,9 @@ func (s *Store) ResolveReactionTargetRow(ctx context.Context, protocol, contact 
 // PruneOrphanReactions deletes reactions whose target message is no longer
 // cached and returns how many were removed.
 func (s *Store) PruneOrphanReactions(ctx context.Context) (int, error) {
+	if err := s.settle(ctx); err != nil {
+		return 0, err
+	}
 	res, err := s.db.ExecContext(ctx, `
                 DELETE FROM reactions
                 WHERE NOT EXISTS (
