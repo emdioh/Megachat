@@ -10,6 +10,11 @@ import (
 	"image/gif"
 	"image/jpeg"
 	_ "image/png" // decoder
+
+	_ "golang.org/x/image/bmp" // decoders: BMP, TIFF and WebP thumbnails like Pillow
+	xdraw "golang.org/x/image/draw"
+	_ "golang.org/x/image/tiff" // (see also internal/imgfmt)
+	_ "golang.org/x/image/webp"
 	"io/fs"
 	"math"
 	"os"
@@ -170,37 +175,27 @@ func fitRGB(src image.Image, maxSide int) *image.RGBA {
 			dh = 1
 		}
 	}
-	dst := image.NewRGBA(image.Rect(0, 0, dw, dh))
-	get := rgbAccessor(src)
-	for y := 0; y < dh; y++ {
-		y0 := b.Min.Y + y*sh/dh
-		y1 := b.Min.Y + (y+1)*sh/dh
-		if y1 <= y0 {
-			y1 = y0 + 1
-		}
-		for x := 0; x < dw; x++ {
-			x0 := b.Min.X + x*sw/dw
-			x1 := b.Min.X + (x+1)*sw/dw
-			if x1 <= x0 {
-				x1 = x0 + 1
+	// Pillow's convert("RGB") drops alpha without compositing: make the
+	// source opaque first, then resample with a bilinear (triangle) filter whose
+	// support widens when shrinking, like Image.thumbnail(..., Image.BILINEAR).
+	var opaque image.Image
+	switch src.(type) {
+	case *image.YCbCr, *image.Gray, *image.Gray16, *image.CMYK:
+		opaque = src
+	default:
+		get := rgbAccessor(src)
+		rgb := image.NewRGBA(image.Rect(0, 0, sw, sh))
+		for y := 0; y < sh; y++ {
+			for x := 0; x < sw; x++ {
+				r, g, bl := get(b.Min.X+x, b.Min.Y+y)
+				i := rgb.PixOffset(x, y)
+				rgb.Pix[i], rgb.Pix[i+1], rgb.Pix[i+2], rgb.Pix[i+3] = r, g, bl, 0xff
 			}
-			var r, g, bl, n uint32
-			for yy := y0; yy < y1; yy++ {
-				for xx := x0; xx < x1; xx++ {
-					pr, pg, pb := get(xx, yy)
-					r += uint32(pr)
-					g += uint32(pg)
-					bl += uint32(pb)
-					n++
-				}
-			}
-			i := dst.PixOffset(x, y)
-			dst.Pix[i+0] = uint8(r / n)
-			dst.Pix[i+1] = uint8(g / n)
-			dst.Pix[i+2] = uint8(bl / n)
-			dst.Pix[i+3] = 0xff
 		}
+		opaque = rgb
 	}
+	dst := image.NewRGBA(image.Rect(0, 0, dw, dh))
+	xdraw.BiLinear.Scale(dst, dst.Bounds(), opaque, opaque.Bounds(), xdraw.Src, nil)
 	return dst
 }
 

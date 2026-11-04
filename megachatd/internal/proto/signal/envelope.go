@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha1"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/hex"
 	"image"
 	_ "image/gif"
@@ -12,6 +13,10 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	_ "golang.org/x/image/bmp"
+	_ "golang.org/x/image/tiff"
+	_ "golang.org/x/image/webp"
 
 	"github.com/emdioh/megachat/megachatd/internal/proto"
 )
@@ -109,17 +114,31 @@ func coerceThumbnailBytes(v any) []byte {
 	return nil
 }
 
-// validImage decodes raw like Pillow's open()+load(). WebP has no stdlib
-// decoder, so it is accepted on a RIFF/WEBP header check.
+// validImage decodes raw like Pillow's open()+load(): a real decode (x/image
+// handles WebP, BMP and TIFF too), so truncated or corrupt data is rejected.
+// Animated WebP, which x/image cannot decode but Pillow can, is accepted when
+// its container is intact.
 func validImage(raw []byte) (format string, ok bool) {
-	if len(raw) >= 12 && string(raw[:4]) == "RIFF" && string(raw[8:12]) == "WEBP" {
+	_, f, err := image.Decode(bytes.NewReader(raw))
+	if err == nil {
+		return f, true
+	}
+	if animatedWebP(raw) {
 		return "webp", true
 	}
-	_, f, err := image.Decode(bytes.NewReader(raw))
-	if err != nil {
-		return "", false
+	return "", false
+}
+
+// animatedWebP reports a RIFF/WEBP container whose VP8X header has the
+// animation flag set and whose declared RIFF size matches the data.
+func animatedWebP(raw []byte) bool {
+	if len(raw) < 30 || string(raw[:4]) != "RIFF" || string(raw[8:12]) != "WEBP" || string(raw[12:16]) != "VP8X" {
+		return false
 	}
-	return f, true
+	if int(binary.LittleEndian.Uint32(raw[4:8]))+8 > len(raw) {
+		return false
+	}
+	return raw[20]&0x02 != 0
 }
 
 // extractQuoteThumbnail persists the quoted attachment thumbnail under

@@ -10,6 +10,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"golang.org/x/text/unicode/norm"
 )
 
 const (
@@ -41,20 +43,29 @@ var allowedExt = map[string]bool{
 var unsafeName = regexp.MustCompile(`[^\p{L}\p{N}_ .()\-]`)
 var spaces = regexp.MustCompile(`\s+`)
 
-// sanitizeFilename ports filename_utils.sanitize_filename (without NFKC).
+// sanitizeFilename ports filename_utils.sanitize_filename.
 func sanitizeFilename(name string) string {
-	name = strings.ReplaceAll(name, "\\", "/")
+	name = strings.ReplaceAll(norm.NFKC.String(name), "\\", "/")
 	if i := strings.LastIndex(name, "/"); i >= 0 {
 		name = name[i+1:]
 	}
 	name = unsafeName.ReplaceAllString(name, "_")
 	name = strings.Trim(spaces.ReplaceAllString(name, " "), " .")
 	if len([]rune(name)) > 255 {
-		ext := path.Ext(name)
+		ext := pySuffix(name)
 		r := []rune(name)
 		name = strings.TrimRight(string(r[:255-len([]rune(ext))]), " .") + ext
 	}
 	return name
+}
+
+// pySuffix is pathlib.PurePath(name).suffix.
+func pySuffix(name string) string {
+	i := strings.LastIndex(name, ".")
+	if i > 0 && i < len(name)-1 {
+		return name[i:]
+	}
+	return ""
 }
 
 func tempSuffix(filename string) string {
