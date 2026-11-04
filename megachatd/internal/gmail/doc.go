@@ -3,10 +3,13 @@
 // operations of server/ops/gmail.py and the IMAP side of
 // server/gmail_unread.py.
 //
-// Dependency notes: the IMAP client is a small in-package implementation
-// (imap.go) because github.com/emersion/go-imap/v2/imapclient needs
-// go-message and go-sasl, which are not in go.sum / the module cache; the CSS
-// inliner (inline.go) is in-package because go-premailer needs goquery,
-// vanng822/css and cascadia, which are missing as well. HTML sanitising uses
-// golang.org/x/net/html plus bluemonday.
+// Building blocks:
+//   - IMAP: github.com/emersion/go-imap/v2/imapclient behind the pool of
+//     service.go (imap.go), with the BODYSTRUCTURE partial-fetch path of
+//     messages.get and attachment downloads in structure.go;
+//   - CSS inlining of <style> blocks: github.com/vanng822/go-premailer with an
+//     adaptation layer (inline.go) that keeps css-inline's semantics;
+//   - HTML sanitising: golang.org/x/net/html plus bluemonday, with a
+//     serialiser that reproduces nh3/ammonia (sanitize.go, ammonia_style.go);
+//     sanitize_parity_test.go checks it against the real Python sanitizer.
 package gmail

@@ -194,6 +194,13 @@ func (l *cssLexer) tokens(closer byte) []ctok {
 			} else {
 				l.pos += 2 + end + 2
 			}
+		case c == '<' && strings.HasPrefix(l.s[l.pos:], "<!--"), c == '-' && strings.HasPrefix(l.s[l.pos:], "-->"):
+			n := 3 // CDO / CDC are single literal tokens
+			if c == '<' {
+				n = 4
+			}
+			l.pos += n
+			out = append(out, ctok{typ: "literal", value: l.s[start:l.pos], src: l.s[start:l.pos]})
 		case c == '"' || c == '\'':
 			out = append(out, l.consumeString(c))
 		case c == '#':

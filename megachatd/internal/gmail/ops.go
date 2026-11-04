@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/emersion/go-imap/v2"
 	"net"
 	"os"
 	"strings"
@@ -26,7 +27,7 @@ func (s *Service) mapErr(op string, err error) error {
 	var nf *notFoundError
 	var up *upstreamError
 	var nc notConfiguredError
-	var se *imapStatusError
+	var se *imap.Error
 	var ne net.Error
 	switch {
 	case errors.As(err, &oe):

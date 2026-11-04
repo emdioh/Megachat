@@ -9,15 +9,18 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
-	"fmt"
+	"io"
 	"math/big"
 	"net"
-	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/emersion/go-imap/v2"
+	"github.com/emersion/go-imap/v2/imapclient"
+	"github.com/emersion/go-imap/v2/imapserver"
+	"github.com/emersion/go-imap/v2/imapserver/imapmemserver"
 )
 
 func testCert(t testing.TB) tls.Certificate {
@@ -38,360 +41,201 @@ func testCert(t testing.TB) tls.Certificate {
 	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key}
 }
 
-type fakeMsg struct {
-	uid   int
-	flags map[string]bool
-	raw   []byte
+// ---- fake IMAP: go-imap's imapserver + imapmemserver behind a TLS listener ----
+
+type fakeBox struct {
+	name  string
+	attrs []imap.MailboxAttr
 }
 
 type fakeIMAP struct {
 	t     testing.TB
 	ln    net.Listener
-	mu    sync.Mutex
-	boxes map[string][]*fakeMsg
-	next  map[string]int
-	user  string
+	user  *imapmemserver.User
+	name  string
 	pass  string
-	cmds  []string
+	boxes []fakeBox
+
+	mu   sync.Mutex
+	cmds []string
+	conn int // connections accepted
 }
 
+// fakeSession adds what Gmail does and imapmemserver does not: special-use
+// attributes in a plain LIST.
+type fakeSession struct {
+	imapserver.SessionIMAP4rev2
+	f *fakeIMAP
+}
+
+func (s *fakeSession) List(w *imapserver.ListWriter, ref string, patterns []string, o *imap.ListOptions) error {
+	for _, b := range s.f.boxes {
+		match := false
+		for _, p := range patterns {
+			if imapserver.MatchList(b.name, '/', ref, p) {
+				match = true
+			}
+		}
+		if !match {
+			continue
+		}
+		if err := w.WriteList(&imap.ListData{Mailbox: b.name, Delim: '/', Attrs: b.attrs}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// loggingConn records the commands a client sends. Gmail's
+// "-X-GM-LABELS.SILENT (\Inbox)" is logged as is, then rewritten (same
+// length) to a STORE the in-memory server understands.
+type loggingConn struct {
+	net.Conn
+	f   *fakeIMAP
+	buf []byte
+}
+
+var (
+	gmLabelsWire = []byte(`-X-GM-LABELS.SILENT (\Inbox)`)
+	gmLabelsFake = []byte(`-FLAGS.SILENT (\InboxLabels)`)
+)
+
+func (c *loggingConn) Read(b []byte) (int, error) {
+	n, err := c.Conn.Read(b)
+	if n > 0 {
+		c.buf = append(c.buf, b[:n]...)
+		for {
+			i := bytes.Index(c.buf, []byte("\r\n"))
+			if i < 0 {
+				break
+			}
+			line := string(c.buf[:i])
+			c.buf = c.buf[i+2:]
+			if _, rest, ok := strings.Cut(line, " "); ok {
+				c.f.mu.Lock()
+				c.f.cmds = append(c.f.cmds, rest)
+				c.f.mu.Unlock()
+			}
+		}
+		if bytes.Contains(b[:n], gmLabelsWire) {
+			copy(b[:n], bytes.Replace(b[:n], gmLabelsWire, gmLabelsFake, 1))
+		}
+	}
+	return n, err
+}
+
+type memLiteral struct{ *bytes.Reader }
+
+func (m memLiteral) Size() int64 { return int64(m.Reader.Size()) }
+
 func newFakeIMAP(t testing.TB, user, pass string) *fakeIMAP {
-	f := &fakeIMAP{t: t, boxes: map[string][]*fakeMsg{"INBOX": nil, "[Gmail]/Trash": nil, "[Gmail]/Sent Mail": nil},
-		next: map[string]int{}, user: user, pass: pass}
+	f := &fakeIMAP{t: t, name: user, pass: pass, boxes: []fakeBox{
+		{"INBOX", nil},
+		{"[Gmail]/Trash", []imap.MailboxAttr{imap.MailboxAttrTrash}},
+		{"[Gmail]/Sent Mail", []imap.MailboxAttr{imap.MailboxAttrSent}},
+	}}
+	mem := imapmemserver.New()
+	f.user = imapmemserver.NewUser(user, pass)
+	for _, b := range f.boxes {
+		if err := f.user.Create(b.name, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mem.AddUser(f.user)
+	srv := imapserver.New(&imapserver.Options{
+		NewSession: func(*imapserver.Conn) (imapserver.Session, *imapserver.GreetingData, error) {
+			return &fakeSession{SessionIMAP4rev2: mem.NewSession().(imapserver.SessionIMAP4rev2), f: f}, nil, nil
+		},
+		InsecureAuth: true,
+		Logger:       discardLogger{},
+	})
 	ln, err := tls.Listen("tcp", "127.0.0.1:0", &tls.Config{Certificates: []tls.Certificate{testCert(t)}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	f.ln = ln
-	go func() {
-		for {
-			c, err := ln.Accept()
-			if err != nil {
-				return
-			}
-			go f.serve(c)
-		}
-	}()
-	t.Cleanup(func() { ln.Close() })
+	go srv.Serve(&loggingListener{Listener: ln, f: f})
+	t.Cleanup(func() { srv.Close() })
 	return f
+}
+
+type discardLogger struct{}
+
+func (discardLogger) Printf(string, ...any) {}
+
+type loggingListener struct {
+	net.Listener
+	f *fakeIMAP
+}
+
+func (l *loggingListener) Accept() (net.Conn, error) {
+	c, err := l.Listener.Accept()
+	if err != nil {
+		return nil, err
+	}
+	l.f.mu.Lock()
+	l.f.conn++
+	l.f.mu.Unlock()
+	return &loggingConn{Conn: c, f: l.f}, nil
 }
 
 func (f *fakeIMAP) port() int { return f.ln.Addr().(*net.TCPAddr).Port }
 
+// add appends a message (LF line ends are converted to CRLF) and returns its UID.
 func (f *fakeIMAP) add(box string, flags []string, raw string) int {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.next[box]++
-	m := &fakeMsg{uid: f.next[box], flags: map[string]bool{}, raw: []byte(strings.ReplaceAll(raw, "\n", "\r\n"))}
-	for _, fl := range flags {
-		m.flags[fl] = true
+	f.t.Helper()
+	var fl []imap.Flag
+	for _, x := range flags {
+		fl = append(fl, imap.Flag(x))
 	}
-	f.boxes[box] = append(f.boxes[box], m)
-	return m.uid
+	data, err := f.user.Append(box, memLiteral{bytes.NewReader([]byte(strings.ReplaceAll(strings.ReplaceAll(raw, "\r\n", "\n"), "\n", "\r\n")))},
+		&imap.AppendOptions{Flags: fl})
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	return int(data.UID)
 }
 
+// commands is the log of every command line the server received.
 func (f *fakeIMAP) commands() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]string(nil), f.cmds...)
 }
 
-func (f *fakeIMAP) uids(box string) []int {
+func (f *fakeIMAP) connections() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	var out []int
-	for _, m := range f.boxes[box] {
-		out = append(out, m.uid)
-	}
-	return out
+	return f.conn
 }
 
-func splitArgs(s string) []string {
-	var out []string
-	var cur strings.Builder
-	depth, inQ := 0, false
-	for i := 0; i < len(s); i++ {
-		ch := s[i]
-		switch {
-		case inQ:
-			if ch == '\\' && i+1 < len(s) {
-				i++
-				cur.WriteByte(s[i])
-			} else if ch == '"' {
-				inQ = false
-			} else {
-				cur.WriteByte(ch)
-			}
-		case ch == '"':
-			inQ = true
-			if cur.Len() == 0 {
-				out = append(out, "")
-				cur.Reset()
-				// mark: quoted token started; collect until closing quote
-				j := i + 1
-				var q strings.Builder
-				for j < len(s) && s[j] != '"' {
-					if s[j] == '\\' && j+1 < len(s) {
-						j++
-					}
-					q.WriteByte(s[j])
-					j++
-				}
-				out[len(out)-1] = q.String()
-				i = j
-				inQ = false
-			}
-		case ch == '(' || ch == '[':
-			depth++
-			cur.WriteByte(ch)
-		case ch == ')' || ch == ']':
-			depth--
-			cur.WriteByte(ch)
-		case ch == ' ' && depth == 0:
-			if cur.Len() > 0 {
-				out = append(out, cur.String())
-				cur.Reset()
-			}
-		default:
-			cur.WriteByte(ch)
-		}
+// uids lists a mailbox's UIDs through a throwaway client session.
+func (f *fakeIMAP) uids(box string) []int {
+	f.t.Helper()
+	c, err := imapclient.DialTLS(f.ln.Addr().String(), &imapclient.Options{TLSConfig: &tls.Config{InsecureSkipVerify: true}})
+	if err != nil {
+		f.t.Fatal(err)
 	}
-	if cur.Len() > 0 {
-		out = append(out, cur.String())
-	}
-	return out
-}
-
-func parseSet(set string, max int, byUID bool, msgs []*fakeMsg) map[int]bool {
-	sel := map[int]bool{}
-	for _, part := range strings.Split(set, ",") {
-		lo, hi, isRange := strings.Cut(part, ":")
-		conv := func(x string) int {
-			if x == "*" {
-				if byUID && len(msgs) > 0 {
-					return msgs[len(msgs)-1].uid
-				}
-				return max
-			}
-			n, _ := strconv.Atoi(x)
-			return n
-		}
-		a := conv(lo)
-		b := a
-		if isRange {
-			b = conv(hi)
-		}
-		if a > b {
-			a, b = b, a
-		}
-		for i, m := range msgs {
-			key := i + 1
-			if byUID {
-				key = m.uid
-			}
-			if key >= a && key <= b {
-				sel[i] = true
-			}
-		}
-	}
-	return sel
-}
-
-func headerFields(raw []byte, fields []string) []byte {
-	idx := bytes.Index(raw, []byte("\r\n\r\n"))
-	head := raw
-	if idx >= 0 {
-		head = raw[:idx+2]
-	}
-	var out bytes.Buffer
-	keep := false
-	for _, ln := range strings.SplitAfter(string(head), "\r\n") {
-		if ln == "" {
-			continue
-		}
-		if ln[0] == ' ' || ln[0] == '\t' {
-			if keep {
-				out.WriteString(ln)
-			}
-			continue
-		}
-		name, _, _ := strings.Cut(ln, ":")
-		keep = false
-		for _, f := range fields {
-			if strings.EqualFold(f, name) {
-				keep = true
-			}
-		}
-		if keep {
-			out.WriteString(ln)
-		}
-	}
-	out.WriteString("\r\n")
-	return out.Bytes()
-}
-
-func (f *fakeIMAP) serve(c net.Conn) {
 	defer c.Close()
-	r := bufio.NewReader(c)
-	w := func(s string) { _, _ = c.Write([]byte(s)) }
-	w("* OK fake IMAP ready\r\n")
-	selected := ""
-	for {
-		line, err := r.ReadString('\n')
-		if err != nil {
-			return
-		}
-		line = strings.TrimRight(line, "\r\n")
-		tag, rest, _ := strings.Cut(line, " ")
-		f.mu.Lock()
-		f.cmds = append(f.cmds, rest)
-		f.mu.Unlock()
-		args := splitArgs(rest)
-		if len(args) == 0 {
-			continue
-		}
-		cmd := strings.ToUpper(args[0])
-		args = args[1:]
-		byUID := false
-		if cmd == "UID" && len(args) > 0 {
-			byUID = true
-			cmd = strings.ToUpper(args[0])
-			args = args[1:]
-		}
-		f.mu.Lock()
-		switch cmd {
-		case "LOGIN":
-			if len(args) == 2 && args[0] == f.user && args[1] == f.pass {
-				w(tag + " OK logged in\r\n")
-			} else {
-				w(tag + " NO [AUTHENTICATIONFAILED] bad credentials\r\n")
-			}
-		case "NOOP":
-			w(tag + " OK\r\n")
-		case "LOGOUT":
-			w("* BYE\r\n" + tag + " OK\r\n")
-			f.mu.Unlock()
-			return
-		case "SELECT", "EXAMINE":
-			box := args[0]
-			if _, ok := f.boxes[box]; !ok {
-				w(tag + " NO no such mailbox\r\n")
-				break
-			}
-			selected = box
-			w(fmt.Sprintf("* %d EXISTS\r\n* OK [UIDVALIDITY 7] ok\r\n* OK [UIDNEXT %d] ok\r\n", len(f.boxes[box]), f.next[box]+1))
-			w(tag + " OK [READ-WRITE] done\r\n")
-		case "LIST":
-			w("* LIST (\\HasNoChildren) \"/\" \"INBOX\"\r\n")
-			w("* LIST (\\HasNoChildren \\Trash) \"/\" \"[Gmail]/Trash\"\r\n")
-			w("* LIST (\\HasNoChildren \\Sent) \"/\" \"[Gmail]/Sent Mail\"\r\n")
-			w(tag + " OK\r\n")
-		case "SEARCH":
-			msgs := f.boxes[selected]
-			var res []string
-			if byUID {
-				for _, m := range msgs {
-					res = append(res, strconv.Itoa(m.uid))
-				}
-			} else {
-				sel := parseSet(args[len(args)-1], len(msgs), false, msgs)
-				for i, m := range msgs {
-					if sel[i] && !m.flags["\\Seen"] {
-						res = append(res, strconv.Itoa(i+1))
-					}
-				}
-			}
-			w("* SEARCH " + strings.Join(res, " ") + "\r\n" + tag + " OK\r\n")
-		case "FETCH":
-			msgs := f.boxes[selected]
-			sel := parseSet(args[0], len(msgs), byUID, msgs)
-			items := strings.ToUpper(args[1])
-			var idxs []int
-			for i := range sel {
-				idxs = append(idxs, i)
-			}
-			sort.Ints(idxs)
-			for _, i := range idxs {
-				m := msgs[i]
-				var fl []string
-				for k := range m.flags {
-					fl = append(fl, k)
-				}
-				sort.Strings(fl)
-				var buf bytes.Buffer
-				fmt.Fprintf(&buf, "* %d FETCH (UID %d FLAGS (%s)", i+1, m.uid, strings.Join(fl, " "))
-				switch {
-				case strings.Contains(items, "HEADER.FIELDS"):
-					a := strings.Index(items, "(FROM")
-					if a < 0 {
-						a = strings.Index(items, "HEADER.FIELDS (") + len("HEADER.FIELDS ")
-					}
-					b := strings.Index(items[a:], ")") + a
-					fields := strings.Fields(items[a+1 : b])
-					data := headerFields(m.raw, fields)
-					fmt.Fprintf(&buf, " BODY[HEADER.FIELDS (%s)] {%d}\r\n", strings.Join(fields, " "), len(data))
-					buf.Write(data)
-				case strings.Contains(items, "BODY.PEEK[]"):
-					fmt.Fprintf(&buf, " BODY[] {%d}\r\n", len(m.raw))
-					buf.Write(m.raw)
-				}
-				buf.WriteString(")\r\n")
-				_, _ = c.Write(buf.Bytes())
-			}
-			w(tag + " OK fetched\r\n")
-		case "STORE":
-			msgs := f.boxes[selected]
-			sel := parseSet(args[0], len(msgs), byUID, msgs)
-			op := strings.ToUpper(args[1])
-			flags := strings.Fields(strings.Trim(args[2], "()"))
-			if strings.Contains(op, "X-GM-LABELS") {
-				w(tag + " OK\r\n")
-				break
-			}
-			for i := range sel {
-				for _, fl := range flags {
-					if strings.HasPrefix(op, "+") {
-						msgs[i].flags[fl] = true
-					} else {
-						delete(msgs[i].flags, fl)
-					}
-				}
-			}
-			w(tag + " OK stored\r\n")
-		case "COPY":
-			msgs := f.boxes[selected]
-			sel := parseSet(args[0], len(msgs), byUID, msgs)
-			dest := args[1]
-			if _, ok := f.boxes[dest]; !ok {
-				w(tag + " NO [TRYCREATE] no such mailbox\r\n")
-				break
-			}
-			for i, m := range msgs {
-				if sel[i] {
-					f.next[dest]++
-					f.boxes[dest] = append(f.boxes[dest], &fakeMsg{uid: f.next[dest], flags: map[string]bool{}, raw: m.raw})
-				}
-			}
-			w(tag + " OK copied\r\n")
-		case "EXPUNGE":
-			var keep []*fakeMsg
-			n := 0
-			for _, m := range f.boxes[selected] {
-				if m.flags["\\Deleted"] {
-					n++
-					w(fmt.Sprintf("* %d EXPUNGE\r\n", len(keep)+1))
-					continue
-				}
-				keep = append(keep, m)
-			}
-			f.boxes[selected] = keep
-			w(tag + " OK expunged\r\n")
-		default:
-			w(tag + " BAD unknown command\r\n")
-		}
-		f.mu.Unlock()
+	if err := c.Login(f.name, f.pass).Wait(); err != nil {
+		f.t.Fatal(err)
 	}
+	if _, err := c.Select(box, &imap.SelectOptions{ReadOnly: true}).Wait(); err != nil {
+		f.t.Fatal(err)
+	}
+	d, err := c.UIDSearch(&imap.SearchCriteria{}, nil).Wait()
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	var out []int
+	for _, u := range d.AllUIDs() {
+		out = append(out, int(u))
+	}
+	return out
 }
+
+var _ = bufio.NewReader
+var _ = io.EOF
 
 // ---- fake SMTP ----
 

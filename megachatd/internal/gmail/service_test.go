@@ -188,7 +188,7 @@ func TestListSortCacheAndFlags(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out.UIDValidity != 7 || out.Folder != "INBOX" || out.Window != 200 || out.Total != 3 || out.HasMore {
+	if out.UIDValidity != 1 || out.Folder != "INBOX" || out.Window != 200 || out.Total != 3 || out.HasMore {
 		t.Fatalf("%+v", out)
 	}
 	order := []int{out.Messages[0].UID, out.Messages[1].UID, out.Messages[2].UID}
@@ -513,7 +513,7 @@ func TestOpsListGetFlagsAttachmentImageSend(t *testing.T) {
 	reg, imap, sm, _ := opsSetup(t)
 	uid := imap.add("INBOX", nil, multipartMsg)
 	v, err := call(t, reg, api.OpGmailMessagesList, `{}`)
-	if err != nil || !strings.Contains(jsonOf(t, v), `"uidvalidity":7`) || !strings.Contains(jsonOf(t, v), `"has_attachments":true`) {
+	if err != nil || !strings.Contains(jsonOf(t, v), `"uidvalidity":1`) || !strings.Contains(jsonOf(t, v), `"has_attachments":true`) {
 		t.Fatalf("%v %v", jsonOf(t, v), err)
 	}
 	v, err = call(t, reg, api.OpGmailUnread, `{}`)

@@ -3,6 +3,7 @@ package gmail
 import (
 	"bytes"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -61,6 +62,10 @@ func attrAllowed(tag, attr string) bool {
 	return false
 }
 
+// relCarrier stands for the rel="noopener noreferrer" of a link while the
+// attributes go through bluemonday, so that it keeps its place among them.
+const relCarrier = "data-mc-rel"
+
 var (
 	policyOnce sync.Once
 	htmlPolicy *bluemonday.Policy
@@ -81,6 +86,7 @@ func policy() *bluemonday.Policy {
 				p.AllowAttrs(attrs...).OnElements(tag)
 			}
 		}
+		p.AllowAttrs(relCarrier).OnElements("a")
 		p.AllowURLSchemes("http", "https", "mailto")
 		p.AllowRelativeURLs(false)
 		p.RequireParseableURLs(true)
@@ -277,6 +283,7 @@ func (s *Service) htmlAttributeFilter(tag, attr, value string, styleCache map[st
 		}
 		out, ok := sanitizeStyle(value)
 		if ok {
+			out = ammoniaStyle(out)
 			styleCache[value] = &out
 		} else {
 			styleCache[value] = nil
@@ -344,7 +351,7 @@ func filterStylesheetUncached(css string) string {
 	i := 0
 	for i < len(toks) {
 		t := toks[i]
-		if t.typ == "whitespace" {
+		if t.typ == "whitespace" || t.typ == "literal" && (t.value == "<!--" || t.value == "-->") {
 			i++
 			continue
 		}
@@ -473,8 +480,9 @@ func (s *Service) cleanScannedErr(scanned string, cids map[string]string) (strin
 			}
 		}
 	}
-	cleaned := policy().Sanitize(buf.String())
-	result := serializeAmmonia(cleaned)
+	pre := buf.String()
+	cleaned := policy().Sanitize(pre)
+	result := serializeAmmonia(cleaned, tagAttrOrder(pre))
 	if !utf8.ValidString(result) || utf8.RuneCountInString(result) > htmlMaxOutputChars {
 		return "", false
 	}
@@ -513,15 +521,36 @@ func (s *Service) filterNode(n *html.Node, cache map[string]*string, cids map[st
 		}
 		return kids
 	}
-	var attrs []html.Attribute
+	// ammonia drops the attributes the attribute filter rejects with
+	// Vec::swap_remove, from the last to the first, on the list that already
+	// ends with the rel it adds to links: a rejected attribute is replaced by
+	// the last one, which is where the attribute order of its output comes from.
+	type entry struct {
+		attr html.Attribute
+		keep bool
+	}
+	var ents []entry
 	for _, a := range n.Attr {
 		key := strings.ToLower(a.Key)
 		if a.Namespace != "" || !attrAllowed(tag, key) {
 			continue
 		}
-		if v, ok := s.htmlAttributeFilter(tag, key, a.Val, cache, cids); ok {
-			attrs = append(attrs, html.Attribute{Key: key, Val: v})
+		v, ok := s.htmlAttributeFilter(tag, key, a.Val, cache, cids)
+		ents = append(ents, entry{html.Attribute{Key: key, Val: v}, ok})
+	}
+	if tag == "a" {
+		ents = append(ents, entry{html.Attribute{Key: relCarrier, Val: "1"}, true})
+	}
+	for i := len(ents) - 1; i >= 0; i-- {
+		if !ents[i].keep {
+			last := len(ents) - 1
+			ents[i] = ents[last]
+			ents = ents[:last]
 		}
+	}
+	attrs := make([]html.Attribute, len(ents))
+	for i, e := range ents {
+		attrs[i] = e.attr
 	}
 	n.Attr = attrs
 	for _, k := range kids {
@@ -533,28 +562,74 @@ func (s *Service) filterNode(n *html.Node, cache map[string]*string, cids map[st
 	return []*html.Node{n}
 }
 
+// tagAttrs is the attribute names of one start tag, in document order.
+type tagAttrs struct {
+	name string
+	keys []string
+}
+
+// tagAttrOrder lists the start tags of src with their attribute names.
+func tagAttrOrder(src string) []tagAttrs {
+	var out []tagAttrs
+	z := html.NewTokenizer(strings.NewReader(src))
+	for {
+		tt := z.Next()
+		if tt == html.ErrorToken {
+			return out
+		}
+		if tt == html.StartTagToken || tt == html.SelfClosingTagToken {
+			t := z.Token()
+			ta := tagAttrs{name: t.Data}
+			for _, a := range t.Attr {
+				ta.keys = append(ta.keys, a.Key)
+			}
+			out = append(out, ta)
+		}
+	}
+}
+
 // serializeAmmonia re-serialises sanitised HTML the way ammonia/html5ever
 // does: void elements without a slash, attributes always double quoted with
 // &amp; &nbsp; &quot; escaped, text with &amp; &nbsp; &lt; &gt; escaped and
 // rel="noopener noreferrer" on every <a>.
-func serializeAmmonia(src string) string {
+func serializeAmmonia(src string, order []tagAttrs) string {
 	var out strings.Builder
 	z := html.NewTokenizer(strings.NewReader(src))
+	tagIdx := 0
 	for {
 		tt := z.Next()
 		if tt == html.ErrorToken {
 			break
 		}
 		t := z.Token()
+		if tt == html.StartTagToken || tt == html.SelfClosingTagToken {
+			// bluemonday writes attributes sorted by name; ammonia keeps their order.
+			if tagIdx < len(order) && order[tagIdx].name == t.Data {
+				pos := map[string]int{}
+				for i, k := range order[tagIdx].keys {
+					if _, ok := pos[k]; !ok {
+						pos[k] = i
+					}
+				}
+				sort.SliceStable(t.Attr, func(i, j int) bool { return pos[t.Attr[i].Key] < pos[t.Attr[j].Key] })
+			}
+			tagIdx++
+		}
 		switch tt {
 		case html.TextToken:
 			out.WriteString(escapeText(t.Data))
 		case html.StartTagToken, html.SelfClosingTagToken:
 			out.WriteString("<" + t.Data)
+			hasRel := false
 			for _, a := range t.Attr {
+				if a.Key == relCarrier {
+					hasRel = true
+					out.WriteString(` rel="noopener noreferrer"`)
+					continue
+				}
 				out.WriteString(" " + a.Key + `="` + escapeAttr(a.Val) + `"`)
 			}
-			if t.Data == "a" {
+			if t.Data == "a" && !hasRel {
 				out.WriteString(` rel="noopener noreferrer"`)
 			}
 			out.WriteString(">")
@@ -569,7 +644,7 @@ func serializeAmmonia(src string) string {
 
 var (
 	textEscaper = strings.NewReplacer("&", "&amp;", " ", "&nbsp;", "<", "&lt;", ">", "&gt;")
-	attrEscaper = strings.NewReplacer("&", "&amp;", " ", "&nbsp;", `"`, "&quot;")
+	attrEscaper = strings.NewReplacer("&", "&amp;", " ", "&nbsp;", `"`, "&quot;", "<", "&lt;", ">", "&gt;")
 )
 
 func escapeText(s string) string { return textEscaper.Replace(s) }

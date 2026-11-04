@@ -226,7 +226,7 @@ func (s *Service) acquire(ctx context.Context, st settings) (*imapConn, error) {
 		for len(p.idle) > 0 {
 			cand := p.idle[len(p.idle)-1]
 			p.idle = p.idle[:len(p.idle)-1]
-			if now.Sub(cand.lastUsed) > poolMaxIdle {
+			if now.Sub(cand.lastUsed) > poolMaxIdle || !cand.alive() {
 				reaped = append(reaped, cand)
 				continue
 			}
@@ -239,15 +239,14 @@ func (s *Service) acquire(ctx context.Context, st settings) (*imapConn, error) {
 			r.close()
 		}
 		if c == nil {
-			nc, err := dialIMAP(st.IMAPHost, st.IMAPPort, st.Timeout, s.tls)
+			nc, err := dialIMAP(ctx, st.IMAPHost, st.IMAPPort, st.Timeout, s.tls)
 			if err == nil {
-				nc.timeout = st.Timeout
 				err = nc.login(st.Address, st.Password)
-			}
-			if err != nil {
-				if nc != nil {
+				if err != nil {
 					nc.close()
 				}
+			}
+			if err != nil {
 				release()
 				return nil, err
 			}
@@ -255,7 +254,7 @@ func (s *Service) acquire(ctx context.Context, st settings) (*imapConn, error) {
 			return nc, nil
 		}
 		if time.Since(c.lastUsed) > poolNoopIdle {
-			c.timeout = time.Second
+			c.timeout = poolNoopTimeout
 			err := c.noop()
 			c.timeout = st.Timeout
 			if err != nil {
@@ -272,7 +271,7 @@ func (s *Service) releaseConn(c *imapConn, st settings, discard bool) {
 	p := s.pool
 	reusable := false
 	p.mu.Lock()
-	if !discard && !c.broken && c.conn != nil && c.gen == p.gen && p.fp == accountFingerprint(st) && !p.close {
+	if !discard && c.alive() && c.gen == p.gen && p.fp == accountFingerprint(st) && !p.close {
 		reusable = true
 		c.lastUsed = time.Now()
 		p.idle = append(p.idle, c)
@@ -300,11 +299,7 @@ func (s *Service) withConn(ctx context.Context, st settings, fn func(c *imapConn
 	if err != nil {
 		return err
 	}
-	stop := context.AfterFunc(ctx, func() {
-		if c.conn != nil {
-			_ = c.conn.SetDeadline(time.Now())
-		}
-	})
+	stop := context.AfterFunc(ctx, c.abort)
 	err = fn(c)
 	stop()
 	s.releaseConn(c, st, err != nil && !isKeepError(err))
@@ -314,30 +309,6 @@ func (s *Service) withConn(ctx context.Context, st settings, fn func(c *imapConn
 		}
 	}
 	return err
-}
-
-// cmd runs a command mapping a NO/BAD completion to upstream(failMsg).
-func (c *imapConn) cmd(failMsg, name string, args ...cmdArg) (*imapResult, error) {
-	res, err := c.command(name, args...)
-	if err != nil {
-		var se *imapStatusError
-		if errors.As(err, &se) {
-			return res, upstream(failMsg)
-		}
-		return res, err
-	}
-	return res, nil
-}
-
-func (c *imapConn) selectOrFail(folder string, readonly bool) error {
-	if err := c.selectFolder(folder, readonly); err != nil {
-		var se *imapStatusError
-		if errors.As(err, &se) {
-			return upstream("Cartella non disponibile")
-		}
-		return err
-	}
-	return nil
 }
 
 // ---- inbox list cache ---------------------------------------------------------------------------

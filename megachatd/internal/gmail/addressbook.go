@@ -5,19 +5,21 @@ import (
 	"math"
 	"regexp"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/emdioh/megachat/megachatd/internal/api"
+	"github.com/emersion/go-imap/v2"
 )
 
 const (
 	addressBookWindow = 500
 	addressBookTTL    = 15 * time.Minute
 	addressBookMax    = 2000
-	addressBookFetch  = "(BODY.PEEK[HEADER.FIELDS (FROM TO CC DATE)])"
 )
+
+// addressBookSection is _ADDRESS_BOOK_FETCH_ITEM.
+var addressBookSection = headerFieldsSection("FROM", "TO", "CC", "DATE")
 
 var noreplyRE = regexp.MustCompile(`(?i)(^|[._+-])(no-?reply|do-?not-?reply|mailer-daemon|bounces?)([._+-]|@)`)
 
@@ -100,7 +102,7 @@ func (s *Service) FetchAddressBook(ctx context.Context, refresh bool) ([]api.Gma
 		return nil, err
 	}
 	err = s.withConn(ctx, st, func(c *imapConn) error {
-		sent := findSpecialMailbox(c, `\sent`, "[Gmail]/Sent Mail")
+		sent := findSpecialMailbox(c, `\Sent`, "[Gmail]/Sent Mail")
 		sources := []struct {
 			folder  string
 			weights []weightedHeader
@@ -110,7 +112,7 @@ func (s *Service) FetchAddressBook(ctx context.Context, refresh bool) ([]api.Gma
 		}
 		for _, src := range sources {
 			if err := c.selectFolder(src.folder, true); err != nil {
-				if _, ok := err.(*imapStatusError); ok {
+				if isStatus(err) {
 					continue
 				}
 				return err
@@ -119,15 +121,19 @@ func (s *Service) FetchAddressBook(ctx context.Context, refresh bool) ([]api.Gma
 				continue
 			}
 			first := max(1, c.exists-addressBookWindow+1)
-			res, err := c.command("FETCH", raw(strconv.Itoa(first)+":"+strconv.Itoa(c.exists)), raw(addressBookFetch))
+			var seqs imap.SeqSet
+			seqs.AddRange(uint32(first), uint32(c.exists))
+			items, err := c.fetch("", seqs, &imap.FetchOptions{
+				BodySection: []*imap.FetchItemBodySection{addressBookSection},
+			})
 			if err != nil {
-				if _, ok := err.(*imapStatusError); ok {
+				if _, ok := err.(*upstreamError); ok {
 					continue
 				}
 				return err
 			}
-			for _, it := range fetchItems(res) {
-				if b, ok := it.firstBody(); ok {
+			for _, it := range items {
+				if b := it.section(addressBookSection); b != nil {
 					collectAddresses(entries, &order, b, src.weights, own)
 				}
 			}

@@ -27,6 +27,7 @@ const (
 	poolAcquireTimeout      = 2 * time.Second
 	poolMaxIdle             = 600 * time.Second
 	poolNoopIdle            = 30 * time.Second
+	poolNoopTimeout         = time.Second
 )
 
 // Image proxy limits (ops/gmail.py).

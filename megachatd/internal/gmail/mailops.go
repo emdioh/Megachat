@@ -2,23 +2,17 @@ package gmail
 
 import (
 	"context"
+	"errors"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/emdioh/megachat/megachatd/internal/api"
+	"github.com/emersion/go-imap/v2"
 )
 
-const listFetchItem = "(FLAGS BODY.PEEK[HEADER.FIELDS (FROM TO SUBJECT DATE CONTENT-TYPE CONTENT-DISPOSITION)])"
-
-func uidSet(uids []int64) string {
-	parts := make([]string, len(uids))
-	for i, u := range uids {
-		parts[i] = strconv.FormatInt(u, 10)
-	}
-	return strings.Join(parts, ",")
-}
+// listHeaderSection is the header-only list fetch (_LIST_FETCH_ITEM).
+var listHeaderSection = headerFieldsSection("FROM", "TO", "SUBJECT", "DATE", "CONTENT-TYPE", "CONTENT-DISPOSITION")
 
 // FetchUnreadStatus is fetch_unread_status: the unread count among the newest
 // 200 messages plus UIDNEXT, from a read-only SELECT and one SEARCH UNSEEN.
@@ -41,19 +35,16 @@ func (s *Service) FetchUnreadStatus(ctx context.Context, folder *string) (Unread
 			return upstream("Stato cartella non disponibile")
 		}
 		if c.uidNext > 0 {
-			v := c.uidNext
+			v := int64(c.uidNext)
 			out.UIDNext = &v
 		}
 		if exists == 0 {
 			return nil
 		}
 		first := max(1, exists-listWindow+1)
-		res, err := c.cmd("Stato cartella non disponibile", "SEARCH", raw("UNSEEN"), raw(strconv.Itoa(first)+":"+strconv.Itoa(exists)))
-		if err != nil {
-			return err
-		}
-		out.Unread = len(searchResults(res))
-		return nil
+		n, err := c.countUnseen("Stato cartella non disponibile", first, exists)
+		out.Unread = n
+		return err
 	})
 	return out, err
 }
@@ -111,14 +102,14 @@ func (s *Service) FetchMessageList(ctx context.Context, folder *string, offset, 
 		if err := c.selectOrFail(fv, true); err != nil {
 			return err
 		}
-		uidvalidity = c.uidValidity
-		res, err := c.cmd("Ricerca messaggi fallita", "UID SEARCH", raw("ALL"))
+		uidvalidity = int64(c.uidValidity)
+		all, err := c.uidSearchAll("Ricerca messaggi fallita")
 		if err != nil {
 			return err
 		}
 		set := map[int64]bool{}
 		var uids []int64
-		for _, u := range searchResults(res) {
+		for _, u := range all {
 			if !set[u] {
 				set[u] = true
 				uids = append(uids, u)
@@ -131,12 +122,14 @@ func (s *Service) FetchMessageList(ctx context.Context, folder *string, offset, 
 		if len(uids) == 0 {
 			return nil
 		}
-		res, err = c.cmd("Lettura messaggi fallita", "UID FETCH", raw(uidSet(uids)), raw(listFetchItem))
+		items, err := c.fetch("Lettura messaggi fallita", uidNumSet(uids), &imap.FetchOptions{
+			UID: true, Flags: true, BodySection: []*imap.FetchItemBodySection{listHeaderSection},
+		})
 		if err != nil {
 			return err
 		}
-		byUID := map[int64]fetchItem{}
-		for _, it := range fetchItems(res) {
+		byUID := map[int64]fetched{}
+		for _, it := range items {
 			if it.UID > 0 {
 				byUID[it.UID] = it
 			}
@@ -146,8 +139,7 @@ func (s *Service) FetchMessageList(ctx context.Context, folder *string, offset, 
 			if !ok {
 				continue
 			}
-			hdr, _ := it.firstBody()
-			p := parseSummary(hdr)
+			p := parseSummary(it.section(listHeaderSection))
 			flags := canonicalFlags(it.Flags)
 			seen := false
 			for _, f := range flags {
@@ -191,21 +183,45 @@ func listResponse(e *inboxEntry, folder string, start, pageSize int) api.GmailLi
 	}
 }
 
-func (s *Service) fetchFull(c *imapConn, uid int64) (fetchItem, []byte, error) {
-	res, err := c.cmd("Lettura messaggio fallita", "UID FETCH", raw(strconv.FormatInt(uid, 10)), raw("(FLAGS BODY.PEEK[])"))
+// fetchFull is _fetch_full_on: the whole message in one UID FETCH.
+func (s *Service) fetchFull(c *imapConn, uid int64) (fetched, []byte, error) {
+	items, err := c.fetch("Lettura messaggio fallita", uidOne(uid), &imap.FetchOptions{
+		UID: true, Flags: true, BodySection: []*imap.FetchItemBodySection{fullSection()},
+	})
 	if err != nil {
-		return fetchItem{}, nil, err
+		return fetched{}, nil, err
 	}
-	for _, it := range fetchItems(res) {
+	for _, it := range items {
 		if it.UID == uid || it.UID == 0 {
-			body, _ := it.Body["BODY[]"]
-			return it, body, nil
+			return it, it.section(fullSection()), nil
 		}
 	}
-	return fetchItem{}, nil, notFound("Messaggio non trovato")
+	return fetched{}, nil, notFound("Messaggio non trovato")
 }
 
-// FetchMessage returns the full detail of one message.
+func publicAttachments(atts []attachment) []api.GmailAttachmentInfo {
+	infos := make([]api.GmailAttachmentInfo, 0, len(atts))
+	for _, a := range atts {
+		info := api.GmailAttachmentInfo{Index: a.Index, Filename: a.Filename, ContentType: a.ContentType,
+			Size: a.Size, Inline: api.Ptr(a.Inline)}
+		if a.ContentID != "" {
+			info.ContentID = api.Ptr(a.ContentID)
+		}
+		infos = append(infos, info)
+	}
+	return infos
+}
+
+func detailOf(uid int, pm *parsedMessage) api.GmailMessageDetail {
+	return api.GmailMessageDetail{
+		UID: uid, From: pm.From, To: pm.To, Cc: pm.Cc, Subject: pm.Subject, DateTs: pm.DateTS,
+		MessageID: pm.MessageID, InReplyTo: pm.InReplyTo, References: pm.References,
+		Text: pm.Text, HTML: pm.HTML, Attachments: publicAttachments(pm.Attachments),
+	}
+}
+
+// FetchMessage returns the full detail of one message: through BODYSTRUCTURE
+// and a partial fetch of the text parts when possible, else the whole message.
 func (s *Service) FetchMessage(ctx context.Context, uid int, folder *string) (api.GmailMessageDetail, error) {
 	st, err := s.loadSettings()
 	if err != nil {
@@ -224,38 +240,51 @@ func (s *Service) FetchMessage(ctx context.Context, uid int, folder *string) (ap
 		if err := c.selectOrFail(fv, true); err != nil {
 			return err
 		}
+		var pm *partMap
+		if rec, err := s.fetchStructure(c, u); err != nil {
+			return err
+		} else if rec != nil {
+			pm = rec.index
+			cands := inlineImageCandidates(pm)
+			payloads, err := s.fetchRenderParts(c, u, pm, cands)
+			if errors.Is(err, errPartFetch) && len(cands) > 0 {
+				// The extra image parts must never cost the fast path.
+				payloads, err = s.fetchRenderParts(c, u, pm, nil)
+			}
+			if err != nil && !errors.Is(err, errPartFetch) {
+				return err
+			}
+			if err == nil {
+				parsed, aerr := s.assembleDetail(u, rec, payloads, fv)
+				if aerr == nil {
+					s.cacheInlineImages(fv, u, pm, parsed.Attachments, payloads)
+					detail = detailOf(int(u), parsed)
+					return nil
+				}
+			}
+		}
 		it, body, err := s.fetchFull(c, u)
 		if err != nil {
 			return err
 		}
-		pm := s.parseFull(body, fv, u)
-		infos := make([]api.GmailAttachmentInfo, 0, len(pm.Attachments))
-		for _, a := range pm.Attachments {
+		parsed := s.parseFull(body, fv, u)
+		for _, a := range parsed.Attachments {
 			if a.Inline {
 				s.inlineCachePut(fv, u, a.Index, a.Data)
 			}
-			info := api.GmailAttachmentInfo{Index: a.Index, Filename: a.Filename, ContentType: a.ContentType,
-				Size: a.Size, Inline: api.Ptr(a.Inline)}
-			if a.ContentID != "" {
-				info.ContentID = api.Ptr(a.ContentID)
-			}
-			infos = append(infos, info)
 		}
 		uidOut := int(it.UID)
 		if uidOut == 0 {
 			uidOut = uid
 		}
-		detail = api.GmailMessageDetail{
-			UID: uidOut, From: pm.From, To: pm.To, Cc: pm.Cc, Subject: pm.Subject, DateTs: pm.DateTS,
-			MessageID: pm.MessageID, InReplyTo: pm.InReplyTo, References: pm.References,
-			Text: pm.Text, HTML: pm.HTML, Attachments: infos,
-		}
+		detail = detailOf(uidOut, parsed)
 		return nil
 	})
 	return detail, err
 }
 
-// FetchAttachment returns one attachment using the detail's MIME index.
+// FetchAttachment returns one attachment using the detail's MIME index, with a
+// single-part fetch when the BODYSTRUCTURE allows it.
 func (s *Service) FetchAttachment(ctx context.Context, uid, index int, folder *string) (AttachmentDownload, error) {
 	if index < 0 {
 		return AttachmentDownload{}, validation("Indice allegato non valido")
@@ -277,6 +306,35 @@ func (s *Service) FetchAttachment(ctx context.Context, uid, index int, folder *s
 		if err := c.selectOrFail(fv, true); err != nil {
 			return err
 		}
+		if rec, err := s.fetchStructure(c, u); err != nil {
+			return err
+		} else if rec != nil {
+			if index >= len(rec.index.attachments) {
+				return notFound("Allegato non trovato")
+			}
+			part := rec.index.attachments[index]
+			switch part.encoding {
+			case "7bit", "8bit", "binary":
+				if part.octets > maxDownloadBytes {
+					return tooLarge("Allegato troppo grande")
+				}
+			}
+			payloads, perr := s.fetchPartPayloads(c, u, []*partInfo{part})
+			if perr != nil && !errors.Is(perr, errPartFetch) {
+				return perr
+			}
+			if perr == nil {
+				if payload, ok := payloads[pathKey(part.path)]; ok {
+					if data, derr := decodeFetchedBytes(part, payload); derr == nil {
+						if len(data) > maxDownloadBytes {
+							return tooLarge("Allegato troppo grande")
+						}
+						out = AttachmentDownload{Filename: safePartFilename(part, index), ContentType: part.contentType(), Data: data}
+						return nil
+					}
+				}
+			}
+		}
 		_, body, err := s.fetchFull(c, u)
 		if err != nil {
 			return err
@@ -294,7 +352,6 @@ func (s *Service) FetchAttachment(ctx context.Context, uid, index int, folder *s
 	})
 	return out, err
 }
-
 func (s *Service) setFlag(ctx context.Context, uid int, folder *string, add bool) error {
 	st, err := s.loadSettings()
 	if err != nil {
@@ -312,12 +369,7 @@ func (s *Service) setFlag(ctx context.Context, uid int, folder *string, add bool
 		if err := c.selectOrFail(fv, false); err != nil {
 			return err
 		}
-		op := "-FLAGS"
-		if add {
-			op = "+FLAGS"
-		}
-		_, err := c.cmd("Aggiornamento flag fallito", "UID STORE", raw(strconv.FormatInt(u, 10)), raw(op), raw(`(\Seen)`))
-		return err
+		return c.storeFlags("Aggiornamento flag fallito", uidOne(u), add, imap.FlagSeen)
 	})
 	if err != nil {
 		return err
@@ -358,31 +410,15 @@ func (s *Service) Archive(ctx context.Context, uid int, folder *string) error {
 		if err := c.selectOrFail(fv, false); err != nil {
 			return err
 		}
-		us := strconv.FormatInt(u, 10)
-		res, err := c.cmd("Lettura messaggio fallita", "UID FETCH", raw(us), raw("(FLAGS)"))
+		items, err := c.fetch("Lettura messaggio fallita", uidOne(u), &imap.FetchOptions{UID: true, Flags: true})
 		if err != nil {
 			return err
 		}
-		if len(fetchItems(res)) == 0 {
+		if len(items) == 0 {
 			return notFound("Messaggio non trovato")
 		}
-		_, err = c.cmd("Archiviazione fallita", "UID STORE", raw(us), raw("-X-GM-LABELS"), raw(`(\Inbox)`))
-		return err
+		return c.removeInboxLabel("Archiviazione fallita", u)
 	})
-}
-
-// findSpecialMailbox returns the mailbox carrying a special-use attribute.
-func findSpecialMailbox(c *imapConn, flag, fallback string) string {
-	res, err := c.command("LIST", str(""), str("*"))
-	if err != nil {
-		return fallback
-	}
-	for _, e := range listEntries(res) {
-		if e.Flags[flag] {
-			return e.Name
-		}
-	}
-	return fallback
 }
 
 // DeleteResult is delete_messages' result.
@@ -407,12 +443,12 @@ func (s *Service) DeleteMessages(ctx context.Context, uids []int64, folder *stri
 		if err := c.selectOrFail(fv, false); err != nil {
 			return err
 		}
-		r, err := c.cmd("Lettura messaggi fallita", "UID FETCH", raw(uidSet(uids)), raw("(FLAGS)"))
+		items, err := c.fetch("Lettura messaggi fallita", uidNumSet(uids), &imap.FetchOptions{UID: true, Flags: true})
 		if err != nil {
 			return err
 		}
 		existing := map[int64]bool{}
-		for _, it := range fetchItems(r) {
+		for _, it := range items {
 			existing[it.UID] = true
 		}
 		var have []int64
@@ -426,15 +462,15 @@ func (s *Service) DeleteMessages(ctx context.Context, uids []int64, folder *stri
 		if len(have) == 0 {
 			return nil
 		}
-		seq := uidSet(have)
-		trash := findSpecialMailbox(c, `\trash`, "[Gmail]/Trash")
-		if _, err := c.cmd("Spostamento nel Cestino fallito", "UID COPY", raw(seq), str(trash)); err != nil {
+		seq := uidNumSet(have)
+		trash := findSpecialMailbox(c, `\Trash`, "[Gmail]/Trash")
+		if err := c.copyTo("Spostamento nel Cestino fallito", seq, trash); err != nil {
 			return err
 		}
-		if _, err := c.cmd("Aggiornamento flag fallito", "UID STORE", raw(seq), raw("+FLAGS"), raw(`(\Deleted)`)); err != nil {
+		if err := c.storeFlags("Aggiornamento flag fallito", seq, true, imap.FlagDeleted); err != nil {
 			return err
 		}
-		if _, err := c.cmd("Espulsione messaggio fallita", "EXPUNGE"); err != nil {
+		if err := c.expunge("Espulsione messaggio fallita"); err != nil {
 			return err
 		}
 		res.Trashed = len(have)
