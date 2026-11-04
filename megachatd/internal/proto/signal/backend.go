@@ -108,13 +108,13 @@ type Backend struct {
 
 	useDaemon atomic.Bool
 
-	lifeMu  sync.Mutex
-	runCtx  context.Context
-	cancel  context.CancelFunc
+	lifeMu    sync.Mutex
+	runCtx    context.Context
+	cancel    context.CancelFunc
 	sseCancel context.CancelFunc
-	sseDone chan struct{}
-	closed  chan struct{} // closed by Disconnect; replaced on Connect
-	daemon  *exec.Cmd
+	sseDone   chan struct{}
+	closed    chan struct{} // closed by Disconnect; replaced on Connect
+	daemon    *exec.Cmd
 
 	queue *eventQueue
 

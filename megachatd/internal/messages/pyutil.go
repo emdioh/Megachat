@@ -1,7 +1,6 @@
 package messages
 
 import (
-	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"

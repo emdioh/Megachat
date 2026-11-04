@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -57,6 +58,7 @@ type imapConn struct {
 	uidNext     int64
 	lastUsed    time.Time
 	broken      bool
+	gen         int
 }
 
 // dialIMAP connects with implicit TLS and reads the greeting.
@@ -302,7 +304,7 @@ func (c *imapConn) login(user, pass string) error {
 
 // selectFolder selects (or examines) a mailbox and resets the counters.
 func (c *imapConn) selectFolder(name string, readonly bool) error {
-	c.exists, c.uidValidity, c.uidNext = 0, 0, 0
+	c.exists, c.uidValidity, c.uidNext = -1, 0, 0
 	cmd := "SELECT"
 	if readonly {
 		cmd = "EXAMINE"
@@ -415,6 +417,19 @@ func (t *tokenizer) next() (token, error) {
 		}
 		return atom, nil
 	}
+}
+
+// firstBody returns the first BODY[...] section of a fetch item.
+func (f fetchItem) firstBody() ([]byte, bool) {
+	keys := make([]string, 0, len(f.Body))
+	for k := range f.Body {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	if len(keys) == 0 {
+		return nil, false
+	}
+	return f.Body[keys[0]], true
 }
 
 // fetchItem is one "* n FETCH (...)" response.

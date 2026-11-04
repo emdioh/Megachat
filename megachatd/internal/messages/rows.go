@@ -332,4 +332,3 @@ func (b *rowBuilder) buildOne(ctx context.Context, row *msg) api.MessageRow {
 }
 
 func isOneOf(s string, set ...string) bool { return containsStr(set, s) }
-

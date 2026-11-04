@@ -19,17 +19,6 @@ const (
 	echoMatchWindowMs     = store.EchoMatchWindowMs
 )
 
-// IngestResult mirrors core.IngestResult (the values are what core expects:
-// 0 unchanged, 1 added, 2 changed). core.MessageIngester is satisfied by
-// IngestMessage below through the Result alias.
-type IngestResult int
-
-const (
-	Unchanged IngestResult = iota
-	Added
-	Changed
-)
-
 // entry is one message of the in-memory cache (the Python cache dict).
 // Empty strings stand for None.
 type entry struct {
@@ -91,15 +80,15 @@ func (e *entry) toMap() map[string]any {
 
 // inMsg is the parsed ingest payload (the data dict).
 type inMsg struct {
-	ID, Text                                            string
-	IsMine                                              bool
-	Sender, QuoteText, MsgType, AttachmentInfo          string
-	AttachmentID, ContentType, MediaKind, Status        string
-	QuoteTimestamp                                      *int64
-	QuoteAuthor, ReplyTo                                string
-	QuoteAttachmentID, QuoteAttachmentPath, QuoteCT     string
-	BatchID                                             string
-	BatchIndex                                          *int64
+	ID, Text                                        string
+	IsMine                                          bool
+	Sender, QuoteText, MsgType, AttachmentInfo      string
+	AttachmentID, ContentType, MediaKind, Status    string
+	QuoteTimestamp                                  *int64
+	QuoteAuthor, ReplyTo                            string
+	QuoteAttachmentID, QuoteAttachmentPath, QuoteCT string
+	BatchID                                         string
+	BatchIndex                                      *int64
 }
 
 func parseInMsg(m map[string]any) inMsg {
@@ -397,15 +386,14 @@ func (b *Backend) persistMessage(ctx context.Context, contactID string, d inMsg,
 // the real id, heals attachment ids / image captions / quote fields on
 // duplicates. It implements core.MessageIngester (the result values match
 // core.IngestResult: 0 unchanged, 1 added, 2 changed).
-func (b *Backend) IngestMessage(ctx context.Context, contactID string, msg map[string]any, ts int64) (int, error) {
+func (b *Backend) IngestMessage(ctx context.Context, contactID string, msg map[string]any, ts int64) (proto.IngestResult, error) {
 	b.ingestMu.Lock()
 	defer b.ingestMu.Unlock()
-	r, err := b.ingestLocked(ctx, contactID, parseInMsg(msg), ts, true)
-	return int(r), err
+	return b.ingestLocked(ctx, contactID, parseInMsg(msg), ts, true)
 }
 
 // ingestLocked is ingest_message with ingestMu held.
-func (b *Backend) ingestLocked(ctx context.Context, contactID string, d inMsg, ts int64, persist bool) (IngestResult, error) {
+func (b *Backend) ingestLocked(ctx context.Context, contactID string, d inMsg, ts int64, persist bool) (proto.IngestResult, error) {
 	if d.MsgType == "image" {
 		d.Text = ""
 	}
@@ -468,9 +456,9 @@ func (b *Backend) ingestLocked(ctx context.Context, contactID string, d inMsg, t
 			changed = b.healImageCaption(ctx, contactID, m, d) || changed
 			quoteChanged := b.mergeQuoteFields(ctx, contactID, m, d)
 			if changed || quoteChanged {
-				return Changed, nil
+				return proto.IngestChanged, nil
 			}
-			return Unchanged, nil
+			return proto.IngestUnchanged, nil
 		}
 	}
 
@@ -496,16 +484,16 @@ func (b *Backend) ingestLocked(ctx context.Context, contactID string, d inMsg, t
 		}
 		quoteChanged := b.mergeQuoteFields(ctx, contactID, existing, d)
 		if changed || quoteChanged {
-			return Changed, nil
+			return proto.IngestChanged, nil
 		}
-		return Unchanged, nil
+		return proto.IngestUnchanged, nil
 	}
 
 	added := true
 	if persist {
 		inserted, err := b.persistMessage(ctx, contactID, d, ts)
 		if err != nil {
-			return Unchanged, err
+			return proto.IngestUnchanged, err
 		}
 		added = inserted
 	}
@@ -525,9 +513,9 @@ func (b *Backend) ingestLocked(ctx context.Context, contactID string, d inMsg, t
 		QuoteAttachmentPath: d.QuoteAttachmentPath, QuoteContentType: d.QuoteCT,
 	})
 	if added {
-		return Added, nil
+		return proto.IngestAdded, nil
 	}
-	return Unchanged, nil
+	return proto.IngestUnchanged, nil
 }
 
 // ---- receipts ---------------------------------------------------------------------------------------

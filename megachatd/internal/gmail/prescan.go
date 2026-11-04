@@ -242,7 +242,7 @@ func renderBodyTag(attrs []scannedAttr) (tag string, addedStyle bool, decls int)
 }
 
 var (
-	styleBackgroundURLRE = regexp.MustCompile(`(?i)background(?:-image)?\s*:[^;]*?url\(\s*(['"]?)(https?://[^'")\s]+)(?:['"]?)\s*\)`)
+	styleBackgroundURLRE = regexp.MustCompile(`(?i)background(?:-image)?\s*:[^;]*?url\(\s*(?:'(https?://[^'")\s]+)'|"(https?://[^'")\s]+)"|(https?://[^'")\s]+))\s*\)`)
 	safeBackgroundURLRE  = regexp.MustCompile(`(?i)^https?://[^\s"'<>()]+$`)
 	backgroundTags       = map[string]bool{"table": true, "td": true, "th": true, "div": true}
 )
@@ -261,7 +261,7 @@ func backgroundURL(name string, attrs []scannedAttr) (string, bool) {
 	cand := values["background"]
 	if cand == "" {
 		if m := styleBackgroundURLRE.FindStringSubmatch(values["style"]); m != nil {
-			cand = m[2]
+			cand = m[1] + m[2] + m[3]
 		}
 	}
 	if cand == "" || utf8.RuneCountInString(cand) > imageURLMaxLen {
@@ -423,7 +423,7 @@ func preScanHTML(raw string, styles *[]string) string {
 					}
 				}
 			}
-			cut := 1 + len(name)
+			cut := min(1+len(name), end-idx)
 			switch {
 			case name == "img":
 				hasDataSrc, hasSrc := false, false

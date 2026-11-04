@@ -181,3 +181,18 @@ type ApplyEditOptions struct {
 	EditTimestamp int64
 	MarkEdited    bool
 }
+
+// IngestResult is the outcome of ingesting one message (Python True / "changed"
+// / False). Backends that own ingestion (Signal) return it from IngestMessage;
+// core aliases it (type IngestResult = proto.IngestResult) so that the
+// core.MessageIngester interface can be satisfied without importing core.
+type IngestResult int
+
+const (
+	// IngestUnchanged: an already known message (Python False).
+	IngestUnchanged IngestResult = iota
+	// IngestAdded: a new row was stored (Python True).
+	IngestAdded
+	// IngestChanged: an existing identity was upgraded (Python "changed").
+	IngestChanged
+)
