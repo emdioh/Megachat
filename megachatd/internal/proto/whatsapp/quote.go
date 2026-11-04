@@ -32,11 +32,23 @@ var wahaIDLikeRe = regexp.MustCompile(`(?i)^(true|false)_\S+\.[a-z0-9]{1,5}$`)
 // isAttachmentRef reports whether text is a reference to the attachment (its
 // id, file name or a serialized WAHA id) rather than something a person wrote.
 func isAttachmentRef(text string, row *entry) bool {
-	t := strings.TrimSpace(text)
-	if t == "" {
+	if isIDRef(text, row) {
 		return true
 	}
-	if wahaIDLikeRe.MatchString(t) || ParseMsgID(t).Serialized {
+	t := strings.TrimSpace(text)
+	if row != nil {
+		if row.isMediaRow() && row.AttachmentInfo != "" && t == row.AttachmentInfo && !isCaptionLike(row.AttachmentInfo) {
+			return true
+		}
+	}
+	return false
+}
+
+// isIDRef is true for blank text, a serialized WAHA id or the row's attachment
+// id: never a legitimate quote text nor a file name.
+func isIDRef(text string, row *entry) bool {
+	t := strings.TrimSpace(text)
+	if t == "" || wahaIDLikeRe.MatchString(t) || ParseMsgID(t).Serialized {
 		return true
 	}
 	if row != nil {
@@ -44,9 +56,6 @@ func isAttachmentRef(text string, row *entry) bool {
 			if ref != "" && ref != "." && t == ref {
 				return true
 			}
-		}
-		if row.isMediaRow() && row.AttachmentInfo != "" && t == row.AttachmentInfo && !isCaptionLike(row.AttachmentInfo) {
-			return true
 		}
 	}
 	return false
@@ -197,7 +206,7 @@ func (b *Backend) quotedMediaMessage(row *entry) *waE2E.Message {
 	}
 	doc := &waE2E.DocumentMessage{
 		Mimetype: gproto.String(normalizedMime(row.ContentType, "application/octet-stream")), Caption: capPtr}
-	if name := row.AttachmentInfo; name != "" && !isAttachmentRef(name, row) && mimeOnlyRE.FindString(strings.ToLower(name)) == "" {
+	if name := row.AttachmentInfo; name != "" && !isIDRef(name, row) && mimeOnlyRE.FindString(strings.ToLower(name)) == "" {
 		doc.FileName, doc.Title = gproto.String(name), gproto.String(name)
 	}
 	return &waE2E.Message{DocumentMessage: doc}

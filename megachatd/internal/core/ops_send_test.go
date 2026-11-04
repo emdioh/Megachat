@@ -41,7 +41,7 @@ func sendEnv(t *testing.T, protocol string) *env {
 func TestSendTextSuccessDuplicateConflict(t *testing.T) {
 	e := sendEnv(t, "signal")
 	body := `{"protocol":"signal","contact_id":"c1","text":"hello","client_msg_id":" abc "}`
-	wantJSON(t, e.mustCall("messages.send", body), `{"ok":true}`)
+	wantSent(t, 1, e.mustCall("messages.send", body))
 	pushes := e.webPushes()
 	if len(pushes) != 1 {
 		t.Fatalf("web pushes: %v", pushes)
@@ -86,7 +86,7 @@ func TestSendRetryThenSuccess(t *testing.T) {
 	f.SetContacts(contact("signal", "c1", "C", nil))
 	sc := &scripted{Backend: f, script: []error{syscall.ECONNREFUSED, syscall.ECONNREFUSED}}
 	_ = e.mgr.Register(sc)
-	wantJSON(t, e.mustCall("messages.send", `{"protocol":"signal","contact_id":"c1","text":"hi","client_msg_id":"r1"}`), `{"ok":true}`)
+	wantSent(t, 1, e.mustCall("messages.send", `{"protocol":"signal","contact_id":"c1","text":"hi","client_msg_id":"r1"}`))
 	if sc.calls.n != 3 {
 		t.Fatalf("attempts: %d", sc.calls.n)
 	}
@@ -128,7 +128,7 @@ func TestSendFailureReleasesClaim(t *testing.T) {
 		t.Fatal("failed send must release the claim")
 	}
 	// The same client_msg_id can be retried and now succeeds.
-	wantJSON(t, e.mustCall("messages.send", body), `{"ok":true}`)
+	wantSent(t, 1, e.mustCall("messages.send", body))
 
 	// retry=false: a single attempt even for a retryable error.
 	sc.calls.n = 0
@@ -281,7 +281,7 @@ func TestSendAttachments(t *testing.T) {
 	b := writePNG(t, dir, "b.png", 50)
 	body := `{"protocol":"telegram","contact_id":"c1","text":"caption","batch_id":" batch-1 ","attachments":[
 	  {"path":"` + a + `","filename":"a.png"},{"path":"` + b + `","filename":"b.png","content_type":"image/png"}]}`
-	wantJSON(t, e.mustCall("messages.send", body), `{"ok":true}`)
+	wantSent(t, 2, e.mustCall("messages.send", body))
 	calls := e.fake("telegram").CallsTo("SendAttachments")
 	if len(calls) != 1 {
 		t.Fatalf("calls: %+v", e.fake("telegram").Calls())
@@ -483,4 +483,50 @@ func mustMarshal(t *testing.T, v any) string {
 		t.Fatal(err)
 	}
 	return string(b)
+}
+
+// wantSent asserts a plain messages.send success: {"ok":true,"message_ids":[n
+// non-empty strings]} (the fake backends mint their ids).
+func wantSent(t *testing.T, n int, got string) {
+	t.Helper()
+	var m map[string]any
+	if err := json.Unmarshal([]byte(got), &m); err != nil {
+		t.Fatalf("not JSON: %q", got)
+	}
+	ids, _ := m["message_ids"].([]any)
+	if len(m) != 2 || m["ok"] != true || len(ids) != n {
+		t.Fatalf("send response: %s (want ok + %d message_ids)", got, n)
+	}
+	for _, id := range ids {
+		if s, ok := id.(string); !ok || s == "" {
+			t.Fatalf("message_ids must be non-empty strings: %s", got)
+		}
+	}
+}
+
+// idBackend returns a fixed id (or "" for none) from SendMessage.
+type idBackend struct {
+	*fake.Backend
+	id string
+}
+
+func (s *idBackend) SendMessage(ctx context.Context, contactID, text string, q proto.Quote) (string, error) {
+	return s.id, nil
+}
+
+func TestSendMessageIDsExactAndEmpty(t *testing.T) {
+	e := newEnv(t, "signal")
+	f := e.fake("signal")
+	f.SetContacts(contact("signal", "c1", "C", nil))
+	ib := &idBackend{Backend: f, id: "1700000000123"}
+	_ = e.mgr.Register(ib)
+	wantJSON(t, e.mustCall("messages.send", `{"protocol":"signal","contact_id":"c1","text":"a","client_msg_id":"i1"}`),
+		`{"ok":true,"message_ids":["1700000000123"]}`)
+	// The duplicate replay carries no ids.
+	wantJSON(t, e.mustCall("messages.send", `{"protocol":"signal","contact_id":"c1","text":"a","client_msg_id":"i1"}`),
+		`{"ok":true,"duplicate":true}`)
+	// A backend that returns no id: an empty list, never null.
+	ib.id = ""
+	wantJSON(t, e.mustCall("messages.send", `{"protocol":"signal","contact_id":"c1","text":"b","client_msg_id":"i2"}`),
+		`{"ok":true,"message_ids":[]}`)
 }

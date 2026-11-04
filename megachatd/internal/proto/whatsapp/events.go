@@ -226,6 +226,12 @@ func quoteText(q *waE2E.Message) (string, bool) {
 		return "👤 " + c.Contact, true
 	}
 	if t := strings.TrimSpace(c.Text); t != "" {
+		// A reply to a picture from an older client carried the attachment
+		// name as plain text ("true_<chat>_<ID>_<part>.jpeg"): show the
+		// generic attachment placeholder instead of a serialized id.
+		if wahaIDLikeRe.MatchString(t) {
+			return mediaQuotePlaceholder("attachment", ""), true
+		}
 		return t, true
 	}
 	return "", false

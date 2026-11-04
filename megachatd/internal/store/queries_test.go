@@ -226,3 +226,20 @@ func TestOutgoingRowCountsAndMediaReferences(t *testing.T) {
 	eq(t, len(refs["empty"]), 0)
 	eq(t, len(must(s.MediaReferences(ctx, nil))), 0)
 }
+
+func TestMessagesByWAID(t *testing.T) {
+	s := newStore(t)
+	for i, id := range []string{"false_1203@g.us_3EB0AAAA_55@lid", "false_1203@g.us_3EB0BBBB_55@lid"} {
+		id := id
+		if _, _, err := s.AddMessage(ctx, NewMessage{Protocol: "whatsapp", ContactNumber: "1203@g.us", Text: "x", Timestamp: int64(100 + i), MsgID: &id}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rows, err := s.MessagesByWAID(ctx, "whatsapp", []string{"1203@g.us"}, "3EB0BBBB")
+	if err != nil || len(rows) != 1 || Deref(rows[0].MsgID) != "false_1203@g.us_3EB0BBBB_55@lid" {
+		t.Fatalf("rows=%v err=%v", rows, err)
+	}
+	if rows, _ := s.MessagesByWAID(ctx, "whatsapp", []string{"other"}, "3EB0BBBB"); len(rows) != 0 {
+		t.Fatalf("other chat: %v", rows)
+	}
+}
