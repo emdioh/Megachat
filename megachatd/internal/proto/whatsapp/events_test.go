@@ -3,6 +3,7 @@ package whatsapp
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -589,21 +590,114 @@ func hdChildMsg(caption string) *waE2E.Message {
 	}
 }
 
+// assocMsg is a media message carrying only a MessageAssociation type.
+func assocMsg(a waE2E.MessageAssociation_AssociationType) *waE2E.Message {
+	return &waE2E.Message{
+		ImageMessage: &waE2E.ImageMessage{Mimetype: str("image/jpeg")},
+		MessageContextInfo: &waE2E.MessageContextInfo{MessageAssociation: &waE2E.MessageAssociation{
+			AssociationType: a.Enum(),
+		}},
+	}
+}
+
+// pairedMsg is a media message carrying only a pairedMediaType.
+func pairedMsg(p waE2E.ContextInfo_PairedMediaType) *waE2E.Message {
+	return &waE2E.Message{ImageMessage: &waE2E.ImageMessage{
+		Mimetype: str("image/jpeg"), ContextInfo: &waE2E.ContextInfo{PairedMediaType: p.Enum()},
+	}}
+}
+
+// TestIsHDChild tables every MessageAssociation *_DUAL_UPLOAD and every
+// ContextInfo *_CHILD value (plus the parents and unset messages) because
+// _is_hd_child matches on names, not on a fixed set of enum values.
 func TestIsHDChild(t *testing.T) {
-	if !isHDChild(hdChildMsg("foto con caption")) {
-		t.Error("HD dual-upload child not recognized")
+	type testCase struct {
+		name string
+		msg  *waE2E.Message
+		want bool
 	}
-	if !isHDChild(&waE2E.Message{VideoMessage: &waE2E.VideoMessage{
-		Mimetype:    str("video/mp4"),
-		ContextInfo: &waE2E.ContextInfo{PairedMediaType: waE2E.ContextInfo_HD_VIDEO_CHILD.Enum()},
-	}}) {
-		t.Error("HD_VIDEO_CHILD paired type not recognized")
+	dualUpload := []waE2E.MessageAssociation_AssociationType{
+		waE2E.MessageAssociation_HD_VIDEO_DUAL_UPLOAD,
+		waE2E.MessageAssociation_HD_IMAGE_DUAL_UPLOAD,
+		waE2E.MessageAssociation_HEVC_VIDEO_DUAL_UPLOAD,
+		waE2E.MessageAssociation_AV1_VIDEO_DUAL_UPLOAD,
+		waE2E.MessageAssociation_STREAMED_HD_VIDEO_DUAL_UPLOAD,
 	}
-	if isHDChild(hdParentMsg("foto con caption")) {
-		t.Error("SD parent must not be an HD child")
+	childPaired := []waE2E.ContextInfo_PairedMediaType{
+		waE2E.ContextInfo_HD_VIDEO_CHILD,
+		waE2E.ContextInfo_HD_IMAGE_CHILD,
+		waE2E.ContextInfo_MOTION_PHOTO_CHILD,
+		waE2E.ContextInfo_HEVC_VIDEO_CHILD,
+		waE2E.ContextInfo_AV1_VIDEO_CHILD,
+		waE2E.ContextInfo_STREAMED_VIDEO_CHILD,
 	}
-	if isHDChild(&waE2E.Message{}) || isHDChild(nil) {
-		t.Error("empty/nil message must not be an HD child")
+	parentPaired := []waE2E.ContextInfo_PairedMediaType{
+		waE2E.ContextInfo_SD_VIDEO_PARENT,
+		waE2E.ContextInfo_SD_IMAGE_PARENT,
+		waE2E.ContextInfo_MOTION_PHOTO_PARENT,
+		waE2E.ContextInfo_HEVC_VIDEO_PARENT,
+		waE2E.ContextInfo_AV1_VIDEO_PARENT,
+		waE2E.ContextInfo_STREAMED_VIDEO_PARENT,
+	}
+	otherAssoc := []waE2E.MessageAssociation_AssociationType{
+		waE2E.MessageAssociation_UNKNOWN,
+		waE2E.MessageAssociation_MEDIA_ALBUM,
+		waE2E.MessageAssociation_EVENT_COVER_IMAGE,
+		waE2E.MessageAssociation_STICKER_ANNOTATION,
+		waE2E.MessageAssociation_MOTION_PHOTO,
+	}
+
+	cases := []testCase{
+		{"hd child message", hdChildMsg("foto con caption"), true},
+		{"sd parent message", hdParentMsg("foto con caption"), false},
+		{"nil message", nil, false},
+		{"empty message", &waE2E.Message{}, false},
+		{"video hd_child without association", &waE2E.Message{VideoMessage: &waE2E.VideoMessage{
+			Mimetype:    str("video/mp4"),
+			ContextInfo: &waE2E.ContextInfo{PairedMediaType: waE2E.ContextInfo_HD_VIDEO_CHILD.Enum()},
+		}}, true},
+		{"not paired media", pairedMsg(waE2E.ContextInfo_NOT_PAIRED_MEDIA), false},
+	}
+	for _, a := range dualUpload {
+		name := a.String()
+		if !strings.Contains(name, "DUAL_UPLOAD") {
+			t.Fatalf("association %d renders as %q, no DUAL_UPLOAD", int32(a), name)
+		}
+		cases = append(cases, testCase{"association " + name, assocMsg(a), true})
+	}
+	for _, p := range childPaired {
+		name := p.String()
+		if !strings.HasSuffix(name, "_CHILD") {
+			t.Fatalf("paired type %d renders as %q, no _CHILD", int32(p), name)
+		}
+		cases = append(cases, testCase{"paired " + name, pairedMsg(p), true})
+	}
+	for _, p := range parentPaired {
+		cases = append(cases, testCase{"paired " + p.String(), pairedMsg(p), false})
+	}
+	for _, a := range otherAssoc {
+		cases = append(cases, testCase{"association " + a.String(), assocMsg(a), false})
+	}
+
+	for _, tc := range cases {
+		if got := isHDChild(tc.msg); got != tc.want {
+			t.Errorf("%s: isHDChild = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+
+	// Guard: whatsmeow may add another dual-upload / child value; isHDChild
+	// must keep agreeing with the name check for EVERY declared enum value.
+	for v, name := range waE2E.MessageAssociation_AssociationType_name {
+		want := strings.Contains(name, "DUAL_UPLOAD")
+		if got := isHDChild(assocMsg(waE2E.MessageAssociation_AssociationType(v))); got != want {
+			t.Errorf("association %s: isHDChild = %v, want %v", name, got, want)
+		}
+	}
+	for v, name := range waE2E.ContextInfo_PairedMediaType_name {
+		want := strings.HasSuffix(name, "_CHILD")
+		if got := isHDChild(pairedMsg(waE2E.ContextInfo_PairedMediaType(v))); got != want {
+			t.Errorf("paired type %s: isHDChild = %v, want %v", name, got, want)
+		}
 	}
 }
 

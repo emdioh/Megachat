@@ -166,10 +166,11 @@ the event mapping, in the `fetch_history` loop (before any download) and in the 
 
 The Go backend does the same from whatsmeow's protobufs
 (`internal/proto/whatsapp/convert.go::isHDChild`): it reads
-`messageContextInfo.messageAssociation.associationType` (the HD_IMAGE/HD_VIDEO_DUAL_UPLOAD
-values) or the media `contextInfo.pairedMediaType` (`*_CHILD`). `messageEvents` returns no
-event for a child, so the live path, the history-sync ingestion (and its media prefetch) skip
-it. WAHA's separate `message.ack` synthetic-message path has no whatsmeow equivalent:
+`messageContextInfo.messageAssociation.associationType` (any value whose name contains
+`DUAL_UPLOAD`: HD_IMAGE, HD_VIDEO, HEVC_VIDEO, AV1_VIDEO, STREAMED_HD_VIDEO) or the media
+`contextInfo.pairedMediaType` (`*_CHILD`), exactly like Python's name checks.
+`messageEvents` returns no event for a child, so the live path, the history-sync ingestion
+(and its media prefetch) skip it. WAHA's separate `message.ack` synthetic-message path has no whatsmeow equivalent:
 whatsmeow delivers the real message events, so there is nothing else to guard.
 
 `purge_wa_hd_children.py` (repo root, Python) is **not ported**. It repairs a DB written by
