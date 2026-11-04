@@ -248,6 +248,32 @@ func extractContent(m *waE2E.Message) content {
 	return c
 }
 
+// isHDChild is _is_hd_child: true for the hidden HD child of an "HD dual
+// upload". A photo/video uploaded in HD travels as TWO messages — the visible
+// SD parent (pairedMediaType SD_*_PARENT, with the caption) and, about a
+// second later, the hidden HD child (associationType *_DUAL_UPLOAD,
+// pairedMediaType *_CHILD, viewMode HIDDEN, pointing at the parent). Official
+// clients show only the parent: the child must be dropped, or the chat shows
+// the same photo twice.
+//
+// Like Python, the match is on the enum *names*, not on a list of enum values:
+// any association containing "DUAL_UPLOAD" (HD_VIDEO, HD_IMAGE, HEVC_VIDEO,
+// AV1_VIDEO, STREAMED_HD_VIDEO — and any future one) and any pairedMediaType
+// ending in "_CHILD".
+func isHDChild(m *waE2E.Message) bool {
+	if m == nil {
+		return false
+	}
+	assoc := m.GetMessageContextInfo().GetMessageAssociation().GetAssociationType()
+	if strings.Contains(assoc.String(), "DUAL_UPLOAD") {
+		return true
+	}
+	if c := extractContent(m).Ctx; c != nil {
+		return strings.HasSuffix(c.GetPairedMediaType().String(), "_CHILD")
+	}
+	return false
+}
+
 // mapsURL is location_thumbs.maps_url.
 func mapsURL(lat, lng float64) string {
 	return fmt.Sprintf("https://maps.google.com/?q=%.6f,%.6f", lat, lng)

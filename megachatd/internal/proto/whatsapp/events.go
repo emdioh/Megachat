@@ -341,6 +341,11 @@ func (b *Backend) messageEvents(e *events.Message, history bool) []proto.Event {
 		return nil
 	}
 	m := e.Message
+	// HD dual upload: the hidden HD child duplicates the visible SD parent
+	// (see isHDChild); dropping it here also skips its media prefetch.
+	if isHDChild(m) {
+		return nil
+	}
 	isMine := info.IsFromMe
 	tsMs := info.Timestamp.UnixMilli()
 	if info.Timestamp.IsZero() {

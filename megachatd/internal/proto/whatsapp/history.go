@@ -262,6 +262,15 @@ func (b *Backend) ingestConversation(ctx context.Context, cli waClient, conv *wa
 		}
 	}
 	sort.SliceStable(web, func(i, j int) bool { return web[i].GetMessageTimestamp() < web[j].GetMessageTimestamp() })
+	// Canonical ids of ALL messages of the remote page: a local row whose id
+	// is here is a distinct remote message, never the "ghost" of another one
+	// with the same text (history reconcile).
+	remoteIDs := make(map[string]bool, len(msgs))
+	for _, hm := range msgs {
+		if cid := CanonicalMsgID(hm.GetMessage().GetKey().GetID()); cid != "" {
+			remoteIDs[cid] = true
+		}
+	}
 
 	b.ingestMu.Lock()
 	pre := append([]*entry(nil), b.cache[key]...)
@@ -286,7 +295,7 @@ func (b *Backend) ingestConversation(ctx context.Context, cli waClient, conv *wa
 				b.ingestMu.Unlock()
 				continue
 			}
-			res := b.ingestLocked(ctx, key, d, ts, true, true)
+			res := b.ingestLocked(ctx, key, d, ts, true, true, remoteIDs)
 			b.ingestMu.Unlock()
 			if res == proto.IngestAdded {
 				added++

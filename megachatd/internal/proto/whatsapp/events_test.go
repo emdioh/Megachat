@@ -3,6 +3,7 @@ package whatsapp
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -562,5 +563,173 @@ func TestWaitReadyRunsWarmupOnce(t *testing.T) {
 	}
 	if n != 1 {
 		t.Fatalf("lid_warmup_done published %d times", n)
+	}
+}
+
+// ---- HD dual upload (48c5d46) -----------------------------------------------------------------
+
+// hdParentMsg is the visible SD parent of an HD photo: the caption lives here.
+func hdParentMsg(caption string) *waE2E.Message {
+	return &waE2E.Message{ImageMessage: &waE2E.ImageMessage{
+		Mimetype: str("image/jpeg"), Caption: str(caption), DirectPath: str("/parent"),
+		ContextInfo: &waE2E.ContextInfo{PairedMediaType: waE2E.ContextInfo_SD_IMAGE_PARENT.Enum()},
+	}}
+}
+
+// hdChildMsg is the hidden HD child: associationType HD_*_DUAL_UPLOAD,
+// pairedMediaType *_CHILD, viewMode HIDDEN.
+func hdChildMsg(caption string) *waE2E.Message {
+	return &waE2E.Message{
+		ImageMessage: &waE2E.ImageMessage{
+			Mimetype: str("image/jpeg"), Caption: str(caption), DirectPath: str("/child"),
+			ContextInfo: &waE2E.ContextInfo{PairedMediaType: waE2E.ContextInfo_HD_IMAGE_CHILD.Enum()},
+		},
+		MessageContextInfo: &waE2E.MessageContextInfo{MessageAssociation: &waE2E.MessageAssociation{
+			AssociationType: waE2E.MessageAssociation_HD_IMAGE_DUAL_UPLOAD.Enum(),
+		}},
+	}
+}
+
+// assocMsg is a media message carrying only a MessageAssociation type.
+func assocMsg(a waE2E.MessageAssociation_AssociationType) *waE2E.Message {
+	return &waE2E.Message{
+		ImageMessage: &waE2E.ImageMessage{Mimetype: str("image/jpeg")},
+		MessageContextInfo: &waE2E.MessageContextInfo{MessageAssociation: &waE2E.MessageAssociation{
+			AssociationType: a.Enum(),
+		}},
+	}
+}
+
+// pairedMsg is a media message carrying only a pairedMediaType.
+func pairedMsg(p waE2E.ContextInfo_PairedMediaType) *waE2E.Message {
+	return &waE2E.Message{ImageMessage: &waE2E.ImageMessage{
+		Mimetype: str("image/jpeg"), ContextInfo: &waE2E.ContextInfo{PairedMediaType: p.Enum()},
+	}}
+}
+
+// TestIsHDChild tables every MessageAssociation *_DUAL_UPLOAD and every
+// ContextInfo *_CHILD value (plus the parents and unset messages) because
+// _is_hd_child matches on names, not on a fixed set of enum values.
+func TestIsHDChild(t *testing.T) {
+	type testCase struct {
+		name string
+		msg  *waE2E.Message
+		want bool
+	}
+	dualUpload := []waE2E.MessageAssociation_AssociationType{
+		waE2E.MessageAssociation_HD_VIDEO_DUAL_UPLOAD,
+		waE2E.MessageAssociation_HD_IMAGE_DUAL_UPLOAD,
+		waE2E.MessageAssociation_HEVC_VIDEO_DUAL_UPLOAD,
+		waE2E.MessageAssociation_AV1_VIDEO_DUAL_UPLOAD,
+		waE2E.MessageAssociation_STREAMED_HD_VIDEO_DUAL_UPLOAD,
+	}
+	childPaired := []waE2E.ContextInfo_PairedMediaType{
+		waE2E.ContextInfo_HD_VIDEO_CHILD,
+		waE2E.ContextInfo_HD_IMAGE_CHILD,
+		waE2E.ContextInfo_MOTION_PHOTO_CHILD,
+		waE2E.ContextInfo_HEVC_VIDEO_CHILD,
+		waE2E.ContextInfo_AV1_VIDEO_CHILD,
+		waE2E.ContextInfo_STREAMED_VIDEO_CHILD,
+	}
+	parentPaired := []waE2E.ContextInfo_PairedMediaType{
+		waE2E.ContextInfo_SD_VIDEO_PARENT,
+		waE2E.ContextInfo_SD_IMAGE_PARENT,
+		waE2E.ContextInfo_MOTION_PHOTO_PARENT,
+		waE2E.ContextInfo_HEVC_VIDEO_PARENT,
+		waE2E.ContextInfo_AV1_VIDEO_PARENT,
+		waE2E.ContextInfo_STREAMED_VIDEO_PARENT,
+	}
+	otherAssoc := []waE2E.MessageAssociation_AssociationType{
+		waE2E.MessageAssociation_UNKNOWN,
+		waE2E.MessageAssociation_MEDIA_ALBUM,
+		waE2E.MessageAssociation_EVENT_COVER_IMAGE,
+		waE2E.MessageAssociation_STICKER_ANNOTATION,
+		waE2E.MessageAssociation_MOTION_PHOTO,
+	}
+
+	cases := []testCase{
+		{"hd child message", hdChildMsg("foto con caption"), true},
+		{"sd parent message", hdParentMsg("foto con caption"), false},
+		{"nil message", nil, false},
+		{"empty message", &waE2E.Message{}, false},
+		{"video hd_child without association", &waE2E.Message{VideoMessage: &waE2E.VideoMessage{
+			Mimetype:    str("video/mp4"),
+			ContextInfo: &waE2E.ContextInfo{PairedMediaType: waE2E.ContextInfo_HD_VIDEO_CHILD.Enum()},
+		}}, true},
+		{"not paired media", pairedMsg(waE2E.ContextInfo_NOT_PAIRED_MEDIA), false},
+	}
+	for _, a := range dualUpload {
+		name := a.String()
+		if !strings.Contains(name, "DUAL_UPLOAD") {
+			t.Fatalf("association %d renders as %q, no DUAL_UPLOAD", int32(a), name)
+		}
+		cases = append(cases, testCase{"association " + name, assocMsg(a), true})
+	}
+	for _, p := range childPaired {
+		name := p.String()
+		if !strings.HasSuffix(name, "_CHILD") {
+			t.Fatalf("paired type %d renders as %q, no _CHILD", int32(p), name)
+		}
+		cases = append(cases, testCase{"paired " + name, pairedMsg(p), true})
+	}
+	for _, p := range parentPaired {
+		cases = append(cases, testCase{"paired " + p.String(), pairedMsg(p), false})
+	}
+	for _, a := range otherAssoc {
+		cases = append(cases, testCase{"association " + a.String(), assocMsg(a), false})
+	}
+
+	for _, tc := range cases {
+		if got := isHDChild(tc.msg); got != tc.want {
+			t.Errorf("%s: isHDChild = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+
+	// Guard: whatsmeow may add another dual-upload / child value; isHDChild
+	// must keep agreeing with the name check for EVERY declared enum value.
+	for v, name := range waE2E.MessageAssociation_AssociationType_name {
+		want := strings.Contains(name, "DUAL_UPLOAD")
+		if got := isHDChild(assocMsg(waE2E.MessageAssociation_AssociationType(v))); got != want {
+			t.Errorf("association %s: isHDChild = %v, want %v", name, got, want)
+		}
+	}
+	for v, name := range waE2E.ContextInfo_PairedMediaType_name {
+		want := strings.HasSuffix(name, "_CHILD")
+		if got := isHDChild(pairedMsg(waE2E.ContextInfo_PairedMediaType(v))); got != want {
+			t.Errorf("paired type %s: isHDChild = %v, want %v", name, got, want)
+		}
+	}
+}
+
+func TestMessageEventsDropsHDChild(t *testing.T) {
+	e := newEnv(t)
+	for _, fromMe := range []bool{false, true} {
+		child := dmEvent("391234567890", types.DefaultUserServer, "3A00000000000000000B", fromMe, hdChildMsg("foto con caption"))
+		if evs := e.b.messageEvents(child, false); len(evs) != 0 {
+			t.Errorf("fromMe=%v: HD child published %d events", fromMe, len(evs))
+		}
+		parent := dmEvent("391234567890", types.DefaultUserServer, "3A00000000000000000A", fromMe, hdParentMsg("foto con caption"))
+		got := one(t, e.b.messageEvents(parent, false))
+		if got.Type != proto.EventMessage || got.Payload["msg_type"] != "image" {
+			t.Fatalf("fromMe=%v: parent event = %+v", fromMe, got)
+		}
+	}
+}
+
+func TestOnMessageDropsHDChild(t *testing.T) {
+	e := newEnv(t)
+	e.b.onMessage(dmEvent("391234567890", types.DefaultUserServer, "3A00000000000000000B", false, hdChildMsg("foto con caption")))
+	if evs := drain(e.b); len(evs) != 0 {
+		t.Fatalf("HD child enqueued %d events", len(evs))
+	}
+	e.b.onMessage(dmEvent("391234567890", types.DefaultUserServer, "3A00000000000000000A", false, hdParentMsg("foto con caption")))
+	var messages int
+	for _, ev := range drain(e.b) {
+		if ev.Type == proto.EventMessage {
+			messages++
+		}
+	}
+	if messages != 1 {
+		t.Fatalf("parent published %d message events", messages)
 	}
 }
