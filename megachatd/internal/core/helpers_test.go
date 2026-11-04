@@ -39,6 +39,11 @@ func quietLog() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, n
 // newEnv builds a core over a temp store with a fake backend per protocol.
 func newEnv(t *testing.T, protocols ...string) *env {
 	t.Helper()
+	return newEnvOpts(t, nil, protocols...)
+}
+
+func newEnvOpts(t *testing.T, opts []Option, protocols ...string) *env {
+	t.Helper()
 	if len(protocols) == 0 {
 		protocols = []string{api.ProtocolSignal, api.ProtocolWhatsApp, api.ProtocolTelegram}
 	}
@@ -59,8 +64,8 @@ func newEnv(t *testing.T, protocols ...string) *env {
 		}
 	}
 	b := bus.New(bus.WithLogger(quietLog()))
-	c := New(cfg, st, mgr, b, WithLogger(quietLog()),
-		WithSleep(func(ctx context.Context, d time.Duration) error { return nil }))
+	c := New(cfg, st, mgr, b, append([]Option{WithLogger(quietLog()),
+		WithSleep(func(ctx context.Context, d time.Duration) error { return nil })}, opts...)...)
 	reg := ops.NewRegistry()
 	c.RegisterOps(reg)
 	e := &env{t: t, core: c, st: st, mgr: mgr, bus: b, reg: reg, cfg: cfg, fakes: fakes}

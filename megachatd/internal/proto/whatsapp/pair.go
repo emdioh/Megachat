@@ -148,7 +148,8 @@ func (b *Backend) finishPairing(cli waClient) {
 		b.connected.Store(true)
 		b.started.Store(true)
 		b.loadProtocolCache(ctx)
-		b.afterConnect(ctx, cli)
+		b.warm.Store(true)
+		b.afterConnect(ctx, cli, true)
 	}
 }
 

@@ -27,10 +27,11 @@ var (
 	_ proto.HistoryFetcher        = (*Backend)(nil)
 	_ proto.HistoryResyncer       = (*Backend)(nil)
 
-	_ core.MessageIngester  = (*Backend)(nil)
-	_ core.ReceiptProcessor = (*Backend)(nil)
-	_ core.ContactRegistrar = (*Backend)(nil)
-	_ core.PlaceholderNamer = (*Backend)(nil)
+	_ core.MessageIngester      = (*Backend)(nil)
+	_ core.RecentHistoryFetcher = (*Backend)(nil)
+	_ core.ReceiptProcessor     = (*Backend)(nil)
+	_ core.ContactRegistrar     = (*Backend)(nil)
+	_ core.PlaceholderNamer     = (*Backend)(nil)
 
 	_ media.ProfilePhotoProvider = (*Backend)(nil)
 	_ media.MediaDirProvider     = (*Backend)(nil)

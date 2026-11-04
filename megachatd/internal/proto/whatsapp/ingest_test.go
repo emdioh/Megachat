@@ -465,3 +465,50 @@ func TestReconcileUnread(t *testing.T) {
 		t.Error("a chat read on the phone must be marked read locally")
 	}
 }
+
+var (
+	_ BatchSlotMerger = (*store.Store)(nil)
+	_ FailedRowReuser = (*store.Store)(nil)
+)
+
+func TestMergeBatchSlotWithRealStore(t *testing.T) {
+	e := newEnv(t)
+	if _, _, err := e.st.AddMessage(ctx, store.NewMessage{Protocol: proto.ProtocolWhatsApp, ContactNumber: "39@c.us",
+		Text: "x", IsMine: true, Timestamp: 5, MsgID: store.Ptr("m1")}); err != nil {
+		t.Fatal(err)
+	}
+	ent := &entry{ID: "m1"}
+	idx := int64(1)
+	if !e.b.mergeBatchSlotLocked(ctx, "39@c.us", ent, inMsg{ID: "m1", BatchID: "B", BatchIndex: &idx}) {
+		t.Fatal("merge should touch the row")
+	}
+	if r := dbRows(t, e, "39@c.us"); len(r) != 1 || store.Deref(r[0].BatchID) != "B" {
+		t.Fatalf("%+v", r)
+	}
+}
+
+// bug #44: the echo of a retried send reuses the single failed id-less row.
+func TestEchoReusesFailedDBRow(t *testing.T) {
+	e := newEnv(t)
+	c := "39@c.us"
+	if _, _, err := e.st.AddMessage(ctx, store.NewMessage{Protocol: proto.ProtocolWhatsApp, ContactNumber: c,
+		Text: "retry me", IsMine: true, Timestamp: 1000, Status: "failed"}); err != nil {
+		t.Fatal(err)
+	}
+	res, err := e.b.IngestMessage(ctx, c, map[string]any{"id": "W1", "text": "retry me", "is_mine": true}, 2000)
+	if err != nil || res != proto.IngestUnchanged {
+		t.Fatalf("res=%v err=%v", res, err)
+	}
+	r := dbRows(t, e, c)
+	if len(r) != 1 || store.Deref(r[0].MsgID) != "W1" || store.Deref(r[0].Status) != "sent" || r[0].Timestamp != 2000 {
+		t.Fatalf("db not re-keyed: %+v", r)
+	}
+	if ce := cached(e.b, c); len(ce) != 1 || ce[0].ID != "W1" || ce[0].Status != "sent" || ce[0].Timestamp != 2000 {
+		t.Fatalf("cache not mirrored: %+v", ce)
+	}
+	// with no failed row the echo inserts normally
+	res, _ = e.b.IngestMessage(ctx, c, map[string]any{"id": "W2", "text": "other", "is_mine": true}, 3000)
+	if res != proto.IngestAdded || len(dbRows(t, e, c)) != 2 {
+		t.Fatalf("res=%v", res)
+	}
+}

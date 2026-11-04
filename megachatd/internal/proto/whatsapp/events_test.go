@@ -527,3 +527,41 @@ func TestEditAndReactionUseTheTwinStorageKey(t *testing.T) {
 		t.Fatalf("reaction routed to the twin: %+v", got)
 	}
 }
+
+// Boot wait: WaitReady is bounded, and a session that becomes ready late gets
+// the post-WORKING work (LID warm-up -> lid_warmup_done) exactly once.
+func TestWaitReadyRunsWarmupOnce(t *testing.T) {
+	e := newEnv(t)
+	e.b.lidStarted.Store(false)
+	e.fc.mu.Lock()
+	e.fc.loggedIn = false
+	e.fc.mu.Unlock()
+	if e.b.WaitReady(ctx, 30*time.Millisecond) {
+		t.Fatal("ready while logged out")
+	}
+	e.fc.mu.Lock()
+	e.fc.loggedIn = true
+	e.fc.mu.Unlock()
+	if !e.b.WaitReady(ctx, time.Second) || !e.b.WaitReady(ctx, time.Second) {
+		t.Fatal("not ready")
+	}
+	n := 0
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && n == 0 {
+		for _, ev := range drain(e.b) {
+			if ev.Type == proto.EventLidWarmupDone {
+				n++
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	time.Sleep(50 * time.Millisecond)
+	for _, ev := range drain(e.b) {
+		if ev.Type == proto.EventLidWarmupDone {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("lid_warmup_done published %d times", n)
+	}
+}

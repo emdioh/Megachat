@@ -439,6 +439,11 @@ func (b *Backend) ingestLocked(ctx context.Context, contactID string, d inMsg, t
 		}
 	}
 
+	// bug #44: reuse the unique failed id-less DB row for the echo of a retried send.
+	if isMine && msgID != "" && b.reuseFailedDBRowLocked(ctx, contactID, d, text, msgID, ts) {
+		return proto.IngestUnchanged
+	}
+
 	if persist {
 		b.persistMessage(ctx, contactID, d, ts)
 	}
@@ -459,6 +464,38 @@ func (b *Backend) ingestLocked(ctx context.Context, contactID string, d inMsg, t
 		FromHistory: reconcile,
 	})
 	return proto.IngestAdded
+}
+
+// reuseFailedDBRowLocked is _reuse_failed_db_row: re-key the single failed
+// id-less row and mirror it into the cache.
+func (b *Backend) reuseFailedDBRowLocked(ctx context.Context, contactID string, d inMsg, text, msgID string, ts int64) bool {
+	r, ok := b.st.(FailedRowReuser)
+	if !ok || b.st == nil {
+		return false
+	}
+	status := d.Status
+	if status == "" {
+		status = "sent"
+	}
+	row, err := r.ReuseFailedRow(ctx, proto.ProtocolWhatsApp, contactID, text, ts, msgID, status)
+	if err != nil {
+		b.log.Error("WhatsApp: _reuse_failed_db_row failed", "err", err)
+		return false
+	}
+	if row == nil {
+		return false
+	}
+	msgType := d.MsgType
+	if msgType == "" {
+		msgType = "text"
+	}
+	b.addCachedLocked(contactID, &entry{
+		ID: msgID, Text: text, IsMine: true, Sender: d.Sender, Timestamp: row.Timestamp, QuoteText: d.QuoteText,
+		MsgType: msgType, AttachmentInfo: d.AttachmentInfo, AttachmentID: d.AttachmentID,
+		Read: true, Status: row.Status, QuoteTimestamp: d.QuoteTimestamp, QuoteAuthor: d.QuoteAuthor,
+		ReplyToMessageID: d.ReplyTo,
+	})
+	return true
 }
 
 func (b *Backend) updateInfo(ctx context.Context, contact, id string, ts int64, info string) {

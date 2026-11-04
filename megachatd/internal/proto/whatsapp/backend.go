@@ -84,6 +84,12 @@ type BatchSlotMerger interface {
 	MergeBatchSlot(ctx context.Context, protocol, contact, msgID, batchID string, batchIndex *int64) (bool, error)
 }
 
+// FailedRowReuser is an OPTIONAL store extension for _reuse_failed_db_row
+// (*store.Store implements it). Without it the reuse fallback is skipped.
+type FailedRowReuser interface {
+	ReuseFailedRow(ctx context.Context, protocol, contact, text string, ts int64, msgID, status string) (*store.ReusedRow, error)
+}
+
 // Options configures New.
 type Options struct {
 	Config Config // required unless every path override below is set
@@ -161,6 +167,7 @@ type Backend struct {
 	lidMap          map[string]lidEntry
 	lidLoaded       bool
 	lidStarted      atomic.Bool
+	warm            atomic.Bool // the post-ready work (LID warm-up, presence) ran
 	lidCooldown     map[string]time.Time
 	lidStoreForTest lidStore // overrides the device LID store (tests)
 
@@ -451,14 +458,40 @@ func (b *Backend) Connect(ctx context.Context) error {
 			return err
 		}
 	}
-	if !b.waitReady(ctx, cli, connectTimeout) {
+	ready := b.waitReady(ctx, cli, connectTimeout)
+	if !ready {
 		b.log.Warn("WhatsApp session did not become ready in time; continuing")
 	}
 	b.connected.Store(cli.IsConnected() && cli.IsLoggedIn())
 	b.started.Store(true)
-	b.afterConnect(ctx, cli)
+	b.warm.Store(ready)
+	b.afterConnect(ctx, cli, ready)
 	return nil
 }
+
+// WaitReady implements core.ReadyWaiter: the boot wait (Python polled the
+// WAHA session until WORKING). It waits up to timeout for the client to be
+// connected and logged in. When the session only became ready after Connect
+// gave up waiting, the work Python did after WORKING runs now: the contact
+// load, the LID warm-up (-> lid_warmup_done) and the presence announcement.
+func (b *Backend) WaitReady(ctx context.Context, timeout time.Duration) bool {
+	cli, err := b.ensureClient(ctx)
+	if err != nil || !paired(cli) {
+		return false
+	}
+	if !b.waitReady(ctx, cli, timeout) {
+		return false
+	}
+	b.connected.Store(true)
+	if !b.warm.Swap(true) {
+		b.loadContacts(ctx)
+		b.warmup(ctx, cli)
+	}
+	return true
+}
+
+// ReloadContacts implements core.ContactsReloader (_load_contacts).
+func (b *Backend) ReloadContacts(ctx context.Context) { b.loadContacts(ctx) }
 
 // waitReady polls until the client is connected and logged in.
 func (b *Backend) waitReady(ctx context.Context, cli waClient, timeout time.Duration) bool {
@@ -479,10 +512,18 @@ func (b *Backend) waitReady(ctx context.Context, cli waClient, timeout time.Dura
 }
 
 // afterConnect is the tail of connect_sync: contacts, LID resolver, presence.
-func (b *Backend) afterConnect(ctx context.Context, cli waClient) {
+func (b *Backend) afterConnect(ctx context.Context, cli waClient, ready bool) {
 	b.loadContacts(ctx)
-	b.StartLIDResolver()
 	b.guard.noteConnected()
+	if ready {
+		b.warmup(ctx, cli)
+	}
+}
+
+// warmup is what connect_sync did once the session was WORKING: start the LID
+// resolver (idempotent) and announce presence.
+func (b *Backend) warmup(ctx context.Context, cli waClient) {
+	b.StartLIDResolver()
 	// Announcing "available" is what makes WhatsApp deliver typing updates, but
 	// it also mutes the phone's push notifications: only when the typing
 	// indicator is enabled (WAHA_PRESENCE_SUBSCRIBE), like Python.

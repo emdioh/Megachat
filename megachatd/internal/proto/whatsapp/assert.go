@@ -36,6 +36,8 @@ var (
 	_ core.ContactRegistrar   = (*Backend)(nil)
 	_ core.UnreadReconciler   = (*Backend)(nil)
 	_ core.LIDResolverStarter = (*Backend)(nil)
+	_ core.ReadyWaiter        = (*Backend)(nil)
+	_ core.ContactsReloader   = (*Backend)(nil)
 	_ core.NumberChecker      = (*Backend)(nil)
 	_ core.PlaceholderNamer   = (*Backend)(nil)
 
