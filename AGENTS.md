@@ -175,7 +175,19 @@ Tooling: Go (version per `megachatd/go.mod`), Python 3.12+ with
    ```
 7. Tell the user the bead is done. The supervisor fetches `worker/<id>`,
    verifies, merges it into `claude/elegant-cray-86jkrz` and closes the bead,
-   or adds a `rework:` note and removes `needs-review`.
+   or adds a `rework:` note, removes `needs-review` and adds the `rework`
+   label.
+
+**Picking the next bead** (after every `git pull` + `bd import`):
+
+1. Rework first: `bd list -l rework --status in_progress`. Check out the
+   existing `worker/<id>` branch, merge `origin/claude/elegant-cray-86jkrz`
+   into it, address every `rework:` note, remove the `rework` label and hand
+   off again (step 6).
+2. Otherwise `bd ready -l worker`, highest priority first, skipping beads that
+   carry `needs-review`. `bd ready` already hides beads whose dependencies are
+   not closed.
+3. Nothing left: wait ~10 minutes, pull + import, and look again.
 
 Never push to `claude/elegant-cray-86jkrz` or `master` directly, never run
 `bd dolt push`, and keep one bead per branch.
