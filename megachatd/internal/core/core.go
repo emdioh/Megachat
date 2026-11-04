@@ -23,16 +23,13 @@ import (
 // implement any of them; the core has a store-based fallback for the first
 // two and a core-local registry for the third.
 
-// IngestResult is the outcome of ingesting one message.
-type IngestResult int
+// IngestResult is the outcome of ingesting one message (shared with backends).
+type IngestResult = proto.IngestResult
 
 const (
-	// IngestUnchanged: an already known message (Python False).
-	IngestUnchanged IngestResult = iota
-	// IngestAdded: a new row was stored (Python True).
-	IngestAdded
-	// IngestChanged: an existing identity was upgraded (Python "changed").
-	IngestChanged
+	IngestUnchanged = proto.IngestUnchanged
+	IngestAdded     = proto.IngestAdded
+	IngestChanged   = proto.IngestChanged
 )
 
 // MessageIngester stores a backend message (ingest_message).
