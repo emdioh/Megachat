@@ -158,3 +158,24 @@ func writeFile(t *testing.T, path string, data []byte) {
 }
 
 var _ = api.CodeNotFound
+
+func newRegistry(d Deps) *ops.Registry {
+	reg := ops.NewRegistry()
+	RegisterOps(reg, d)
+	return reg
+}
+
+func callRaw(t *testing.T, reg *ops.Registry, name string, params any) map[string]any {
+	t.Helper()
+	raw, _ := json.Marshal(params)
+	res, err := reg.Call(context.Background(), name, raw)
+	if err != nil {
+		t.Fatalf("%s: %v", name, err)
+	}
+	b, _ := json.Marshal(res)
+	var m map[string]any
+	_ = json.Unmarshal(b, &m)
+	return m
+}
+
+func mustJSON(v any) json.RawMessage { b, _ := json.Marshal(v); return b }
