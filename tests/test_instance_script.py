@@ -35,6 +35,9 @@ def run(tmp_path: Path):
         "MEGACHAT_OPENRC_RUNLEVELS": str(tmp_path / "runlevels"),
         "MEGACHAT_PUBLIC_HOST": "myhost",
         "MEGACHAT_INIT": "systemd",
+        # Interpreter of the test run: spawned servers use it, not the repo
+        # .venv (absent in CI checkouts) or the system python.
+        "PYTHON": sys.executable,
         # No real server behind the service stubs: skip the readiness wait.
         "MEGACHAT_SERVER_WAIT_S": "0",
     }

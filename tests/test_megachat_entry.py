@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -10,6 +11,51 @@ from unittest.mock import patch
 import megachat
 
 ROOT = Path(__file__).resolve().parent.parent
+
+
+def _fake_venv(tmp_path: Path) -> Path:
+    venv_python = tmp_path / ".venv" / "bin" / "python"
+    venv_python.parent.mkdir(parents=True)
+    venv_python.write_text("")
+    return venv_python
+
+
+def test_ensure_venv_reexecs_without_dependencies(monkeypatch, tmp_path):
+    venv_python = _fake_venv(tmp_path)
+    monkeypatch.setattr(megachat, "PROJECT_DIR", tmp_path)
+    monkeypatch.setattr(megachat, "_missing_dependencies", lambda argv: True)
+    monkeypatch.delenv(megachat.REEXEC_ENV, raising=False)
+    calls: list[tuple[str, list[str]]] = []
+    monkeypatch.setattr(
+        megachat.os, "execv", lambda path, argv: calls.append((path, argv))
+    )
+    try:
+        megachat._ensure_venv(["serve"])
+    finally:
+        os.environ.pop(megachat.REEXEC_ENV, None)
+    assert calls == [(str(venv_python), [str(venv_python), *sys.argv])]
+
+
+def test_ensure_venv_skips_when_dependencies_present(monkeypatch, tmp_path):
+    _fake_venv(tmp_path)
+    monkeypatch.setattr(megachat, "PROJECT_DIR", tmp_path)
+    monkeypatch.setattr(megachat, "_missing_dependencies", lambda argv: False)
+    monkeypatch.delenv(megachat.REEXEC_ENV, raising=False)
+    calls: list[str] = []
+    monkeypatch.setattr(megachat.os, "execv", lambda path, argv: calls.append(path))
+    megachat._ensure_venv(["serve"])
+    assert calls == []
+
+
+def test_ensure_venv_guard_prevents_exec_loop(monkeypatch, tmp_path):
+    _fake_venv(tmp_path)
+    monkeypatch.setattr(megachat, "PROJECT_DIR", tmp_path)
+    monkeypatch.setattr(megachat, "_missing_dependencies", lambda argv: True)
+    monkeypatch.setenv(megachat.REEXEC_ENV, "1")
+    calls: list[str] = []
+    monkeypatch.setattr(megachat.os, "execv", lambda path, argv: calls.append(path))
+    megachat._ensure_venv(["serve"])
+    assert calls == []
 
 
 def test_serve_dispatches_to_server_main():
