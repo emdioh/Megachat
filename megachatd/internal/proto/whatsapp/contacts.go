@@ -624,6 +624,31 @@ func (b *Backend) registerLIDAliasLocked(c *proto.Contact) {
 	}
 }
 
+// registerSendAlias is _register_send_alias: after resolving the phone of a
+// @lid chat, register the reverse alias {phone}@c.us -> the @lid contact (and
+// populate extras.phone when missing). WhatsApp reflects the send echo/ack
+// with the @c.us chat, so the alias lets the echo be ingested under the @lid
+// id instead of creating a transient @c.us twin. setdefault-style: idempotent
+// across concurrent sends; the phone is already resolved outside the lock
+// (no network here).
+func (b *Backend) registerSendAlias(lid, phone string) {
+	b.cmu.Lock()
+	defer b.cmu.Unlock()
+	contact := b.byJID[lid]
+	if contact == nil {
+		return
+	}
+	if exStr(contact, "phone") == "" {
+		if contact.Extras == nil {
+			contact.Extras = map[string]any{}
+		}
+		contact.Extras["phone"] = phone
+	}
+	if _, ok := b.byJID[phone+"@c.us"]; !ok {
+		b.byJID[phone+"@c.us"] = contact
+	}
+}
+
 // identify is _identify_contact: a known contact for the id, or nil.
 func (b *Backend) identify(jid string) *proto.Contact {
 	b.cmu.RLock()

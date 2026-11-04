@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/emdioh/megachat/megachatd/internal/bus"
+	"github.com/emdioh/megachat/megachatd/internal/core"
 	"github.com/emdioh/megachat/megachatd/internal/proto"
 	"go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/types"
@@ -62,6 +64,199 @@ func TestSendLIDChatGoesToLID(t *testing.T) {
 	}
 	if to := lastSent(t, e).To.String(); to != "189025889575055@lid" {
 		t.Errorf("to = %q", to)
+	}
+}
+
+// seedLIDContact registers a single @lid contact as the only contact, exactly
+// like the Python _lid_contact test helper (no resolver side effects).
+func seedLIDContact(e *env, lid string, phone string) *proto.Contact {
+	extras := map[string]any{"jid": lid}
+	if phone != "" {
+		extras["phone"] = phone
+	}
+	c := newContact(lid, "Bob", extras)
+	e.b.cmu.Lock()
+	e.b.contacts = []*proto.Contact{c}
+	e.b.byJID = map[string]*proto.Contact{lid: c}
+	e.b.cmu.Unlock()
+	return c
+}
+
+func TestSendLIDRegistersReverseAlias(t *testing.T) {
+	e := newEnv(t)
+	e.lids.put("139153", "393331234567")
+	c := seedLIDContact(e, "139153@lid", "")
+	if _, err := e.b.SendMessage(ctx, "139153@lid", "x", proto.Quote{}); err != nil {
+		t.Fatal(err)
+	}
+	e.b.cmu.RLock()
+	alias := e.b.byJID["393331234567@c.us"]
+	e.b.cmu.RUnlock()
+	if alias != c {
+		t.Fatalf("reverse alias %q -> %p, want the @lid contact %p", "393331234567@c.us", alias, c)
+	}
+	if got := exStr(c, "phone"); got != "393331234567" {
+		t.Errorf("extras.phone = %q, want %q", got, "393331234567")
+	}
+	// The echo/ack (which WhatsApp reflects as the @c.us chat) resolves to the
+	// @lid contact, so it is ingested under the @lid id.
+	if got, ok := e.b.FindContact("393331234567@c.us"); !ok || got.ID != "139153@lid" {
+		t.Errorf("FindContact(@c.us) = %+v (ok=%v), want the @lid contact", got, ok)
+	}
+}
+
+func TestSendLIDUnresolvableLeavesNoAlias(t *testing.T) {
+	e := newEnv(t)
+	seedLIDContact(e, "139153@lid", "")
+	if _, err := e.b.SendMessage(ctx, "139153@lid", "x", proto.Quote{}); err != nil {
+		t.Fatal(err)
+	}
+	e.b.cmu.RLock()
+	_, has := e.b.byJID["393331234567@c.us"]
+	e.b.cmu.RUnlock()
+	if has {
+		t.Error("an unresolvable @lid send must not register a reverse alias")
+	}
+}
+
+func TestSendCUSChatUntouched(t *testing.T) {
+	e := newEnv(t)
+	c := seedLIDContact(e, "393331234567@c.us", "")
+	if _, err := e.b.SendMessage(ctx, "393331234567@c.us", "x", proto.Quote{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, has := c.Extras["phone"]; has {
+		t.Error("a @c.us send must not add extras.phone")
+	}
+	e.b.cmu.RLock()
+	alias := e.b.byJID["393331234567@c.us"]
+	e.b.cmu.RUnlock()
+	if alias != c {
+		t.Errorf("the @c.us id must keep mapping to the @c.us contact, got %p", alias)
+	}
+}
+
+// newBehaviourCore wires a Core to the env's backend exactly like the receive
+// pump, so a backend event can be resolved and ingested through the real core.
+func newBehaviourCore(t *testing.T, e *env) *core.Core {
+	t.Helper()
+	mgr := proto.New(proto.WithLogger(quietLogger()))
+	if err := mgr.Register(e.b); err != nil {
+		t.Fatal(err)
+	}
+	return core.New(e.cfg, e.st, mgr, bus.New(bus.WithLogger(quietLogger())),
+		core.WithLogger(quietLogger()), core.WithoutStartupMaintenance())
+}
+
+// sendAndGetIDs sends "ciao" to the @lid chat and returns the returned WAHA id
+// and the raw WhatsApp message id.
+func sendAndGetIDs(t *testing.T, e *env) (string, string) {
+	t.Helper()
+	id, err := e.b.SendMessage(ctx, "139153@lid", "ciao", proto.Quote{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wid := string(lastSent(t, e).Extra.ID)
+	if want := "true_139153@lid_" + wid; id != want {
+		t.Fatalf("sent id = %q, want %q", id, want)
+	}
+	return id, wid
+}
+
+// Regression (mc-zao.5.2 / Python 1682377): after a send to a @lid chat with a
+// known phone, WhatsApp reflects the echo with the @c.us chat. The alias the
+// send registered makes the core resolve it to the @lid contact, so the echo
+// is cached and stored under the @lid id: no transient @c.us twin contact and
+// one row for the msg_id. Without the alias the core falls back to a @c.us
+// placeholder, which this test rejects.
+func TestSendLIDEchoIngestedUnderLID(t *testing.T) {
+	e := newEnv(t)
+	e.lids.put("139153", "393331234567")
+	seedLIDContact(e, "139153@lid", "")
+	cr := newBehaviourCore(t, e)
+	_, wid := sendAndGetIDs(t, e)
+
+	// The reflected echo: our own message, but with the @c.us chat.
+	e.b.onMessage(dmEvent("393331234567", types.DefaultUserServer, wid, true, text("ciao")))
+	ev := one(t, drain(e.b))
+	if ev.Type != proto.EventMessage || ev.ContactID != "393331234567@c.us" {
+		t.Fatalf("echo event: %+v", ev)
+	}
+	res, err := cr.Process(ctx, ev)
+	if err != nil || len(res) != 1 || res[0].Type != bus.Message {
+		t.Fatalf("process echo: %+v %v", res, err)
+	}
+	if got := res[0].Payload["contact_id"]; got != "139153@lid" {
+		t.Errorf("echo ingested under %v, want the @lid contact", got)
+	}
+	entries := cached(e.b, "139153@lid")
+	if len(entries) != 1 || entries[0].ID != "true_393331234567@c.us_"+wid || !entries[0].IsMine {
+		t.Fatalf("cache under @lid: %+v", entries)
+	}
+	if twin := cached(e.b, "393331234567@c.us"); len(twin) != 0 {
+		t.Errorf("the echo must not be cached under @c.us: %+v", twin)
+	}
+	rows := dbRows(t, e, "139153@lid")
+	if len(rows) != 1 || store0(rows[0].MsgID) != "true_393331234567@c.us_"+wid || !rows[0].IsMine {
+		t.Fatalf("stored rows under @lid: %+v", rows)
+	}
+	if twin := dbRows(t, e, "393331234567@c.us"); len(twin) != 0 {
+		t.Errorf("the echo must not be stored under @c.us: %+v", twin)
+	}
+	// No twin contact: the @c.us id resolves to the one @lid contact.
+	list, _ := e.b.ListContacts(ctx)
+	if len(list) != 1 || list[0].ID != "139153@lid" {
+		t.Fatalf("contacts = %+v, want only the @lid contact", list)
+	}
+	if got, ok := e.b.FindContact("393331234567@c.us"); !ok || got.ID != "139153@lid" {
+		t.Errorf("FindContact(@c.us) = %+v (ok=%v), want the @lid contact", got, ok)
+	}
+}
+
+// Regression (mc-zao.5.2 / Python 1682377): the receipt is scoped to the @lid
+// chat, so it must find the is_mine row the @c.us echo produced under the @lid
+// contact and upgrade it to read.
+func TestSendLIDEchoReceiptUpdatesIsMineRow(t *testing.T) {
+	e := newEnv(t)
+	e.lids.put("139153", "393331234567")
+	seedLIDContact(e, "139153@lid", "")
+	cr := newBehaviourCore(t, e)
+	_, wid := sendAndGetIDs(t, e)
+
+	e.b.onMessage(dmEvent("393331234567", types.DefaultUserServer, wid, true, text("ciao")))
+	if _, err := cr.Process(ctx, one(t, drain(e.b))); err != nil {
+		t.Fatal(err)
+	}
+	if rows := dbRows(t, e, "139153@lid"); len(rows) != 1 || store0(rows[0].Status) != "sent" {
+		t.Fatalf("outgoing row before receipt: %+v", rows)
+	}
+
+	// The phone reports the read on the @lid chat.
+	rc := &events.Receipt{Type: types.ReceiptTypeRead, Timestamp: baseTime,
+		MessageIDs: []types.MessageID{types.MessageID(wid)}}
+	rc.Chat = jid("139153", types.HiddenUserServer)
+	e.b.onReceipt(rc)
+	rev := one(t, drain(e.b))
+	if rev.Type != proto.EventReceipt || rev.ContactID != "139153@lid" {
+		t.Fatalf("receipt event: %+v", rev)
+	}
+	res, err := cr.Process(ctx, rev)
+	if err != nil || len(res) != 1 || res[0].Type != bus.Receipt {
+		t.Fatalf("process receipt: %+v %v", res, err)
+	}
+	updated, _ := res[0].Payload["updated"].([]any)
+	if len(updated) != 1 {
+		t.Fatalf("updated = %+v, want the is_mine row", updated)
+	}
+	rows := dbRows(t, e, "139153@lid")
+	if len(rows) != 1 || store0(rows[0].Status) != "read" || !rows[0].IsMine {
+		t.Fatalf("row after receipt: %+v", rows)
+	}
+	if entries := cached(e.b, "139153@lid"); len(entries) != 1 || entries[0].Status != "read" {
+		t.Fatalf("cache after receipt: %+v", entries)
+	}
+	if twin := dbRows(t, e, "393331234567@c.us"); len(twin) != 0 {
+		t.Errorf("no @c.us row may exist: %+v", twin)
 	}
 }
 
