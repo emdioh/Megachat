@@ -38,7 +38,7 @@ from .common import (
 BIN_DIR = PROJECT_DIR / "bin"
 MEGACHATD_DIR = PROJECT_DIR / "megachatd"
 REPO = "AsamK/signal-cli"
-REQUIRED_PYTHON = (3, 10)
+REQUIRED_PYTHON = (3, 13)
 REQUIRED_JAVA_MAJOR = 25
 
 
@@ -116,7 +116,11 @@ def check_python() -> None:
     if (major, minor) < REQUIRED_PYTHON:
         die(
             f"Python {REQUIRED_PYTHON[0]}.{REQUIRED_PYTHON[1]}+ richiesto, "
-            f"trovato {major}.{minor}."
+            f"trovato {major}.{minor}. Installa Python "
+            f"{REQUIRED_PYTHON[0]}.{REQUIRED_PYTHON[1]} o superiore e riprova "
+            "(macOS/Homebrew: 'brew install python@"
+            f"{REQUIRED_PYTHON[0]}.{REQUIRED_PYTHON[1]}' | Debian/Ubuntu: "
+            f"'sudo apt install python{REQUIRED_PYTHON[0]}.{REQUIRED_PYTHON[1]}')."
         )
         return
     ok(f"Python {major}.{minor} trovato.")

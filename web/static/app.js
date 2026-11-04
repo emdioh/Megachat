@@ -146,7 +146,6 @@ const elements = {
   connection: document.querySelector("#connection-state"),
   errorBanner: document.querySelector("#error-banner"),
   errorText: document.querySelector("#error-text"),
-  linkDialog: document.querySelector("#link-dialog"),
   settingsDialog: document.querySelector("#settings-dialog"),
   accountLinkDialog: document.querySelector("#account-link-dialog"),
   accountLinkChooser: document.querySelector("#account-link-chooser"),
@@ -173,9 +172,6 @@ const elements = {
   cacheSizeSelect: document.querySelector("#cache-size-select"),
   backgroundSyncSelect: document.querySelector("#background-sync-select"),
   cacheStatus: document.querySelector("#cache-status"),
-  linkStatusSignal: document.querySelector("#link-status-signal"),
-  linkStatusWhatsapp: document.querySelector("#link-status-whatsapp"),
-  linkStatusTelegram: document.querySelector("#link-status-telegram"),
   transcriptionProvider: document.querySelector("#transcription-provider"),
   transcriptionKeyLabel: document.querySelector("#transcription-key-label"),
   transcriptionKeyInput: document.querySelector("#transcription-key-input"),
@@ -240,7 +236,8 @@ function requestToken(invalid = false) {
   updateBackendStatuses();
   elements.tokenError.hidden = !invalid;
   elements.tokenInput.value = state.token;
-  if (!elements.linkDialog.open) elements.linkDialog.showModal();
+  if (!elements.settingsDialog.open) elements.settingsDialog.showModal();
+  if (!invalid) loadTranscriptionConfig();
   window.setTimeout(() => elements.tokenInput.focus(), 0);
 }
 
@@ -598,6 +595,9 @@ function syncProtocolTabs() {
     const next = connected[0] ?? null;
     if (next !== state.protocolFilter) {
       state.protocolFilter = next;
+      // Stesso motivo del click sui tab: la sotto-vista "Archiviate" non si
+      // eredita passando a un altro backend.
+      state.showArchived = false;
       if (next) localStorage.setItem(PROTOCOL_KEY, next);
       else localStorage.removeItem(PROTOCOL_KEY);
       changed = true;
@@ -607,13 +607,7 @@ function syncProtocolTabs() {
 }
 
 async function updateBackendStatuses() {
-  const statuses = {
-    signal: elements.linkStatusSignal,
-    whatsapp: elements.linkStatusWhatsapp,
-    telegram: elements.linkStatusTelegram,
-  };
   if (!state.token) {
-    for (const protocol of PROTOCOLS) statuses[protocol].textContent = "Non collegato";
     state.backendStatuses = null;
     syncProtocolTabs();
     return;
@@ -624,9 +618,6 @@ async function updateBackendStatuses() {
   try {
     const response = await apiFetch("api/status");
     const data = await response.json();
-    for (const protocol of PROTOCOLS) {
-      statuses[protocol].textContent = data[protocol] ? "Collegato" : "Non collegato";
-    }
     state.backendStatuses = {
       signal: data.signal === true,
       whatsapp: data.whatsapp === true,
@@ -3115,7 +3106,7 @@ async function toggleEmojiPicker() {
   }
   renderEmojiTabs();
   renderEmojiGrid();
-  if (elements.linkDialog.open) elements.linkDialog.close();
+  if (elements.settingsDialog.open) elements.settingsDialog.close();
   elements.emojiPicker.hidden = false;
   elements.emojiToggle.setAttribute("aria-expanded", "true");
   elements.emojiToggle.setAttribute("aria-label", "Chiudi selettore emoji");
@@ -3710,7 +3701,7 @@ function sendOutboxRecord(record) {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
-  });
+  }).then(readSendResult);
 }
 
 function onOutboxUpdate(record) {
@@ -3723,6 +3714,7 @@ function onOutboxUpdate(record) {
     item.outbox_id = record.id;
     if (status === "sending") item.optimisticStatus = "sending";
     else item.optimisticStatus = status;
+    if (status === "sent" && record.result) applyServerMessageIds([item], record.result);
     changed = true;
   }
   if (changed && state.active) {
@@ -3937,6 +3929,7 @@ async function submitMessage() {
   }
   console.debug("[web] optimistic", { protocol: active.protocol, optimistic_ids: optimisticItems.map((item) => item.optimistic_id), attachments: attachments.length, hasPreview: optimisticItems.some((item) => item.localPreviewUrl) });
   state.optimistic.push(...optimisticItems);
+  let sendResult = {};
   if (useOutbox) {
     const record = {
       id: `out-${clientMsgId}`,
@@ -4004,14 +3997,15 @@ async function submitMessage() {
       for (const [key, value] of Object.entries(quotePayload)) body.set(key, String(value));
       // append (non set): il campo "file" e' ripetuto per ciascun allegato.
       for (const attachment of attachments) body.append("file", attachment.file, attachment.filename);
-      await apiFetch("api/send", { method: "POST", body });
+      sendResult = await readSendResult(await apiFetch("api/send", { method: "POST", body }));
     } else {
-      await apiFetch("api/send", {
+      sendResult = await readSendResult(await apiFetch("api/send", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ protocol: active.protocol, contact_id: active.id, text, client_msg_id: clientMsgId, ...quotePayload }),
-      });
+      }));
     }
+    applyServerMessageIds(optimisticItems, sendResult);
     for (const optimistic of optimisticItems) optimistic.optimisticStatus = "sent";
     // R2: lo staging viene svuotato solo a invio riuscito; su errore gli
     // allegati restano disponibili per il retry manuale.
@@ -4031,6 +4025,26 @@ async function submitMessage() {
       elements.messageInput.focus();
     }
   }
+}
+
+// Corpo JSON di /api/send ({ok, message_ids}); mai un errore: una risposta
+// illeggibile lascia solo l'accoppiamento per signature.
+async function readSendResult(response) {
+  try {
+    const body = await response.json();
+    return body && typeof body === "object" ? body : {};
+  } catch (error) {
+    return {};
+  }
+}
+
+// Id reale assegnato dal backend a un invio a bolla singola: permette alla
+// reconciliation di accoppiare la bolla optimistic senza signature. Con N
+// bolle (multi-allegato) decide il pairing per slot batch_id/batch_index.
+function applyServerMessageIds(items, result) {
+  const ids = Array.isArray(result?.message_ids) ? result.message_ids.filter(Boolean) : [];
+  if (items.length !== 1 || ids.length !== 1) return;
+  items[0].server_message_id = String(ids[0]);
 }
 
 function encodeToken(token) {
@@ -4697,11 +4711,6 @@ document.addEventListener("click", (event) => {
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") closeMainMenu();
 });
-document.querySelector("#open-token").addEventListener("click", () => {
-  closeMainMenu();
-  requestToken();
-});
-
 document.querySelector("#open-account-link").addEventListener("click", () => {
   closeMainMenu();
   openAccountLinkDialog();
@@ -4735,6 +4744,8 @@ function updateCacheStatus() {
 document.querySelector("#open-settings").addEventListener("click", () => {
   closeMainMenu();
   updateCacheStatus();
+  elements.tokenInput.value = state.token;
+  elements.tokenError.hidden = true;
   if (!elements.settingsDialog.open) elements.settingsDialog.showModal();
   loadTranscriptionConfig();
   loadTranscriptionSettings();
@@ -4759,7 +4770,6 @@ document.querySelector("#clear-message-cache").addEventListener("click", async (
   elements.cacheStatus.textContent = "Cache svuotata";
   scheduleBackgroundSync();
 });
-document.querySelector("#close-link-dialog").addEventListener("click", () => elements.linkDialog.close());
 elements.stealthToggle.checked = state.stealth;
 elements.stealthToggle.addEventListener("change", () => {
   state.stealth = elements.stealthToggle.checked;
@@ -4866,10 +4876,44 @@ if (vv) {
 elements.saveTranscriptionKey.addEventListener("click", saveTranscriptionKey);
 elements.changeTranscriptionKey.addEventListener("click", enableTranscriptionKeyEdit);
 
+// Ripristina lo stato statico della message-list (web/static/index.html):
+// il pannello thread torna a mostrare il placeholder "scegli una chat".
+function restoreEmptyThreadState() {
+  const empty = document.createElement("div");
+  empty.className = "empty-state";
+  const icon = document.createElement("span");
+  icon.className = "empty-icon";
+  icon.textContent = "◫";
+  const title = document.createElement("strong");
+  title.textContent = "Archivio in sola lettura";
+  const hint = document.createElement("p");
+  hint.textContent = "Scegli una chat per consultarne i messaggi e gli allegati.";
+  empty.append(icon, title, hint);
+  elements.messages.replaceChildren(empty);
+}
+
 function closeThreadView() {
   clearTelegramRefreshTimer();
-  elements.app.classList.remove("thread-open");
+  if (state.active) stashComposerDraft(state.active);
+  if (state.editing) cancelEdit();
+  cancelReply();
+  state.messageRequest?.abort();
+  state.messageRequest = null;
+  abortMediaRequests();
+  state.active = null;
+  state.messages = [];
+  state.messageNodes = new Map();
+  state.userScrolledUp = false;
   state.threadHistoryPushed = false;
+  elements.app.classList.remove("thread-open");
+  elements.composerShell.hidden = true;
+  elements.messageInput.value = "";
+  clearStagedAttachments();
+  renderThreadAvatar(null);
+  updateArchiveButton();
+  elements.threadName.textContent = "Reader web";
+  elements.threadMeta.textContent = "Seleziona una conversazione";
+  restoreEmptyThreadState();
 }
 
 document.querySelector("#back-button").addEventListener("click", () => {
@@ -5073,25 +5117,38 @@ if (elements.protocolTabs) {
     const tab = event.target.closest("[data-protocol]");
     if (!tab) return;
     const protocol = tab.dataset.protocol;
+    const switchingBackend = state.protocolFilter !== protocol;
     state.protocolFilter = protocol;
     localStorage.setItem(PROTOCOL_KEY, protocol);
-    if (state.active?.protocol !== protocol) {
-      // Primo contatto come appare nella lista (ordinata per last_message_ts),
-      // non il primo nell'ordine di inserimento dell'array. Le archiviate
-      // stanno dietro la riga "Archiviate", quindi si parte dalle altre.
-      state.showArchived = false;
-      const candidates = state.contacts
-        .filter((contact) => contact.protocol === protocol && !isArchived(contact))
-        .sort((a, b) => Number(b.last_message_ts || 0) - Number(a.last_message_ts || 0));
-      const firstContact = candidates[0];
-      if (firstContact) {
-        openThread(firstContact);
-        return;
-      }
+    // La sotto-vista "Archiviate" è un flag globale, non per backend: al
+    // cambio backend si riparte sempre dalla lista chat normale.
+    if (switchingBackend) state.showArchived = false;
+    if (state.active && state.active.protocol !== protocol) {
+      // Cambio backend con un thread aperto: si torna alla lista chat del
+      // nuovo backend senza aprirne automaticamente la prima conversazione.
+      if (state.threadHistoryPushed) history.back(); // popstate → closeThreadView()
+      else closeThreadView();
     }
     renderContacts();
   });
 }
+// Dedup ricerca contatti: lo stesso numero può comparire sia come chat @lid sia
+// come @c.us (rubrica), quindi la chiave normalizza il telefono/numero dal JID.
+const contactDedupKey = (contact) => {
+  const phone = String(contact.extras?.phone || "").replace(/\D/g, "");
+  const lid = String(contact.extras?.lid || contact.extras?.jid || "").replace(/\D/g, "");
+  return `${contact.protocol}:${phone || lid || contact.id}`;
+};
+const dedupeContacts = (contacts, seen = new Set()) => {
+  const output = [];
+  for (const contact of contacts) {
+    const key = contactDedupKey(contact);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    output.push(contact);
+  }
+  return output;
+};
 if (elements.contactSearch) {
   let searchTimer = null;
   let searchSeq = 0;
@@ -5116,7 +5173,7 @@ if (elements.contactSearch) {
       let chatResults = [];
       try {
         const response = await apiFetch(`api/contacts?q=${encodeURIComponent(trimmed)}`);
-        chatResults = await response.json();
+        chatResults = dedupeContacts(await response.json());
       } catch (error) {
         if (error.name !== "AbortError" && error.message !== "unauthorized") {
           console.debug("[web] contact search failed", error);
@@ -5133,8 +5190,13 @@ if (elements.contactSearch) {
         const bookResponse = await apiFetch(`api/contacts/book?q=${encodeURIComponent(trimmed)}`);
         const bookResults = await bookResponse.json();
         if (seq !== searchSeq || state.contactQuery !== query) return;
-        const seen = new Set(chatResults.map((contact) => `${contact.protocol}:${contact.id}`));
-        render([...chatResults, ...bookResults.filter((contact) => !seen.has(`${contact.protocol}:${contact.id}`))]);
+        const seen = new Set(chatResults.map(contactDedupKey));
+        render([...chatResults, ...bookResults.filter((contact) => {
+          const key = contactDedupKey(contact);
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        })]);
       } catch (error) {
         if (error.name !== "AbortError" && error.message !== "unauthorized") {
           console.debug("[web] address book search failed", error);
@@ -5153,7 +5215,7 @@ elements.saveToken.addEventListener("click", () => {
   state.token = token;
   localStorage.setItem(TOKEN_KEY, token);
   elements.tokenError.hidden = true;
-  elements.linkDialog.close();
+  elements.settingsDialog.close();
   updateTelegramRefreshTimer();
   // Rotazione token deliberata → clear dell'outbox (D6). Il login iniziale
   // (nessun token precedente) non cancella nulla perché la coda è vuota.
