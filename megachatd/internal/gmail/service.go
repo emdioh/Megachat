@@ -44,7 +44,7 @@ type Service struct {
 
 	remote remoteImages
 
-	watcher *Watcher
+	watcher UnreadWatcher
 }
 
 // NewService builds a Service. cfg is required.

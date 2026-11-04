@@ -79,6 +79,18 @@ type Deps struct {
 	// Service lets a caller share one Service (for example the core's unread
 	// watcher) instead of having RegisterOps build its own. Optional.
 	Service *Service
+	// Watcher replaces the Service's own unread poller with an external one
+	// (the core's gmail_unread web-push watcher), so a single poll loop runs.
+	// RegisterOps wires pokes and gmail.unread to it. Optional.
+	Watcher UnreadWatcher
+}
+
+// UnreadWatcher is the unread poller the operations poke after changing the
+// unread count and read for gmail.unread. *Watcher implements it.
+type UnreadWatcher interface {
+	Poke()
+	Latest() (UnreadStatus, bool)
+	Stop()
 }
 
 // Errors (server/gmail.py exception classes).

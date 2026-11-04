@@ -61,6 +61,9 @@ func RegisterOps(reg *ops.Registry, deps Deps) *Service {
 	if svc == nil {
 		svc = NewService(deps.Config, deps)
 	}
+	if deps.Watcher != nil {
+		svc.watcher = deps.Watcher
+	}
 	if svc.watcher == nil {
 		svc.watcher = NewWatcher(svc, deps.Bus, durationS(deps.Config.GmailUnreadPollS()))
 	}

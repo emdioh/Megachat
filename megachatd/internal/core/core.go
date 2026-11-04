@@ -109,6 +109,7 @@ type Core struct {
 	retention       *int
 	scopes          []MediaScope
 	skipMaintenance bool
+	autoConnect     func(protocol string) bool
 }
 
 // Option configures New.
@@ -142,6 +143,11 @@ func WithRetention(limit int) Option { return func(c *Core) { c.retention = &lim
 
 // WithMediaScopes overrides the media prune scopes (tests).
 func WithMediaScopes(s []MediaScope) Option { return func(c *Core) { c.scopes = s } }
+
+// WithAutoConnect gates the connect worker of each backend: when f returns
+// false the backend is left alone and only backend_done is published (Python:
+// Signal is registered always but connected only when signal_enabled()).
+func WithAutoConnect(f func(protocol string) bool) Option { return func(c *Core) { c.autoConnect = f } }
 
 // WithoutStartupMaintenance skips store.RunStartupMaintenance in Start.
 func WithoutStartupMaintenance() Option { return func(c *Core) { c.skipMaintenance = true } }
@@ -313,6 +319,12 @@ func (c *Core) connect(ctx context.Context, protocol string) {
 		c.done(protocol)
 		return
 	}
+	if c.autoConnect != nil && !c.autoConnect(protocol) {
+		// ChatCore.start: Signal auto-connect is skipped until an account is configured.
+		c.log.Info("auto-connect disabled", "protocol", protocol)
+		c.done(protocol)
+		return
+	}
 	c.bus.Publish(bus.BackendConnecting, toMap(api.BackendConnectingPayload{Protocol: protocol}))
 	label := protocolLabel(protocol)
 	c.status(protocol, "⏳ "+label+": "+connectingText(protocol), true)
@@ -330,10 +342,10 @@ func (c *Core) connect(ctx context.Context, protocol string) {
 		c.status(protocol, "💡 Select a contact to view chat", false)
 		c.status(protocol, "✅ Signal: daemon attivo", false)
 	case api.ProtocolWhatsApp:
-		c.status(protocol, fmt.Sprintf("✅ WAHA: %d contatti (webhook :%d)", len(contacts), c.cfg.WhatsAppWebhookPort()), false)
+		c.status(protocol, fmt.Sprintf("✅ WhatsApp: %d contatti", len(contacts)), false)
 		if hr, ok := b.(proto.HistoryResyncer); ok {
 			if n, err := hr.ResyncHistory(ctx, 0); err == nil && n > 0 {
-				c.status(protocol, fmt.Sprintf("✅ WAHA: cronologia sincronizzata per %d chat", n), false)
+				c.status(protocol, fmt.Sprintf("✅ WhatsApp: cronologia sincronizzata per %d chat", n), false)
 			}
 		}
 	}
@@ -344,7 +356,7 @@ func protocolLabel(p string) string {
 	case api.ProtocolSignal:
 		return "Signal"
 	case api.ProtocolWhatsApp:
-		return "WAHA"
+		return "WhatsApp"
 	case api.ProtocolTelegram:
 		return "Telegram"
 	}
@@ -366,7 +378,7 @@ func failText(p string, err error) string {
 	case api.ProtocolSignal:
 		return fmt.Sprintf("❌ Signal: errore — %v", err)
 	case api.ProtocolWhatsApp:
-		return fmt.Sprintf("❌ WAHA: non disponibile — %v", err)
+		return fmt.Sprintf("❌ WhatsApp: non disponibile — %v", err)
 	}
 	return fmt.Sprintf("❌ %s: %v", protocolLabel(p), err)
 }

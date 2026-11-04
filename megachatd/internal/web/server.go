@@ -117,6 +117,7 @@ type Server struct {
 	legacy  map[*wsClient]struct{}
 	v2      map[*websocket.Conn]struct{}
 	hubStop chan struct{}
+	lns     []net.Listener
 }
 
 // NewServer builds the adapter. d runs every operation; ev feeds /ws and
@@ -187,9 +188,10 @@ func listenNetwork(host string) string {
 	return "tcp"
 }
 
-// ListenAndServe binds every configured host and serves until ctx is
-// cancelled (graceful stop, WebSockets are closed) or a listener fails.
-func (s *Server) ListenAndServe(ctx context.Context) error {
+// Listen validates the settings and binds every configured host. Serve (or
+// ListenAndServe) then accepts connections; splitting the two lets a host
+// report a bind failure synchronously.
+func (s *Server) Listen(ctx context.Context) error {
 	if s.authRequired && s.token == "" {
 		return errors.New("web UI requires a Bearer token; configure SIGNAL_TUI_WEB_TOKEN, web.token, or disable auth (web down)")
 	}
@@ -208,6 +210,31 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 			return fmt.Errorf("web server failed to bind %s:%d (port may be in use): %w", h, s.port, err)
 		}
 		lns = append(lns, ln)
+	}
+	s.mu.Lock()
+	s.lns = lns
+	s.mu.Unlock()
+	return nil
+}
+
+// ListenAndServe binds every configured host and serves until ctx is
+// cancelled (graceful stop, WebSockets are closed) or a listener fails.
+func (s *Server) ListenAndServe(ctx context.Context) error {
+	if err := s.Listen(ctx); err != nil {
+		return err
+	}
+	return s.Serve(ctx)
+}
+
+// Serve serves on the listeners bound by Listen until ctx is cancelled or a
+// listener fails.
+func (s *Server) Serve(ctx context.Context) error {
+	s.mu.Lock()
+	lns := s.lns
+	s.lns = nil
+	s.mu.Unlock()
+	if len(lns) == 0 {
+		return errors.New("web server: Listen has not been called")
 	}
 	srv := &http.Server{Handler: s.http, ReadHeaderTimeout: 30 * time.Second}
 	errc := make(chan error, len(lns))
