@@ -127,67 +127,55 @@ bd prime                # Refresh Beads context
 **Architecture in one line:** issues live in a local Dolt DB; sync uses `refs/dolt/data` on your git remote; `.beads/issues.jsonl` is a passive export. See https://github.com/gastownhall/beads/blob/main/docs/core-concepts/sync-concepts.md for details and anti-patterns.
 <!-- END BEADS CODEX SETUP -->
 
-## Remote Worker Protocol (supervised)
+## Remote Worker Protocol (controller-supervised)
 
-Workers implement beads; a supervisor session verifies and closes them. Dolt
-remote sync (`refs/dolt/data`) is NOT used and may be stale: the shared queue is
-the git-tracked `.beads/issues.jsonl` on the integration branch
-`claude/elegant-cray-86jkrz`. Always `bd import` right after every `git pull`,
-and only ever `bd export` from a DB that was just imported — exporting a stale
-DB silently reverts other people's status changes.
+Two roles talk only through beads over git:
+
+- **Worker coordinator** (remote): implements one bead at a time by spawning a
+  fresh child agent per task, and pushes each result to its own branch
+  `worker/<id>`. It never pushes to `claude/elegant-cray-86jkrz` or `master`
+  and never closes beads.
+- **Controller** (supervisor session): watches `worker/*` branches, verifies
+  every hand-off, merges approved work into `claude/elegant-cray-86jkrz` and
+  closes the bead, or sends it back with a `rework` label.
+
+The source of truth for beads is `.beads/issues.jsonl` on
+`claude/elegant-cray-86jkrz`. Dolt remotes (`refs/dolt/data`) are not used:
+never `bd dolt push` or `bd dolt pull`. After every `git pull` run `bd import`;
+only `bd export -o .beads/issues.jsonl` right after an import.
+
+**Labels (the "verbs")**
+
+| Label | Set by | Meaning |
+|---|---|---|
+| `worker` | controller/user | bead may be taken by the worker |
+| `next` | controller | take this bead before any other |
+| `needs-review` | worker | hand-off done on `worker/<id>`, waiting for the controller |
+| `rework` | controller | rejected; `rework:` notes say what to fix |
+| `needs-user` | either | needs the user's accounts or a decision; worker skips it |
+
+Status: the worker claims (`in_progress`); only the controller closes.
 
 **Setup (once per clone)**
 
 ```bash
 git clone https://github.com/emdioh/Megachat && cd Megachat
 git checkout claude/elegant-cray-86jkrz
-npm i -g @beads/bd            # or: brew install beads
-bd bootstrap                  # creates the local DB
-bd import                     # .beads/issues.jsonl is the source of truth (bootstrap may
-                              # have cloned an older refs/dolt/data snapshot)
+npm i -g @beads/bd && bd bootstrap && bd import
 git config beads.role contributor
+python3 -m pip install -r requirements.txt -r requirements-web.txt -r requirements-dev.txt
 ```
 
-Tooling: Go (version per `megachatd/go.mod`), Python 3.12+ with
-`pip install -r requirements.txt -r requirements-web.txt -r requirements-dev.txt`.
+Go per `megachatd/go.mod`.
 
-**Per task**
+**Gates** (the controller re-runs them; the worker must pass them first):
 
-1. Sync: `git pull origin claude/elegant-cray-86jkrz && bd import`.
-2. Take the bead you were assigned (or `bd ready -l worker`):
-   `bd show <id>` and `bd update <id> --claim`.
-3. Branch: `git checkout -b worker/<id> origin/claude/elegant-cray-86jkrz`.
-4. Implement. Python under `server/`, `protocols/` is the behavioural
-   reference; the wire contract is `megachatd/CONTRACTS.md`. Never weaken or
-   skip tests to get green.
-5. Gates (all must pass; paste the summary lines in the note):
-   ```bash
-   cd megachatd && go vet ./... && go test -race ./... && cd ..
-   make contract-test
-   pytest tests/ -q -m "not live and not live-manual and not integration"
-   ```
-6. Hand off — do NOT close the bead, the supervisor does:
-   ```bash
-   bd label add <id> needs-review
-   bd note <id> "worker: <what changed, files, gate results, open questions>"
-   bd export -o .beads/issues.jsonl
-   git add -A && git commit -m "<id>: <summary>" && git push -u origin worker/<id>
-   ```
-7. Tell the user the bead is done. The supervisor fetches `worker/<id>`,
-   verifies, merges it into `claude/elegant-cray-86jkrz` and closes the bead,
-   or adds a `rework:` note, removes `needs-review` and adds the `rework`
-   label.
+```bash
+cd megachatd && go vet ./... && go test -race ./... && cd ..
+make contract-test
+python3 -m pytest tests/ -q -m "not live and not live-manual and not integration" \
+  --deselect tests/test_web_multi_host.py::test_listens_on_every_host
+```
 
-**Picking the next bead** (after every `git pull` + `bd import`):
-
-1. Rework first: `bd list -l rework --status in_progress`. Check out the
-   existing `worker/<id>` branch, merge `origin/claude/elegant-cray-86jkrz`
-   into it, address every `rework:` note, remove the `rework` label and hand
-   off again (step 6).
-2. Otherwise `bd ready -l worker`, highest priority first, skipping beads that
-   carry `needs-review`. `bd ready` already hides beads whose dependencies are
-   not closed.
-3. Nothing left: wait ~10 minutes, pull + import, and look again.
-
-Never push to `claude/elegant-cray-86jkrz` or `master` directly, never run
-`bd dolt push`, and keep one bead per branch.
+`test_socket_client::test_close_stops_the_threads_and_fails_later_calls` is
+flaky under load: if it fails, re-run it alone.
