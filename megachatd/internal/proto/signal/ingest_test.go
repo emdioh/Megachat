@@ -212,7 +212,7 @@ func TestProcessReceipt(t *testing.T) {
 	ingest(t, h, "+1", msg("a", true, map[string]any{"id": "1000"}), 1000)
 	ingest(t, h, "+1", msg("b", false, nil), 1500) // incoming never updated
 	pl := func(m map[string]any) map[string]any { return map[string]any{"receipt": m} }
-	ups, err := h.b.ProcessReceipt(bg, "+1", pl(map[string]any{"isDelivery": true, "timestamps": []any{int64(1400)}}))
+	ups, err := h.b.ProcessReceipt(bg, "+1", pl(map[string]any{"isDelivery": true, "timestamps": []any{int64(2100)}}))
 	if err != nil || len(ups) != 0 {
 		t.Fatal("outside the 1 s tolerance:", ups, err)
 	}
