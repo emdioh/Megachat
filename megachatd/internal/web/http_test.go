@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"mime/multipart"
 	"net/http"
 	"net/textproto"
@@ -160,7 +161,7 @@ func TestSendMultipart(t *testing.T) {
 	dir := e.srv.uploadDir
 	var seen []string
 	var existed bool
-	e.d.results["messages.send"] = map[string]any{"ok": true}
+	e.d.results["messages.send"] = map[string]any{"ok": true, "message_ids": []string{"1700000000123"}}
 	ct, body := buildMultipart(map[string]string{
 		"protocol": "signal", "contact_id": "+1", "text": "", "quote_timestamp": "123",
 		"optimistic": "x", "retry": "false",
@@ -171,6 +172,11 @@ func TestSendMultipart(t *testing.T) {
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil || resp.StatusCode != 200 {
 		t.Fatal(err, resp)
+	}
+	// message_ids is passed through to the client unchanged.
+	if raw, _ := io.ReadAll(resp.Body); string(raw) != `{"message_ids":["1700000000123"],"ok":true}` &&
+		string(raw) != `{"ok":true,"message_ids":["1700000000123"]}` {
+		t.Fatalf("response %s", raw)
 	}
 	if got := e.d.names(); len(got) != 2 || got[0] != "messages.send.check" || got[1] != "messages.send" {
 		t.Fatalf("ops %v", got)
