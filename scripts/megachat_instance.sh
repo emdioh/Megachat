@@ -764,7 +764,9 @@ Environment=MEGACHAT_HOME=$dir
 Environment=PYTHONUNBUFFERED=1
 WorkingDirectory=$REPO_DIR
 # Its WAHA container (restart: unless-stopped): make sure it is up.
-ExecStartPre=-$docker_bin start $container
+Environment=MEGACHAT_INSTANCES_DIR=$INSTANCES_DIR
+# Its WAHA container: create it if missing, start it (no-op when running).
+ExecStartPre=-$(command -v bash || echo /bin/bash) $REPO_DIR/scripts/megachat_instance.sh up $name
 ExecStart=$(python_bin) $REPO_DIR/megachat.py serve ${args% }
 Restart=on-failure
 RestartSec=10
@@ -788,6 +790,7 @@ systemd_install() {
     systemctl --user enable "$unit"
     systemctl --user restart "$unit"
     echo "✅ $unit installed and started ($path)"
+    echo "   Check everything with: $0 doctor $name"
     if command -v loginctl >/dev/null 2>&1 \
         && [ "$(loginctl show-user "${USER:-$(id -un)}" -p Linger --value 2>/dev/null)" != "yes" ]; then
         echo "⚠️  To start it at boot and keep it running after logout, run once:"
@@ -859,10 +862,11 @@ depend() {
 }
 
 start_pre() {
-    # Its WAHA container (restart: unless-stopped): make sure it is up.
+    # Its WAHA container: create it if missing, start it (no-op when running).
     if [ -x "$docker_bin" ]; then
-        "$docker_bin" start "$container" >/dev/null 2>&1 \\
-            || ewarn "could not start the WAHA container $container"
+        MEGACHAT_INSTANCES_DIR='$INSTANCES_DIR' "$(command -v bash || echo /bin/bash)" \\
+            '$REPO_DIR/scripts/megachat_instance.sh' up '$name' >/dev/null 2>&1 \\
+            || ewarn "could not start the WAHA container $container (see: megachat_instance.sh doctor $name)"
     fi
     checkpath --directory --owner "$user:$group" "$dir/logs"
     return 0
@@ -882,6 +886,7 @@ openrc_install() {
     as_root rc-update add "$svc" default
     as_root rc-service "$svc" restart
     echo "✅ $svc installed in $OPENRC_DIR, enabled at boot (runlevel default) and started"
+    echo "   Check everything with: $0 doctor $name"
     echo "   Output of the service: $dir/logs/service.log"
 }
 
@@ -942,6 +947,136 @@ service_remove() {
         systemd) systemd_uninstall "$1" ;;
         openrc) openrc_uninstall "$1" ;;
     esac
+}
+
+# ── doctor ───────────────────────────────────────────────────────────────
+
+DOCTOR_FAILS=0
+ok() { echo "  ✅ $*"; }
+bad() { echo "  ❌ $*"; DOCTOR_FAILS=$((DOCTOR_FAILS + 1)); }
+warn() { echo "  ⚠️  $*"; }
+
+cmd_doctor() {
+    local name="${1:-}" dir
+    dir="$(require_instance "$name")"
+    local container port url key session webhook
+    container="$(env_value "$dir/.env" WAHA_CONTAINER_NAME)"
+    port="$(env_value "$dir/.env" WHATSAPP_API_PORT)"
+    url="$(env_value "$dir/.env" WHATSAPP_API_URL)"
+    url="${url:-http://127.0.0.1:$port}"
+    key="$(env_value "$dir/.env" WAHA_API_KEY)"
+    session="$(env_value "$dir/.env" WHATSAPP_SESSION_NAME)"
+    session="${session:-default}"
+    webhook="$(env_value "$dir/.env" CLIENT_WEBHOOK_PORT)"
+    local probe=("$(python_bin)" "$REPO_DIR/scripts/instance_config.py" probe)
+    echo "Instance '$name' ($dir)"
+
+    echo "Docker / WAHA container ($container)"
+    local wstate=""
+    if ! command -v docker >/dev/null 2>&1; then
+        bad "docker not found (Alpine: apk add docker docker-cli-compose)"
+    elif ! docker info >/dev/null 2>&1; then
+        bad "docker daemon not reachable by $(id -un) (running? in the docker group?)"
+    else
+        ok "docker daemon reachable"
+        docker compose version >/dev/null 2>&1 \
+            || bad "'docker compose' missing (Alpine: apk add docker-cli-compose)"
+        wstate="$(docker inspect -f '{{.State.Status}}' "$container" 2>/dev/null)" || wstate=""
+        case "$wstate" in
+            running) ok "container running" ;;
+            "") bad "container does not exist → $0 up $name" ;;
+            *) bad "container is '$wstate' → $0 up $name, then: $0 logs $name waha" ;;
+        esac
+        if [ -n "$wstate" ]; then
+            local mapping
+            mapping="$(docker port "$container" 3000/tcp 2>/dev/null | head -n 1)" || mapping=""
+            if [ -z "$mapping" ]; then
+                bad "port 3000 of the container is not published"
+            elif [ "${mapping##*:}" != "$port" ]; then
+                bad "container publishes $mapping but WHATSAPP_API_PORT=$port: recreate it with $0 up $name"
+            else
+                ok "published on $mapping"
+            fi
+            local ckey
+            ckey="$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$container" 2>/dev/null \
+                | sed -n 's/^WAHA_API_KEY=//p' | head -n 1)" || ckey=""
+            if [ -n "$ckey" ] && [ "$ckey" != "$key" ]; then
+                bad "the container has a different WAHA_API_KEY than $dir/.env: recreate it with $0 up $name"
+            fi
+            if [ "$wstate" = running ]; then
+                local errors
+                errors="$(docker logs --tail 200 "$container" 2>&1 | grep -iE 'error|fatal' | tail -n 3)" || errors=""
+                [ -z "$errors" ] || { warn "recent errors in the WAHA log:"; echo "$errors" | sed 's/^/       /'; }
+            fi
+        fi
+    fi
+
+    echo "WAHA API ($url)"
+    local proxy="${HTTP_PROXY:-${http_proxy:-}}"
+    if [ -n "$proxy" ]; then
+        case ",${NO_PROXY:-${no_proxy:-}}," in
+            *,127.0.0.1,*|*,localhost,*) ;;
+            *) warn "http_proxy is set ($proxy) without 127.0.0.1 in no_proxy: local requests may go to the proxy" ;;
+        esac
+    fi
+    local answer code body linked=0
+    answer="$("${probe[@]}" "$url/api/sessions/$session" "$key")" || answer="0 probe failed"
+    code="${answer%% *}"
+    body="${answer#* }"
+    case "$code" in
+        200)
+            ok "session '$session': $body"
+            case "$body" in *WORKING*) linked=1 ;; esac
+            ;;
+        404) warn "session '$session' does not exist yet → $0 link $name (or the Avvia button on the page)" ;;
+        401|403) bad "WAHA rejects the API key (HTTP $code): recreate the container with $0 up $name" ;;
+        0) bad "no answer: $body" ;;
+        *) bad "HTTP $code: $body" ;;
+    esac
+
+    echo "Megachat server"
+    local pid
+    if pid="$(server_pid "$dir")"; then
+        ok "running (PID $pid), service: $(service_state "$name")"
+    else
+        bad "not running → $0 start $name (service: $(service_state "$name"))"
+    fi
+    if [ -n "$webhook" ]; then
+        answer="$("${probe[@]}" "http://127.0.0.1:$webhook/webhook" "")" || answer="0 probe failed"
+        if [ "${answer%% *}" != 0 ]; then
+            ok "webhook listening on port $webhook"
+        elif [ "$linked" = 1 ] && pid="$(server_pid "$dir")"; then
+            bad "webhook port $webhook not listening although WhatsApp is linked: messages will not arrive (the server reconnects within ~1 min; else restart it)"
+        else
+            warn "webhook port $webhook not listening yet (normal until WhatsApp is linked)"
+        fi
+    fi
+    local enabled sport token
+    read -r enabled sport token <<< "$(status_page_info "$dir")"
+    if [ "$enabled" = 1 ]; then
+        answer="$("${probe[@]}" "http://127.0.0.1:$sport/$token/status.json" "")" || answer="0 probe failed"
+        if [ "${answer%% *}" = 200 ]; then
+            ok "status page answers on port $sport: ${answer#* }"
+        else
+            bad "status page on port $sport: ${answer#* } (restart the server; see logs)"
+        fi
+    else
+        warn "status page disabled ($0 url $name enables it)"
+    fi
+    local log="$dir/logs/signal-tui.log"
+    if [ -f "$log" ]; then
+        local recent
+        recent="$(grep -E ' (ERROR|CRITICAL) ' "$log" | tail -n 3)" || recent=""
+        [ -z "$recent" ] || { warn "last errors in $log:"; echo "$recent" | sed 's/^/       /'; }
+    fi
+
+    echo
+    if [ "$DOCTOR_FAILS" = 0 ]; then
+        echo "✅ no problems found"
+    else
+        echo "❌ $DOCTOR_FAILS problem(s) found"
+        return 1
+    fi
 }
 
 # ── destroy ──────────────────────────────────────────────────────────────
@@ -1078,6 +1213,8 @@ COMANDI
     stop NOME                         ferma il server
     serve NOME [ARGS]                 avvia il server in primo piano (debug)
     status [NOME]                     stato di server, WAHA e servizio
+    doctor NOME                       diagnosi passo passo (container, porte, API
+                                      WAHA, chiave, webhook, pagina di stato, log)
     logs NOME [server|waha]           segue i log
 
   Accesso
@@ -1312,6 +1449,22 @@ status [NOME]
   in attesa di QR, ...) apri la pagina di `url NOME`.
 TXT
             ;;
+        doctor)
+            cat <<'TXT'
+doctor NOME
+
+  Controlla l'istanza passo passo e dice cosa fare per ogni problema:
+    - docker installato e raggiungibile, `docker compose` presente
+    - container WAHA esistente e acceso, porta pubblicata uguale a
+      WHATSAPP_API_PORT, stessa WAHA_API_KEY del .env, errori recenti nel log
+    - API WAHA: risponde? la chiave è accettata? stato della sessione
+    - http_proxy che potrebbe deviare le richieste locali
+    - server Megachat avviato, porta webhook in ascolto, pagina di stato
+    - ultimi errori in logs/signal-tui.log
+  Esce con codice 1 se trova problemi. Usalo quando la pagina di stato dice
+  "WAHA non raggiungibile" o le note vocali non vengono trascritte.
+TXT
+            ;;
         logs)
             cat <<'TXT'
 logs NOME [server|waha]
@@ -1361,7 +1514,7 @@ systemd NOME [install|uninstall|status|print]
               supervise-daemon; il server gira comunque con il TUO utente
               (command_user), non come root
   Se il server era stato avviato a mano viene fermato e preso in carico dal
-  servizio. Il servizio fa `docker start` del container WAHA e avvia il server.
+  servizio. Il servizio crea/avvia il container WAHA (`up`) e poi il server.
   Da quel momento start/stop/status passano dal servizio.
   `uninstall NOME` lo ferma, lo disabilita e lo cancella (dati intatti).
   MEGACHAT_INIT=systemd|openrc forza la scelta.
@@ -1403,7 +1556,8 @@ TXT
 RISOLUZIONE PROBLEMI
 
   La pagina di stato dice "WAHA non raggiungibile"
-    → @S@ up NOME, poi @S@ logs NOME waha
+    → @S@ doctor NOME (dice cosa non va), poi di solito @S@ up NOME;
+      log del container: @S@ logs NOME waha
   Il server non parte
     → instances/NOME/logs/megachat-serve.log e signal-tui.log;
       @S@ serve NOME --debug per vederlo in primo piano
@@ -1441,7 +1595,7 @@ TXT
     esac
 }
 
-HELP_TOPICS="create destroy list install up down docker link start stop serve status logs url env"
+HELP_TOPICS="create destroy list install up down docker link start stop serve status doctor logs url env"
 
 usage() {
     local topic="${1:-overview}" code="${2:-0}" t
@@ -1487,6 +1641,7 @@ main() {
         logs) cmd_logs "$@" ;;
         env) cmd_env "$@" ;;
         url) cmd_url "$@" ;;
+        doctor) cmd_doctor "$@" ;;
         systemd) cmd_systemd "$@" ;;
         openrc) cmd_openrc "$@" ;;
         install) cmd_install "$@" ;;

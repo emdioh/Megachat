@@ -3,6 +3,7 @@
 
     instance_config.py status-page CONFIG_JSON OFFSET
     instance_config.py show CONFIG_JSON
+    instance_config.py probe URL [API_KEY]
 
 Makes sure CONFIG_JSON has an enabled ``status_page`` section (instances
 created before the status page existed lack it): missing keys get their
@@ -12,6 +13,10 @@ was updated (the server must be restarted to serve the page).
 
 ``show`` only reads: prints ``ENABLED PORT TOKEN`` of the status page
 (``1``/``0``, ``-`` for a missing port or token).
+
+``probe`` GETs URL directly (no proxy, 5 s timeout, ``X-Api-Key`` when given)
+and prints ``CODE SUMMARY``: the HTTP status (``0`` = no answer) and a short
+summary of the body or of the error.  Used by ``megachat_instance.sh doctor``.
 """
 
 from __future__ import annotations
@@ -68,7 +73,46 @@ def show_status_page(path: Path) -> str:
     return f"{enabled} {port} {token}"
 
 
+def probe(url: str, api_key: str = "") -> str:
+    import urllib.error
+    import urllib.request
+
+    request = urllib.request.Request(
+        url, headers={"X-Api-Key": api_key} if api_key else {}
+    )
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        with opener.open(request, timeout=5) as resp:
+            code, raw = resp.status, resp.read(4096)
+    except urllib.error.HTTPError as err:
+        code, raw = err.code, err.read(4096)
+    except (urllib.error.URLError, OSError) as exc:
+        reason = getattr(exc, "reason", exc)
+        return f"0 {reason}"
+    text = raw.decode("utf-8", "replace")
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return f"{code} {' '.join(text.split())[:150]}"
+    if isinstance(data, dict):
+        if "whatsapp" in data and isinstance(data["whatsapp"], dict):  # status page
+            wa = data["whatsapp"]
+            detail = f" ({wa['detail']})" if wa.get("detail") else ""
+            return f"{code} WhatsApp {wa.get('state')}{detail}"
+        if "status" in data:  # WAHA session
+            me = data.get("me") if isinstance(data.get("me"), dict) else {}
+            who = f", account {me.get('id')}" if me else ""
+            return f"{code} status {data.get('status')}{who}"
+        message = data.get("message") or data.get("error")
+        if message:
+            return f"{code} {' '.join(str(message).split())[:150]}"
+    return f"{code} {' '.join(text.split())[:150]}"
+
+
 def main(argv: list[str]) -> int:
+    if len(argv) in (2, 3) and argv[0] == "probe":
+        print(probe(argv[1], argv[2] if len(argv) == 3 else ""))
+        return 0
     if len(argv) == 2 and argv[0] == "show":
         print(show_status_page(Path(argv[1])))
         return 0

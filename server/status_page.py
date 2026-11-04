@@ -92,14 +92,26 @@ def collect_status(rest: Any) -> dict[str, Any]:
     )
     info: dict[str, Any] = {"session": rest.session_name, "account": None}
     if raw is None:
-        if rest.last_status == 404:
+        code = rest.last_status
+        error = " ".join(str(rest.last_error or "").split())[:200]
+        url = getattr(rest, "base_url", "")
+        if code == 404:
             info["state"] = "stopped"
-        elif rest.last_status in (401, 403):
+        elif code in (401, 403):
             info["state"] = "unknown"
-            info["detail"] = "WAHA rejected the API key"
+            info["detail"] = (
+                f"WAHA ({url}) rifiuta la chiave API (HTTP {code}): WAHA_API_KEY "
+                "nel .env dell'istanza non corrisponde a quella del container"
+            )
+        elif code:
+            info["state"] = "unknown"
+            info["detail"] = f"WAHA ({url}) risponde HTTP {code}: {error}"
         else:
             info["state"] = "unreachable"
+            info["detail"] = f"{url}: {error or 'nessuna risposta'}"
         return info
+    if not isinstance(raw, dict):
+        return {**info, "state": "unknown", "detail": "risposta inattesa da WAHA"}
     waha_state = str(raw.get("status") or "").lower()
     info["waha_status"] = waha_state.upper()
     me = raw.get("me") if isinstance(raw.get("me"), dict) else None
@@ -239,10 +251,13 @@ def _whatsapp_card(wa: dict[str, Any]) -> str:
     elif state == "unreachable":
         parts.append(
             '<p class="muted">Il container WhatsApp di questa istanza non risponde: '
-            "chiedi a chi gestisce il server di avviarlo.</p>"
+            "chiedi a chi gestisce il server di avviarlo "
+            "(<code>megachat_instance.sh doctor</code>).</p>"
         )
     if wa.get("detail"):
-        parts.append(f'<p class="muted">{html.escape(str(wa["detail"]))}</p>')
+        parts.append(
+            f'<p class="muted"><code>{html.escape(str(wa["detail"]))}</code></p>'
+        )
     return (
         '<section class="card"><h2 class="muted">WhatsApp</h2>'
         + "".join(parts)
@@ -322,9 +337,9 @@ class _State:
         rest = self.rest_factory()
         try:
             wa = collect_status(rest)
-        except Exception:
-            logger.debug("Status page: WAHA status failed", exc_info=True)
-            wa = {"state": "unreachable"}
+        except Exception as exc:
+            logger.warning("Status page: WAHA status failed", exc_info=True)
+            wa = {"state": "unknown", "detail": f"errore interno: {exc!r}"[:300]}
         try:
             tr = _transcription()
         except Exception:

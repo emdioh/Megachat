@@ -6,6 +6,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -268,3 +269,40 @@ def test_start_and_list_show_the_status_page_port(run) -> None:
         _run("stop", "amico1")
     _run("destroy", "amico2", "--yes")
     assert "destroyed" in _run("list").stdout.splitlines()[1]
+
+
+def test_services_create_the_waha_container(run) -> None:
+    _run, _, _ = run
+    _run("create", "amico")
+    unit = _run("systemd", "amico", "print").stdout
+    assert "megachat_instance.sh up amico" in unit
+    assert "Environment=MEGACHAT_INSTANCES_DIR=" in unit
+    rc = _run("openrc", "amico", "print", extra={"MEGACHAT_INIT": "openrc"}).stdout
+    assert "megachat_instance.sh' up 'amico'" in rc
+    assert (
+        subprocess.run(["sh", "-n"], input=rc, text=True, check=False).returncode == 0
+    )
+
+
+def test_doctor_reports_problems(run) -> None:
+    _run, _, _ = run
+    _run("create", "amico")
+    result = _run("doctor", "amico", check=False)
+    out = result.stdout
+    assert result.returncode == 1
+    assert "WAHA API (http://127.0.0.1:3015)" in out
+    assert "no answer" in out  # nothing listens on 3015 in the tests
+    assert "not running" in out
+    assert "not listening yet" in out  # webhook: only a warning before linking
+    assert "problem(s) found" in out
+
+
+def test_probe_helper() -> None:
+    helper = PROJECT_ROOT / "scripts" / "instance_config.py"
+    result = subprocess.run(
+        [sys.executable, str(helper), "probe", "http://127.0.0.1:9/"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0 and result.stdout.startswith("0 ")

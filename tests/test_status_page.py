@@ -20,6 +20,7 @@ PNG = b"\x89PNG\r\n\x1a\nfake"
 
 class FakeRest:
     session_name = "default"
+    base_url = "http://127.0.0.1:3015"
 
     def __init__(self, state: dict[str, Any]) -> None:
         self.state = state
@@ -30,6 +31,7 @@ class FakeRest:
         status = self.state.get("status")
         if status is None:
             self.last_status = self.state.get("http", 0)
+            self.last_error = self.state.get("error", "Connection refused")
             return None
         self.last_status = 200
         data: dict[str, Any] = {"status": status}
@@ -151,6 +153,16 @@ def test_waha_unreachable(page) -> None:
     state["status"] = None
     status = json.loads(_get(f"{base}/s3cret/status.json")[1])
     assert status["whatsapp"]["state"] == "unreachable"
+    assert status["whatsapp"]["detail"] == "http://127.0.0.1:3015: Connection refused"
+    page_html = _get(f"{base}/s3cret/")[1].decode()
+    assert "Connection refused" in page_html and "doctor" in page_html
+    state["http"], state["error"] = 500, "boom"
+    status = json.loads(_get(f"{base}/s3cret/status.json")[1])
+    assert status["whatsapp"]["state"] == "unknown"
+    assert "HTTP 500: boom" in status["whatsapp"]["detail"]
+    state["http"] = 401
+    detail = json.loads(_get(f"{base}/s3cret/status.json")[1])["whatsapp"]["detail"]
+    assert "WAHA_API_KEY" in detail
     state["http"] = 404
     status = json.loads(_get(f"{base}/s3cret/status.json")[1])
     assert status["whatsapp"]["state"] == "stopped"
