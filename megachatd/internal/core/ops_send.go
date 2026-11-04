@@ -480,6 +480,13 @@ func (c *Core) beginOptimistic(ctx context.Context, p *prepared, opt *api.Optimi
 		QuoteAttachmentID: opt.QuoteAttachmentID, QuoteAttachmentPath: opt.QuoteAttachmentPath,
 		QuoteContentType: opt.QuoteContentType,
 	}
+	// An id-less outgoing row with the same text inside the send-dedup window
+	// is the same message: nothing is added or persisted (the contact is
+	// promoted anyway).
+	if c.cachedOptimisticTwin(ctx, p, ts) {
+		c.log.Debug("optimistic ingest: already cached", "protocol", p.protocol, "contact", p.contactID, "ts", ts)
+		return nil
+	}
 	// SQLite write BEFORE the network send, so the echo always finds the row.
 	_, added, err := c.st.AddMessage(ctx, nm)
 	if err != nil {
@@ -509,4 +516,25 @@ func (c *Core) finishOptimistic(ctx context.Context, p *prepared, opt *api.Optim
 		}
 	}
 	return api.MessagesSendOptimisticOut{OK: true, Status: api.StatusSent, StatusApplied: applied, MessageID: attached}
+}
+
+// SendDedupWindowMs is _SEND_DEDUP_WINDOW_MS.
+const SendDedupWindowMs int64 = 5000
+
+func (c *Core) cachedOptimisticTwin(ctx context.Context, p *prepared, ts int64) bool {
+	since := ts - SendDedupWindowMs
+	rows, err := c.st.ListMessages(ctx, store.MessageQuery{Protocol: p.protocol, Keys: []string{p.contactID}, Since: &since})
+	if err != nil {
+		return false
+	}
+	for _, m := range rows {
+		d := m.Timestamp - ts
+		if d < 0 {
+			d = -d
+		}
+		if m.IsMine && store.Deref(m.Text) == p.text && store.Deref(m.MsgID) == "" && d <= SendDedupWindowMs {
+			return true
+		}
+	}
+	return false
 }
