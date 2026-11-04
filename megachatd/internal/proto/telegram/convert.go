@@ -3,10 +3,8 @@ package telegram
 import (
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
-	"unicode/utf16"
 
 	"github.com/gotd/td/tg"
 )
@@ -350,66 +348,6 @@ func tgMediaKind(msg *tg.Message) (kind, filename, mime string) {
 }
 
 // ---- Telethon markdown unparse ---------------------------------------------
-
-// unparseMarkdown is telethon.extensions.markdown.unparse, which is what
-// Message.text returns (offsets are UTF-16 code units).
-func unparseMarkdown(text string, entities []tg.MessageEntityClass) string {
-	if text == "" || len(entities) == 0 {
-		return text
-	}
-	type ent struct {
-		off, length int
-		open, close string
-	}
-	var list []ent
-	for _, e := range entities {
-		switch t := e.(type) {
-		case *tg.MessageEntityBold:
-			list = append(list, ent{t.Offset, t.Length, "**", "**"})
-		case *tg.MessageEntityItalic:
-			list = append(list, ent{t.Offset, t.Length, "__", "__"})
-		case *tg.MessageEntityStrike:
-			list = append(list, ent{t.Offset, t.Length, "~~", "~~"})
-		case *tg.MessageEntityCode:
-			list = append(list, ent{t.Offset, t.Length, "`", "`"})
-		case *tg.MessageEntityPre:
-			list = append(list, ent{t.Offset, t.Length, "```", "```"})
-		case *tg.MessageEntityTextURL:
-			list = append(list, ent{t.Offset, t.Length, "[", "](" + t.URL + ")"})
-		case *tg.MessageEntityMentionName:
-			list = append(list, ent{t.Offset, t.Length, "[", "](tg://user?id=" + strconv.FormatInt(t.UserID, 10) + ")"})
-		}
-	}
-	if len(list) == 0 {
-		return text
-	}
-	// Python: sorted(entities, key=offset, reverse=True) is stable.
-	sort.SliceStable(list, func(i, j int) bool { return list[i].off > list[j].off })
-	u := utf16.Encode([]rune(text))
-	for _, e := range list {
-		s, en := e.off, e.off+e.length
-		if s < 0 {
-			s = 0
-		}
-		if s > len(u) {
-			s = len(u)
-		}
-		if en > len(u) {
-			en = len(u)
-		}
-		if en < s {
-			en = s
-		}
-		out := make([]uint16, 0, len(u)+8)
-		out = append(out, u[:s]...)
-		out = append(out, utf16.Encode([]rune(e.open))...)
-		out = append(out, u[s:en]...)
-		out = append(out, utf16.Encode([]rune(e.close))...)
-		out = append(out, u[en:]...)
-		u = out
-	}
-	return string(utf16.Decode(u))
-}
 
 // ---- file naming -------------------------------------------------------------
 
