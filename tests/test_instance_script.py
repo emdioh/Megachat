@@ -306,3 +306,13 @@ def test_probe_helper() -> None:
         check=False,
     )
     assert result.returncode == 0 and result.stdout.startswith("0 ")
+
+
+def test_compose_pins_the_container_port(tmp_path: Path) -> None:
+    """The instance .env sets WHATSAPP_API_PORT for the host side of the
+    mapping; WAHA must still listen on 3000 inside the container."""
+    import re
+
+    compose = (PROJECT_ROOT / "docker-compose.yml").read_text()
+    assert re.search(r'^\s+WHATSAPP_API_PORT: "3000"$', compose, re.MULTILINE)
+    assert '"127.0.0.1:${WHATSAPP_API_PORT:-3005}:3000/tcp"' in compose

@@ -42,6 +42,11 @@ services:
       # (16GB di commit virtuale per un processo che usa ~116MB). Limitiamo a
       # 1GB per non gonfiare il commit di sistema senza impatti funzionali.
       NODE_OPTIONS: "--max-old-space-size=1024"
+      # WAHA listens on $WHATSAPP_API_PORT inside the container. The host side
+      # of the mapping above uses the same variable (and secondary instances
+      # set it in the .env passed as env_file), so pin the container side to
+      # 3000 here: `environment` wins over `env_file`.
+      WHATSAPP_API_PORT: "3000"
       # WAHA stores sessions and media under this data dir inside the container.
       WAHA_DATA_DIR: "/app/.sessions"
       # Keep WAHA media indefinitely so delayed webhook/history downloads work.

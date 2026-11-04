@@ -997,9 +997,14 @@ cmd_doctor() {
             else
                 ok "published on $mapping"
             fi
-            local ckey
-            ckey="$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$container" 2>/dev/null \
-                | sed -n 's/^WAHA_API_KEY=//p' | head -n 1)" || ckey=""
+            local cenv ckey cport
+            cenv="$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$container" 2>/dev/null)" \
+                || cenv=""
+            ckey="$(printf '%s\n' "$cenv" | sed -n 's/^WAHA_API_KEY=//p' | head -n 1)"
+            cport="$(printf '%s\n' "$cenv" | sed -n 's/^WHATSAPP_API_PORT=//p' | tail -n 1)"
+            if [ -n "$cport" ] && [ "$cport" != 3000 ]; then
+                bad "WAHA listens on port $cport inside the container but Docker forwards to 3000: git pull, then $0 up $name"
+            fi
             if [ -n "$ckey" ] && [ "$ckey" != "$key" ]; then
                 bad "the container has a different WAHA_API_KEY than $dir/.env: recreate it with $0 up $name"
             fi
@@ -1030,7 +1035,13 @@ cmd_doctor() {
             ;;
         404) warn "session '$session' does not exist yet → $0 link $name (or the Avvia button on the page)" ;;
         401|403) bad "WAHA rejects the API key (HTTP $code): recreate the container with $0 up $name" ;;
-        0) bad "no answer: $body" ;;
+        0)
+            case "$body" in
+                *"reset by peer"*|*"Connection reset"*)
+                    bad "no answer: $body — nothing listens on port 3000 inside the container (WAHA still starting? see $0 logs $name waha)" ;;
+                *) bad "no answer: $body" ;;
+            esac
+            ;;
         *) bad "HTTP $code: $body" ;;
     esac
 
