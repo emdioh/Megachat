@@ -65,6 +65,75 @@ func TestSendLIDChatGoesToLID(t *testing.T) {
 	}
 }
 
+// seedLIDContact registers a single @lid contact as the only contact, exactly
+// like the Python _lid_contact test helper (no resolver side effects).
+func seedLIDContact(e *env, lid string, phone string) *proto.Contact {
+	extras := map[string]any{"jid": lid}
+	if phone != "" {
+		extras["phone"] = phone
+	}
+	c := newContact(lid, "Bob", extras)
+	e.b.cmu.Lock()
+	e.b.contacts = []*proto.Contact{c}
+	e.b.byJID = map[string]*proto.Contact{lid: c}
+	e.b.cmu.Unlock()
+	return c
+}
+
+func TestSendLIDRegistersReverseAlias(t *testing.T) {
+	e := newEnv(t)
+	e.lids.put("139153", "393331234567")
+	c := seedLIDContact(e, "139153@lid", "")
+	if _, err := e.b.SendMessage(ctx, "139153@lid", "x", proto.Quote{}); err != nil {
+		t.Fatal(err)
+	}
+	e.b.cmu.RLock()
+	alias := e.b.byJID["393331234567@c.us"]
+	e.b.cmu.RUnlock()
+	if alias != c {
+		t.Fatalf("reverse alias %q -> %p, want the @lid contact %p", "393331234567@c.us", alias, c)
+	}
+	if got := exStr(c, "phone"); got != "393331234567" {
+		t.Errorf("extras.phone = %q, want %q", got, "393331234567")
+	}
+	// The echo/ack (which WhatsApp reflects as the @c.us chat) resolves to the
+	// @lid contact, so it is ingested under the @lid id.
+	if got, ok := e.b.FindContact("393331234567@c.us"); !ok || got.ID != "139153@lid" {
+		t.Errorf("FindContact(@c.us) = %+v (ok=%v), want the @lid contact", got, ok)
+	}
+}
+
+func TestSendLIDUnresolvableLeavesNoAlias(t *testing.T) {
+	e := newEnv(t)
+	seedLIDContact(e, "139153@lid", "")
+	if _, err := e.b.SendMessage(ctx, "139153@lid", "x", proto.Quote{}); err != nil {
+		t.Fatal(err)
+	}
+	e.b.cmu.RLock()
+	_, has := e.b.byJID["393331234567@c.us"]
+	e.b.cmu.RUnlock()
+	if has {
+		t.Error("an unresolvable @lid send must not register a reverse alias")
+	}
+}
+
+func TestSendCUSChatUntouched(t *testing.T) {
+	e := newEnv(t)
+	c := seedLIDContact(e, "393331234567@c.us", "")
+	if _, err := e.b.SendMessage(ctx, "393331234567@c.us", "x", proto.Quote{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, has := c.Extras["phone"]; has {
+		t.Error("a @c.us send must not add extras.phone")
+	}
+	e.b.cmu.RLock()
+	alias := e.b.byJID["393331234567@c.us"]
+	e.b.cmu.RUnlock()
+	if alias != c {
+		t.Errorf("the @c.us id must keep mapping to the @c.us contact, got %p", alias)
+	}
+}
+
 func TestSendReply(t *testing.T) {
 	e := newEnv(t)
 	// Reply to a received message.

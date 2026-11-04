@@ -36,6 +36,22 @@ func targetJID(contactID string) (types.JID, error) {
 	return j, nil
 }
 
+// resolveSendAlias registers the reverse {phone}@c.us -> @lid alias before a
+// send to a @lid chat (the port of _resolve_send_chat_id's
+// _register_send_alias). WhatsApp reflects the send echo/ack with the @c.us
+// chat, so the alias lets the echo be ingested under the @lid id instead of
+// creating a transient @c.us twin. Unresolvable @lid chats are left alone.
+func (b *Backend) resolveSendAlias(contactID string) {
+	if !strings.HasSuffix(contactID, "@lid") {
+		return
+	}
+	phone := b.lidLookup(contactID)
+	if phone == "" {
+		return
+	}
+	b.registerSendAlias(contactID, phone)
+}
+
 // ownJIDFor is the own JID to use as quote participant in a chat.
 func (b *Backend) ownJIDFor(chat types.JID) types.JID {
 	cli := b.currentClient()
@@ -133,6 +149,7 @@ func (b *Backend) SendMessage(ctx context.Context, contactID, text string, quote
 func (b *Backend) send(ctx context.Context, cli waClient, to types.JID, contactID string, msg *waE2E.Message, timeout time.Duration) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+	b.resolveSendAlias(contactID)
 	id := cli.GenerateMessageID()
 	resp, err := cli.SendMessage(ctx, to, msg, whatsmeow.SendRequestExtra{ID: id})
 	if err != nil {
