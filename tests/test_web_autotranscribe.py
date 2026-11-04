@@ -158,10 +158,7 @@ def test_static_ui_wiring():
         assert f'id="{element_id}"' in html
     settings = html.split('id="settings-dialog"')[1]
     assert 'id="autotranscribe-toggles"' in settings
-    assert (
-        'id="autotranscribe-toggles"'
-        not in html.split('id="settings-dialog"')[0].split('id="link-dialog"')[1]
-    )
+    assert 'id="autotranscribe-toggles"' not in html.split('id="settings-dialog"')[0]
     # Loaded when Impostazioni opens, not when the token dialog opens.
     opener = app.split('querySelector("#open-settings")')[1][:500]
     assert "loadAutoTranscribeConfig()" in opener
