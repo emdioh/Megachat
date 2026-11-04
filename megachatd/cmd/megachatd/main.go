@@ -192,7 +192,9 @@ func serve(args []string, stdout, stderr io.Writer, hooks *serveHooks) int {
 	}
 	defer release()
 
-	app, err := Build(BuildOptions{Config: cfg, Log: log, LogBuffer: logBuf})
+	opts := BuildOptions{Config: cfg, Log: log, LogBuffer: logBuf}
+	applyFakeBackend(&opts, log) // no-op unless built with -tags contracttest
+	app, err := Build(opts)
 	if err != nil {
 		log.Error("startup failed", "err", err)
 		fmt.Fprintf(stderr, "❌ %v\n", err)

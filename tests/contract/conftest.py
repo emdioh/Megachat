@@ -5,7 +5,9 @@ interfaces (Unix socket via ``SocketClient``, HTTP, WebSocket).  Where the
 Python dependencies are present it also runs the Python server on the same
 seeded database, so the same calls can be diffed (parity).
 
-Binary: ``$MEGACHATD_BIN`` if set, else ``go build`` into a temp dir.
+Binary: ``$MEGACHATD_BIN`` if set (it must have been built with
+``-tags contracttest``: the fake-backend hook of the send tests is compiled in
+only for that tag), else ``go build -tags contracttest`` into a temp dir.
 """
 
 from __future__ import annotations
@@ -32,7 +34,7 @@ def go_binary() -> str:
         pytest.skip("no Go toolchain and no $MEGACHATD_BIN")
     out = short_tmp("mcbin") / "megachatd"
     r = subprocess.run(
-        [go, "build", "-o", str(out), "./cmd/megachatd"],
+        [go, "build", "-tags", "contracttest", "-o", str(out), "./cmd/megachatd"],
         cwd=REPO / "megachatd", capture_output=True, text=True,
     )
     if r.returncode != 0:

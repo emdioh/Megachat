@@ -64,7 +64,7 @@ This protocol applies when ending a Beads implementation workflow. It is subordi
 ./install.sh                       # venv + deps + signal-cli + builds megachatd (Go) when Go is available
 make megachatd                     # build megachatd/bin/megachatd (cd megachatd && go build -o bin/megachatd ./cmd/megachatd)
 pytest tests/ -q -m "not live and not live-manual and not integration"   # Python unit tests (needs the venv)
-make contract-test                 # black-box contract tests of megachatd (builds it unless $MEGACHATD_BIN is set)
+make contract-test                 # black-box contract tests of megachatd (builds it with -tags contracttest; or uses $MEGACHATD_BIN, which must carry that tag)
 cd megachatd && go vet ./... && go test ./...                            # Go unit tests
 python3 launcher.py server start|status|stop                            # run the server (megachatd; MEGACHAT_SERVER=python = old Python server)
 ```

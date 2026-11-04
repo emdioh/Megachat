@@ -71,6 +71,7 @@ type Backend struct {
 	connectDelay  time.Duration
 	sendErr       error
 	sendDelay     time.Duration
+	emptySendIDs  map[string]bool // contacts whose sends report no message id
 	failMethods   map[string]error
 	needsPairing  bool
 	pairingQR     string
@@ -83,15 +84,16 @@ type Backend struct {
 // New creates a fake for the given protocol id.
 func New(protocol string) *Backend {
 	return &Backend{
-		protocol:    protocol,
-		nextID:      time.Now().UnixMilli(),
-		events:      make(chan proto.Event, 256),
-		messages:    map[string][]proto.Message{},
-		attachments: map[string]string{},
-		chunks:      map[string][]byte{},
-		archived:    map[string]bool{},
-		failMethods: map[string]error{},
-		reactions:   []string{"👍", "❤️", "😂", "😮", "😢", "🙏"},
+		protocol:     protocol,
+		nextID:       time.Now().UnixMilli(),
+		events:       make(chan proto.Event, 256),
+		messages:     map[string][]proto.Message{},
+		attachments:  map[string]string{},
+		chunks:       map[string][]byte{},
+		archived:     map[string]bool{},
+		emptySendIDs: map[string]bool{},
+		failMethods:  map[string]error{},
+		reactions:    []string{"👍", "❤️", "😂", "😮", "😢", "🙏"},
 	}
 }
 
@@ -117,6 +119,18 @@ func (b *Backend) DelayConnect(d time.Duration) { b.mu.Lock(); b.connectDelay = 
 // FailSend makes sends return err (nil clears). DelaySend adds latency.
 func (b *Backend) FailSend(err error)        { b.mu.Lock(); b.sendErr = err; b.mu.Unlock() }
 func (b *Backend) DelaySend(d time.Duration) { b.mu.Lock(); b.sendDelay = d; b.mu.Unlock() }
+
+// SetEmptySendIDs makes SendMessage succeed with no backend message id for the
+// given contacts (as some real backends do), so callers report
+// message_ids: []. It replaces the set; no args clears it.
+func (b *Backend) SetEmptySendIDs(contactIDs ...string) {
+	b.mu.Lock()
+	b.emptySendIDs = make(map[string]bool, len(contactIDs))
+	for _, id := range contactIDs {
+		b.emptySendIDs[id] = true
+	}
+	b.mu.Unlock()
+}
 
 // FailMethod makes the named method (e.g. "ListContacts", "MarkRead",
 // "EditMessage") return err (nil clears).
@@ -302,6 +316,14 @@ func (b *Backend) SendMessage(ctx context.Context, contactID, text string, q pro
 	}
 	if err := b.sendGate(ctx); err != nil {
 		return "", err
+	}
+	b.mu.Lock()
+	noID := b.emptySendIDs[contactID]
+	b.mu.Unlock()
+	if noID {
+		// A backend that acknowledges the send without an id: nothing to
+		// reference, so it is not added to the history.
+		return "", nil
 	}
 	id := b.newID()
 	ts, _ := strconv.ParseInt(id, 10, 64)
