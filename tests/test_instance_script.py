@@ -26,6 +26,11 @@ def run(tmp_path: Path):
         stub = fakebin / tool
         stub.write_text(f'#!/bin/sh\necho "{tool} $*" >> "{log}"\nexit 0\n')
         stub.chmod(0o755)
+    # as_root() falls back to sudo; run the command instead of asking for a
+    # password so the OpenRC tests also work as a normal user.
+    sudo = fakebin / "sudo"
+    sudo.write_text('#!/bin/sh\nexec "$@"\n')
+    sudo.chmod(0o755)
     env = {
         **os.environ,
         "PATH": f"{fakebin}:{os.environ['PATH']}",
@@ -242,7 +247,14 @@ def test_openrc_install_start_stop_uninstall(run, tmp_path: Path) -> None:
     assert "service: openrc:installed" in _run("status", "amico").stdout
 
     out = _run("start", "amico", extra=openrc).stdout
-    assert "via openrc" in out and "rc-service megachat-amico start" in log.read_text()
+    calls = log.read_text()
+    # `start` is a no-op for an already-active service: with no server behind
+    # the stub the script restarts it instead.
+    assert "via openrc" in out
+    assert (
+        "rc-service megachat-amico start" in calls
+        or "rc-service megachat-amico restart" in calls
+    )
     _run("stop", "amico", extra=openrc)  # rc-service stub: status 0 = active
     assert "rc-service megachat-amico stop" in log.read_text()
 
@@ -331,6 +343,40 @@ def test_up_fails_when_the_container_is_not_running(run, tmp_path: Path) -> None
     assert result.returncode != 0
     assert "is 'exited' after 'up'" in result.stderr
     assert "WAHA exited before binding" in result.stderr
+
+
+def test_start_restarts_an_active_service_without_server(run, tmp_path: Path) -> None:
+    _run, _, log = run
+    _run("create", "amico")
+    openrc = {"MEGACHAT_INIT": "openrc"}
+    (tmp_path / "initd" / "megachat-amico").write_text(
+        _run("openrc", "amico", "print", extra=openrc).stdout
+    )
+    out = _run("start", "amico", extra=openrc).stdout
+    assert "restarting" in out
+    assert "rc-service megachat-amico restart" in log.read_text()
+
+
+def test_stale_service_unit_is_reported_and_refused(run, tmp_path: Path) -> None:
+    _run, root, _ = run
+    _run("create", "amico")
+    openrc = {"MEGACHAT_INIT": "openrc"}
+    home = str(root / "amico")
+    printed = _run("openrc", "amico", "print", extra=openrc).stdout
+    stale = printed.replace(
+        f"MEGACHAT_HOME='{home}'", "MEGACHAT_HOME='/old/root/instances/amico'"
+    )
+    assert stale != printed
+    (tmp_path / "initd" / "megachat-amico").write_text(stale)
+
+    doctor = _run("doctor", "amico", check=False, extra=openrc)
+    assert doctor.returncode == 1
+    assert "points to /old/root/instances/amico" in doctor.stdout
+    assert "install amico" in doctor.stdout
+
+    started = _run("start", "amico", check=False, extra=openrc)
+    assert started.returncode != 0
+    assert "points to /old/root/instances/amico" in started.stderr
 
 
 def test_probe_helper() -> None:

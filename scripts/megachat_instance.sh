@@ -543,7 +543,19 @@ cmd_start() {
     fi
     if service_installed "$name"; then
         [ $# -eq 0 ] || die "instance '$name' runs as a service: no extra ARGS (re-run 'install $name' after changing config.json)"
-        service_start "$name"
+        local served_home
+        served_home="$(service_home "$name")"
+        if [ -n "$served_home" ] && ! same_dir "$served_home" "$dir"; then
+            die "the installed service points to $served_home, not $dir: re-run '$0 install $name'"
+        fi
+        if service_active "$name" && ! server_pid "$dir" >/dev/null; then
+            # OpenRC/systemd leave the service "started" while the daemon is
+            # crash-looping or wedged: `start` is a no-op there, `restart` is not.
+            info "service '$name' is active but its server is not running: restarting"
+            service_restart "$name"
+        else
+            service_start "$name"
+        fi
         # supervise-daemon/systemd fork: rc-service returns before the server
         # has taken the lock, so wait for it instead of reporting a false success.
         wait_s="${MEGACHAT_SERVER_WAIT_S:-30}"
@@ -786,6 +798,35 @@ service_stop() {
         systemd) systemctl --user stop "$(unit_name "$1")" ;;
         openrc) as_root rc-service "$(service_name "$1")" stop ;;
     esac
+}
+
+service_restart() {
+    case "$(service_kind "$1")" in
+        systemd) systemctl --user restart "$(unit_name "$1")" ;;
+        openrc) as_root rc-service "$(service_name "$1")" restart ;;
+    esac
+}
+
+# MEGACHAT_HOME baked into the installed unit ("" when not readable).
+service_home() {
+    case "$(service_kind "$1")" in
+        systemd)
+            sed -n 's/^Environment=MEGACHAT_HOME=//p' "$(unit_path "$1")" 2>/dev/null \
+                | head -n 1
+            ;;
+        openrc)
+            sed -n "s/^command_args=.*MEGACHAT_HOME='\([^']*\)'.*/\1/p" \
+                "$OPENRC_DIR/$(service_name "$1")" 2>/dev/null | head -n 1
+            ;;
+    esac
+}
+
+# True when both paths exist and resolve to the same directory.
+same_dir() {
+    local a b
+    a="$(cd "$1" 2>/dev/null && pwd -P)" || a="$1"
+    b="$(cd "$2" 2>/dev/null && pwd -P)" || b="$2"
+    [ "$a" = "$b" ]
 }
 
 # One word for `status`: "systemd:enabled", "openrc:default", ... or "-".
@@ -1182,7 +1223,11 @@ cmd_doctor() {
     esac
 
     echo "Megachat server"
-    local pid
+    local pid served_home
+    served_home="$(service_home "$name")"
+    if [ -n "$served_home" ] && ! same_dir "$served_home" "$dir"; then
+        bad "the installed service points to $served_home, not $dir: run $0 install $name"
+    fi
     if pid="$(server_pid "$dir")"; then
         ok "running (PID $pid), service: $(service_state "$name")"
     else
