@@ -177,5 +177,10 @@ python3 -m pytest tests/ -q -m "not live and not live-manual and not integration
   --deselect tests/test_web_multi_host.py::test_listens_on_every_host
 ```
 
+Run the Go gates and `make contract-test` for every change. Run pytest only
+when Python files changed (`server/`, `protocols/`, `web/*.py`, `tui/`,
+`launcher/`, root `*.py`, `tests/` outside `tests/contract/`).
 `test_socket_client::test_close_stops_the_threads_and_fails_later_calls` is
 flaky under load: if it fails, re-run it alone.
+Contract failures are never "pre-existing": the integration branch is green,
+so any red test must be explained in the hand-off note with its exact output.
