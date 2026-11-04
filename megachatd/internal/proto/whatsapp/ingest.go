@@ -189,7 +189,11 @@ func (b *Backend) messageAlreadyCachedLocked(contact string, ts int64, isMine bo
 			if attachmentID != "" && cachedAtt != attachmentID {
 				continue
 			}
-			if strings.TrimSpace(text) != "" && absInt64(m.Timestamp-ts) <= 5000 {
+			// Two messages with different ids are different messages: the
+			// text+time heuristic is only for id-less entries (and for the
+			// live path, where the same traffic can arrive twice).
+			if strings.TrimSpace(text) != "" && absInt64(m.Timestamp-ts) <= 5000 &&
+				(!reconcile || msgID == "" || m.ID == "") {
 				return m
 			}
 		case msgID != "":
@@ -509,11 +513,13 @@ func (b *Backend) updateInfo(ctx context.Context, contact, id string, ts int64, 
 
 // ---- edits ----------------------------------------------------------------------
 
-// detectEditLocked is _detect_edit: the cached entry an edit targets, or nil.
-// Matching is by id (stable), then (incoming only) by a UNIQUE entry within
-// +-2 s, optionally restricted to rows ingested from history.
-func (b *Backend) detectEditLocked(contactID, msgID, text string, isMine bool, tsMs int64, requireHistory bool, override []*entry) *entry {
-	if text == "" {
+// detectEditLocked is _detect_edit for history ingestion: the cached entry the
+// history copy of a message updates, or nil. Matching is by message id ONLY.
+// The old text+time heuristic folded distinct history messages that happened
+// to be seconds apart into one another (their texts differ, which looked like
+// an edit), losing every message but the first and the last of a burst.
+func (b *Backend) detectEditLocked(contactID, msgID, text string, isMine bool, override []*entry) *entry {
+	if text == "" || msgID == "" {
 		return nil
 	}
 	nt := norm(text)
@@ -521,29 +527,15 @@ func (b *Backend) detectEditLocked(contactID, msgID, text string, isMine bool, t
 	if entries == nil {
 		entries = b.cache[contactID]
 	}
-	if msgID != "" {
-		for _, m := range entries {
-			if m.IsMine != isMine || m.msgType() != "text" {
-				continue
-			}
-			if m.ID == msgID {
-				if norm(m.Text) != nt {
-					return m
-				}
-				return nil
-			}
+	for _, m := range entries {
+		if m.IsMine != isMine || m.msgType() != "text" {
+			continue
 		}
-	}
-	if !isMine && tsMs != 0 {
-		var cands []*entry
-		for _, m := range entries {
-			if !m.IsMine && m.msgType() == "text" && (!requireHistory || m.FromHistory) &&
-				absInt64(m.Timestamp-tsMs) <= 2000 && norm(m.Text) != nt {
-				cands = append(cands, m)
+		if m.ID == msgID {
+			if norm(m.Text) != nt {
+				return m
 			}
-		}
-		if len(cands) == 1 {
-			return cands[0]
+			return nil
 		}
 	}
 	return nil

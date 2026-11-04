@@ -575,36 +575,47 @@ func (b *Backend) SendTyping(ctx context.Context, contactID string, started bool
 	return cli.SendChatPresence(ctx, to, state, types.ChatPresenceMediaText)
 }
 
-// ReconcileUnread implements core.UnreadReconciler (reconcile_unread):
-// chats read on the phone (a mark-read or read receipt of another device, or
-// a history-sync unread count of 0) are marked read locally. Throttled to one
-// pass per 20 s; never a polling loop.
+// ReconcileUnread implements core.UnreadReconciler (reconcile_unread): marks
+// chats read locally when the phone says they are, from the two live sources
+// queued in readOnPhone — a markChatAsRead app-state mutation (bounded by the
+// phone's last-read timestamp, so newer unread traffic survives) and a read
+// receipt for our messages from another device (the whole chat). Throttled to
+// one pass per 20 s; never a polling loop. appStateSync calls the forced
+// variant so a full-sync snapshot heals the badge deterministically.
 func (b *Backend) ReconcileUnread(ctx context.Context) {
+	b.reconcileUnread(ctx, false)
+}
+
+// reconcileUnread is ReconcileUnread with the throttle optional: force is
+// used at the end of the app-state sync, where the markChatAsRead mutations
+// have just landed and a contacts.list may already have spent the 20 s window
+// (the badge would otherwise stay stale until the next refresh). Each queued
+// chat is flushed with its cutoff through reconcileChatUnread.
+func (b *Backend) reconcileUnread(ctx context.Context, force bool) {
 	if !b.connected.Load() || b.st == nil {
 		return
 	}
 	now := nowFunc()
 	b.cmu.Lock()
-	if now.Sub(b.lastUnread) < 20*time.Second {
+	if !force && now.Sub(b.lastUnread) < 20*time.Second {
 		b.cmu.Unlock()
 		return
 	}
 	b.lastUnread = now
-	var chats []string
-	for c := range b.readOnPhone {
-		chats = append(chats, c)
+	type pendingRead struct {
+		chat   string
+		cutoff int64
 	}
-	b.readOnPhone = map[string]bool{}
+	var chats []pendingRead
+	for c, cutoff := range b.readOnPhone {
+		chats = append(chats, pendingRead{c, cutoff})
+	}
+	b.readOnPhone = map[string]int64{}
 	b.cmu.Unlock()
-	for _, c := range chats {
-		var extra []string
-		if ct := b.identify(c); ct != nil {
-			if keys := contactStorageKeys(*ct); len(keys) > 1 {
-				extra = keys[1:]
-			}
-		}
-		if err := b.st.MarkAsRead(ctx, proto.ProtocolWhatsApp, c, extra...); err != nil {
-			b.log.Debug("WhatsApp unread reconcile failed", "chat", c, "err", err)
-		}
+	for _, p := range chats {
+		// Timestamp-bounded: keep only the newest `keep` (0) incoming messages
+		// unread, and never touch a message newer than the phone's boundary
+		// (a zero cutoff means the whole chat was read).
+		b.reconcileChatUnread(ctx, p.chat, 0, p.cutoff)
 	}
 }

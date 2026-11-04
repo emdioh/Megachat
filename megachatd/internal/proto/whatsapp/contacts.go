@@ -347,6 +347,9 @@ func (b *Backend) buildContactsFromChats(rows []chatRow) []*proto.Contact {
 		name := r.Name
 		if name == "" {
 			name = r.ID
+			if p := exStr(&proto.Contact{Extras: extras}, "phone"); p != "" {
+				name = "+" + p
+			}
 		}
 		out = append(out, newContact(r.ID, name, extras))
 	}
@@ -497,6 +500,12 @@ func mergeContactMetadata(target, source *proto.Contact) {
 	}
 	if lastTS(source) > lastTS(target) {
 		setLastTS(target, lastTS(source))
+	}
+	// A chat is one identity across its @c.us/@lid twins: if either was
+	// archived, the merge keeps it archived (a lost flag moved archived chats
+	// back to the main list).
+	if exBool(source, "archived") && !exBool(target, "archived") {
+		target.Extras["archived"] = true
 	}
 }
 

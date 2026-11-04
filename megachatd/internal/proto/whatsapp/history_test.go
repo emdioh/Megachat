@@ -115,6 +115,51 @@ func TestHistorySyncUnreadZeroFlagsChatReadOnPhone(t *testing.T) {
 	}
 }
 
+func TestHistorySyncKeepsOnlyTheUnreadOnThePhone(t *testing.T) {
+	e := newEnv(t)
+	chat := "391234567890@s.whatsapp.net"
+	msg := func(id string, ts uint64) *waHistorySync.HistorySyncMsg {
+		return webMsg(chat, id, false, ts, "m"+id, waWeb.WebMessageInfo_READ)
+	}
+	e.b.onHistorySync(&events.HistorySync{Data: &waHistorySync.HistorySync{
+		Conversations: []*waHistorySync.Conversation{conv(chat, 2,
+			msg("A1", 1_700_000_001), msg("A2", 1_700_000_002), msg("A3", 1_700_000_003), msg("A4", 1_700_000_004))}}})
+	rows := dbRows(t, e, "391234567890@c.us")
+	if len(rows) != 4 {
+		t.Fatalf("rows = %d", len(rows))
+	}
+	var unread []int64
+	for _, r := range rows {
+		if !r.Read {
+			unread = append(unread, r.Timestamp)
+		}
+	}
+	// The phone reports 2 unread: only the newest two stay unread, the older
+	// history (read on the phone) does not inflate the badge.
+	if len(unread) != 2 || unread[0] != 1_700_000_003_000 || unread[1] != 1_700_000_004_000 {
+		t.Fatalf("unread rows = %v", unread)
+	}
+}
+
+func TestHistorySyncOnDemandIngestsAsRead(t *testing.T) {
+	e := newEnv(t)
+	chat := "391234567890@s.whatsapp.net"
+	e.b.onHistorySync(&events.HistorySync{Data: &waHistorySync.HistorySync{
+		SyncType: waHistorySync.HistorySync_ON_DEMAND.Enum(),
+		Conversations: []*waHistorySync.Conversation{conv(chat, 3,
+			webMsg(chat, "B1", false, 1_700_000_001, "a", waWeb.WebMessageInfo_READ),
+			webMsg(chat, "B2", false, 1_700_000_002, "b", waWeb.WebMessageInfo_READ))}}})
+	rows := dbRows(t, e, "391234567890@c.us")
+	if len(rows) != 2 {
+		t.Fatalf("rows = %d", len(rows))
+	}
+	for _, r := range rows {
+		if !r.Read {
+			t.Fatalf("on-demand history is old, already-read history: %+v", r)
+		}
+	}
+}
+
 func TestHistorySyncSkipsBroadcastsAndGroupsKeepSenders(t *testing.T) {
 	e := newEnv(t)
 	e.b.onHistorySync(&events.HistorySync{Data: &waHistorySync.HistorySync{

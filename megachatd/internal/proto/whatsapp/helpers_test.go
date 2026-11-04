@@ -41,6 +41,7 @@ type fakeClient struct {
 	sendErr   error
 	download  map[string][]byte
 	qr        chan whatsmeow.QRChannelItem
+	appState  []appStateCall
 	connects  int
 	disc      int
 	joined    []*types.GroupInfo
@@ -88,6 +89,23 @@ func (f *fakeClient) Disconnect() {
 func (f *fakeClient) Logout(context.Context) error { return nil }
 func (f *fakeClient) IsConnected() bool            { f.mu.Lock(); defer f.mu.Unlock(); return f.connected }
 func (f *fakeClient) IsLoggedIn() bool             { return f.loggedIn }
+
+// appStateCall is one FetchAppState invocation.
+type appStateCall struct {
+	Name            appstate.WAPatchName
+	Full            bool
+	OnlyIfNotSynced bool
+}
+
+func (f *fakeClient) FetchAppState(_ context.Context, name appstate.WAPatchName, fullSync, onlyIfNotSynced bool) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.appState = append(f.appState, appStateCall{name, fullSync, onlyIfNotSynced})
+	return nil
+}
+
+func (f *fakeClient) EnableAppStateEvents() {}
+
 func (f *fakeClient) GetQRChannel(context.Context) (<-chan whatsmeow.QRChannelItem, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -200,6 +218,12 @@ type fakeLIDs struct {
 
 func newFakeLIDs() *fakeLIDs { return &fakeLIDs{pn: map[string]string{}} }
 
+func (f *fakeLIDs) put(lid, pn string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.pn[lid] = pn
+}
+
 func (f *fakeLIDs) GetPNForLID(_ context.Context, lid types.JID) (types.JID, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -226,14 +250,35 @@ func (f *fakeLIDs) PutLIDMapping(_ context.Context, lid, pn types.JID) error {
 }
 
 type fakeContacts struct {
-	m map[types.JID]types.ContactInfo
+	mu sync.Mutex
+	m  map[types.JID]types.ContactInfo
+}
+
+func (f *fakeContacts) put(j types.JID, info types.ContactInfo) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.m[j] = info
+}
+
+func (f *fakeContacts) clear() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.m = map[types.JID]types.ContactInfo{}
 }
 
 func (f *fakeContacts) GetContact(_ context.Context, j types.JID) (types.ContactInfo, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	return f.m[j], nil
 }
 func (f *fakeContacts) GetAllContacts(context.Context) (map[types.JID]types.ContactInfo, error) {
-	return f.m, nil
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make(map[types.JID]types.ContactInfo, len(f.m))
+	for k, v := range f.m {
+		out[k] = v
+	}
+	return out, nil
 }
 
 // ---- environment -----------------------------------------------------------------------------
@@ -268,7 +313,9 @@ func newEnv(t *testing.T) *env {
 	e := &env{b: b, fc: fc, st: st, cfg: cfg, dir: dir, lids: newFakeLIDs(), book: &fakeContacts{m: map[types.JID]types.ContactInfo{}}}
 	b.lidStoreForTest = e.lids
 	b.contactStoreForTest = e.book
-	b.lidStarted.Store(true) // tests run the resolver explicitly
+	// The background LID resolver writes the cache inside the temp dir: let it
+	// finish before TempDir's cleanup removes the directory.
+	t.Cleanup(func() { b.lidRunWG.Wait() })
 	t.Cleanup(func() { _ = b.Disconnect(context.Background()) })
 	return e
 }

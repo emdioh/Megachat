@@ -72,6 +72,8 @@ type Store interface {
 	MessageMediaRow(ctx context.Context, protocol, contact, msgID string) (*store.MediaRow, error)
 	FillMessageQuoteFields(ctx context.Context, protocol, contact, msgID string, timestamp int64, q store.QuoteFill) (bool, error)
 	MarkAsRead(ctx context.Context, protocol, contact string, extraKeys ...string) error
+	// ReconcileChatUnread aligns a chat's read flags with the phone's unread count.
+	ReconcileChatUnread(ctx context.Context, protocol, contact string, keep int, cutoffMs int64, extraKeys ...string) (int64, error)
 	UpdateMessageStatus(ctx context.Context, timestamp int64, status, protocol, contact string, text *string, expected []string) (bool, error)
 	UpdateMessageStatusByID(ctx context.Context, msgID, status, protocol string, contact *string) (bool, error)
 	UpdateMessageText(ctx context.Context, u store.TextUpdate) (bool, error)
@@ -165,14 +167,17 @@ type Backend struct {
 	addressBook        []proto.Contact
 	addressBookT       time.Time
 	addressBookS       bool
-	readOnPhone        map[string]bool
+	readOnPhone        map[string]int64 // chat -> read cutoff ms (0 = whole chat)
 	presenceSubscribed map[string]bool
 
 	// LID map (lidMu).
 	lidMu           sync.Mutex
 	lidMap          map[string]lidEntry
 	lidLoaded       bool
-	lidStarted      atomic.Bool
+	lidLastRunMu    sync.Mutex
+	lidLastRun      time.Time
+	lidRunWG        sync.WaitGroup // tracks the background resolver (tests wait on it)
+	appStateOnce    sync.Once
 	warm            atomic.Bool // the post-ready work (LID warm-up, presence) ran
 	lidCooldown     map[string]time.Time
 	lidStoreForTest lidStore // overrides the device LID store (tests)
@@ -226,7 +231,7 @@ func New(o Options) *Backend {
 		lazyNegTTL: o.LazyMediaNegTTL,
 		closed:     make(chan struct{}), queue: newEventQueue(),
 		byJID: map[string]*proto.Contact{}, chats: map[string]*chatMeta{}, knownGroups: map[string]*proto.Contact{},
-		readOnPhone: map[string]bool{}, lidCooldown: map[string]time.Time{},
+		readOnPhone: map[string]int64{}, lidCooldown: map[string]time.Time{},
 		cache: map[string][]*entry{}, seen: map[seenKey]struct{}{},
 		lazyFlight: map[string]*lazyCall{}, lazyFailed: map[string]time.Time{},
 		historyTimeout: historyWait,
@@ -382,6 +387,7 @@ func (b *Backend) ensureClientLocked(ctx context.Context) (waClient, error) {
 		b.cli = realClient{whatsmeow.NewClient(dev, slogAdapter{l: b.log, mod: "client"})}
 	}
 	b.handlerID = b.cli.AddEventHandler(b.handleEvent)
+	b.cli.EnableAppStateEvents()
 	b.loggedOut.Store(false)
 	return b.cli, nil
 }
@@ -528,9 +534,11 @@ func (b *Backend) afterConnect(ctx context.Context, cli waClient, ready bool) {
 	}
 }
 
-// warmup is what connect_sync did once the session was WORKING: start the LID
-// resolver (idempotent) and announce presence.
+// warmup is what connect_sync did once the session was WORKING: sync the app
+// state (names, archive flags, read-on-phone), start the LID resolver and
+// announce presence.
 func (b *Backend) warmup(ctx context.Context, cli waClient) {
+	b.startAppStateSync()
 	b.StartLIDResolver()
 	// Announcing "available" is what makes WhatsApp deliver typing updates, but
 	// it also mutes the phone's push notifications: only when the typing

@@ -264,7 +264,7 @@ func TestMentionsResolveToNames(t *testing.T) {
 	if got != "ciao @Anna come va" {
 		t.Errorf("mention by name = %q", got)
 	}
-	e.lids.pn["77777777"] = "393331112222"
+	e.lids.put("77777777", "393331112222")
 	if got := e.b.resolveTextMentions("hey @77777777!"); got != "hey @+393331112222!" {
 		t.Errorf("mention by lid cache = %q", got)
 	}
@@ -423,7 +423,7 @@ func TestReceiptMapping(t *testing.T) {
 	if evs := drain(e.b); len(evs) != 0 {
 		t.Errorf("read-self must not produce a receipt event: %+v", evs)
 	}
-	if !e.b.readOnPhone["391234567890@c.us"] {
+	if _, ok := e.b.readOnPhone["391234567890@c.us"]; !ok {
 		t.Error("read-self should flag the chat as read on the phone")
 	}
 }
@@ -503,7 +503,7 @@ func TestArchiveEventUpdatesContact(t *testing.T) {
 // core applies them under the event's contact id.
 func TestEditAndReactionUseTheTwinStorageKey(t *testing.T) {
 	e := newEnv(t)
-	e.lids.pn["189025889575055"] = "391234567890"
+	e.lids.put("189025889575055", "391234567890")
 	e.b.RegisterContact(*newContact("391234567890@c.us", "Mario", map[string]any{"phone": "391234567890", "lid": "189025889575055@lid"}))
 	drain(e.b)
 	e.b.ingestMu.Lock()
@@ -532,7 +532,6 @@ func TestEditAndReactionUseTheTwinStorageKey(t *testing.T) {
 // the post-WORKING work (LID warm-up -> lid_warmup_done) exactly once.
 func TestWaitReadyRunsWarmupOnce(t *testing.T) {
 	e := newEnv(t)
-	e.b.lidStarted.Store(false)
 	e.fc.mu.Lock()
 	e.fc.loggedIn = false
 	e.fc.mu.Unlock()

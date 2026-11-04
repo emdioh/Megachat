@@ -214,12 +214,15 @@ func (b *Backend) onHistorySync(e *events.HistorySync) {
 		return
 	}
 	ctx := context.Background()
+	// Messages from an on-demand sync are older history the user asked to see,
+	// not new unread traffic: they are ingested as read.
+	onDemand := e.Data.GetSyncType() == waHistorySync.HistorySync_ON_DEMAND
 	for _, conv := range e.Data.GetConversations() {
-		b.ingestConversation(ctx, cli, conv)
+		b.ingestConversation(ctx, cli, conv, onDemand)
 	}
 }
 
-func (b *Backend) ingestConversation(ctx context.Context, cli waClient, conv *waHistorySync.Conversation) {
+func (b *Backend) ingestConversation(ctx context.Context, cli waClient, conv *waHistorySync.Conversation, onDemand bool) {
 	cj, err := types.ParseJID(conv.GetID())
 	if err != nil || cj.IsEmpty() {
 		return
@@ -243,9 +246,6 @@ func (b *Backend) ingestConversation(ctx context.Context, cli waClient, conv *wa
 		m.Unread = int(conv.GetUnreadCount())
 		if conv.Archived != nil {
 			m.Archived = conv.GetArchived()
-		}
-		if m.Unread == 0 && len(conv.GetMessages()) > 0 {
-			b.readOnPhone[key] = true
 		}
 	}
 	b.cmu.Unlock()
@@ -281,7 +281,7 @@ func (b *Backend) ingestConversation(ctx context.Context, cli waClient, conv *wa
 			d := parseInMsg(ev.Payload)
 			ts, _ := toInt64(ev.Payload["timestamp"])
 			b.ingestMu.Lock()
-			if hit := b.detectEditLocked(key, d.ID, d.Text, d.IsMine, ts, false, pre); hit != nil {
+			if hit := b.detectEditLocked(key, d.ID, d.Text, d.IsMine, pre); hit != nil {
 				b.applyEditLocked(ctx, key, hit.ID, d.Text, &d.IsMine, true)
 				b.ingestMu.Unlock()
 				continue
@@ -326,7 +326,57 @@ func (b *Backend) ingestConversation(ctx context.Context, cli waClient, conv *wa
 	if added > 0 {
 		b.ensureChatContact(key, name, conv)
 	}
+	// Align the read flags with the phone: only the newest UnreadCount incoming
+	// messages stay unread (an on-demand sync brings old, already read history,
+	// so everything it delivered is read). Without this every message ever
+	// ingested counted as unread and the badge showed thousands.
+	keep := int(conv.GetUnreadCount())
+	if onDemand {
+		keep = 0
+	}
+	if cutoff := int64(conv.GetConversationTimestamp()) * 1000; cutoff > 0 {
+		b.reconcileChatUnread(ctx, key, keep, cutoff)
+	}
 	b.signalHistory(chat)
+}
+
+// reconcileChatUnread applies the phone's unread count to a chat: incoming
+// messages up to cutoffMs are marked read except the newest keep, in the store
+// and in the in-memory cache (markReadRemote reads the cache).
+func (b *Backend) reconcileChatUnread(ctx context.Context, contactID string, keep int, cutoffMs int64) {
+	if b.st == nil {
+		return
+	}
+	if keep < 0 {
+		keep = 0
+	}
+	var extra []string
+	if c := b.identify(contactID); c != nil {
+		extra = contactStorageKeys(*c)[1:]
+	}
+	if _, err := b.st.ReconcileChatUnread(ctx, proto.ProtocolWhatsApp, contactID, keep, cutoffMs, extra...); err != nil {
+		b.log.Debug("WhatsApp unread reconcile failed", "chat", contactID, "err", err)
+		return
+	}
+	keys := append([]string{contactID}, extra...)
+	b.ingestMu.Lock()
+	for _, k := range keys {
+		entries := b.cache[k]
+		var idx []int
+		for i := range entries {
+			if !entries[i].IsMine && (cutoffMs == 0 || entries[i].Timestamp <= cutoffMs) {
+				idx = append(idx, i)
+			}
+		}
+		sort.SliceStable(idx, func(x, y int) bool { return entries[idx[x]].Timestamp > entries[idx[y]].Timestamp })
+		for n, i := range idx {
+			if n < keep {
+				continue
+			}
+			entries[i].Read = true
+		}
+	}
+	b.ingestMu.Unlock()
 }
 
 // ensureChatContact makes a chat known to the contact list after a history
@@ -349,7 +399,11 @@ func (b *Backend) ensureChatContact(id, name string, conv *waHistorySync.Convers
 		name = b.nameForChat(context.Background(), id)
 	}
 	if name == "" {
-		name = id
+		if p := exStr(&proto.Contact{Extras: extras}, "phone"); p != "" {
+			name = "+" + p
+		} else {
+			name = id
+		}
 	}
 	c := newContact(id, name, extras)
 	if b.RegisterContact(*c) {

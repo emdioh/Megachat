@@ -39,6 +39,10 @@ type waClient interface {
 	IsLoggedIn() bool
 	GetQRChannel(ctx context.Context) (<-chan whatsmeow.QRChannelItem, error)
 
+	// App state (contact names, archive flags, chats read on the phone).
+	FetchAppState(ctx context.Context, name appstate.WAPatchName, fullSync, onlyIfNotSynced bool) error
+	EnableAppStateEvents()
+
 	SendMessage(ctx context.Context, to types.JID, msg *waE2E.Message, extra ...whatsmeow.SendRequestExtra) (whatsmeow.SendResponse, error)
 	SendPeerMessage(ctx context.Context, msg *waE2E.Message) (whatsmeow.SendResponse, error)
 	Upload(ctx context.Context, plaintext []byte, appInfo whatsmeow.MediaType) (whatsmeow.UploadResponse, error)
@@ -67,6 +71,16 @@ type waClient interface {
 type realClient struct{ *whatsmeow.Client }
 
 func (c realClient) Device() *store.Device { return c.Client.Store }
+
+// FetchAppState proxies whatsmeow's app state sync.
+func (c realClient) FetchAppState(ctx context.Context, name appstate.WAPatchName, fullSync, onlyIfNotSynced bool) error {
+	return c.Client.FetchAppState(ctx, name, fullSync, onlyIfNotSynced)
+}
+
+// EnableAppStateEvents makes a full app state resync dispatch the individual
+// events (Archive, MarkChatAsRead, Contact, ...); whatsmeow drops them by
+// default, which would hide the archive/read state of a fresh process.
+func (c realClient) EnableAppStateEvents() { c.Client.EmitAppStateEventsOnFullSync = true }
 
 // slogAdapter routes whatsmeow's logger into slog.
 type slogAdapter struct {

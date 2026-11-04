@@ -43,11 +43,24 @@ func (b *Backend) handleEvent(evt any) {
 	case *events.Archive:
 		b.setChatArchivedLocal(WAHAFromJID(e.JID), e.Action != nil && e.Action.GetArchived())
 	case *events.MarkChatAsRead:
-		if e.Action != nil && e.Action.GetRead() {
-			b.cmu.Lock()
-			b.readOnPhone[WAHAFromJID(e.JID)] = true
-			b.cmu.Unlock()
+		// The full-sync snapshot is the only heal for an existing DB: mark the
+		// chat read only up to the boundary the phone reported, so newer
+		// genuinely-unread traffic survives. An explicitly-unread action
+		// carries no trustworthy boundary, so it changes nothing.
+		if e.Action == nil || !e.Action.GetRead() {
+			break
 		}
+		var cutoff int64
+		if r := e.Action.GetMessageRange(); r != nil {
+			cutoff = r.GetLastMessageTimestamp()
+		}
+		chat := WAHAFromJID(e.JID)
+		b.cmu.Lock()
+		// 0 means "no bound": it dominates any positive cutoff.
+		if cur, ok := b.readOnPhone[chat]; !ok || (cur != 0 && cutoff > cur) {
+			b.readOnPhone[chat] = cutoff
+		}
+		b.cmu.Unlock()
 	case *events.PushName:
 		b.onPushName(e)
 	case *events.Connected:
@@ -140,23 +153,38 @@ func (b *Backend) onMessage(e *events.Message) {
 }
 
 // resolveSenderName is _resolve_sender_name: a known contact's display name
-// for a JID-like sender (exact id, then the number before "@"), else sender.
+// for a JID-like sender (exact id, then the number before "@"), then the
+// address book (a group participant who never had a direct chat is not in the
+// contact list), else sender.
 func (b *Backend) resolveSenderName(sender string) string {
 	if sender == "" || !strings.Contains(sender, "@") {
 		return sender
 	}
 	b.cmu.RLock()
-	defer b.cmu.RUnlock()
 	if c := b.byJID[sender]; c != nil {
-		return c.DisplayName
+		name := c.DisplayName
+		b.cmu.RUnlock()
+		return name
 	}
 	number, _, _ := strings.Cut(sender, "@")
 	if number != "" {
 		for id, c := range b.byJID {
 			if head, _, _ := strings.Cut(id, "@"); head == number {
-				return c.DisplayName
+				name := c.DisplayName
+				b.cmu.RUnlock()
+				return name
 			}
 		}
+	}
+	book := b.addressBook
+	b.cmu.RUnlock()
+	phone, lid := number, ""
+	if strings.HasSuffix(sender, "@lid") {
+		lid = sender
+		phone = b.lidLookup(sender)
+	}
+	if n := cachedAddressBookName(book, phone, lid); n != "" {
+		return n
 	}
 	return sender
 }
@@ -578,7 +606,7 @@ func (b *Backend) onReceipt(e *events.Receipt) {
 		// One of our other devices read the chat: the phone has read it.
 		if e.Type == types.ReceiptTypeRead || e.Type == types.ReceiptTypeReadSelf {
 			b.cmu.Lock()
-			b.readOnPhone[chat] = true
+			b.readOnPhone[chat] = 0
 			b.cmu.Unlock()
 		}
 		return

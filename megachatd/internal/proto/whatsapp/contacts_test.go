@@ -22,6 +22,15 @@ func setContacts(b *Backend, cs ...*proto.Contact) {
 	b.cmu.Unlock()
 }
 
+// lidCacheEntry reads the persisted LID cache entry of a lid (tests only).
+func lidCacheEntry(b *Backend, lid string) (lidEntry, bool) {
+	b.lidMu.Lock()
+	defer b.lidMu.Unlock()
+	b.lidCacheLoadLocked()
+	e, ok := b.lidMap[lid]
+	return e, ok
+}
+
 // ---- _dedup_book_contacts (tests/test_address_book.py::TestWADedup) -----------------------------
 
 func TestDedupBookContacts(t *testing.T) {
@@ -129,8 +138,24 @@ func TestLIDCachePersistenceAndTTL(t *testing.T) {
 	if b2.lidLookup("fresh@lid") != "391234567890" || b2.lidLookup("stale@lid") != "" {
 		t.Error("positive TTL is 30 days")
 	}
-	if !b2.lidCached("neg_fresh@lid") || b2.lidCached("neg_stale@lid") || b2.lidCached("unknown@lid") {
-		t.Error("negative TTL is 24 hours")
+	if e, ok := lidCacheEntry(b2, "neg_fresh@lid"); !ok || e.Phone != "" || e.ResolvedAt == 0 {
+		t.Error("a fresh negative entry survives the round trip")
+	}
+	// lidCandidates is the production consumer of the negative TTL: a fresh
+	// negative entry is not retried, an expired one and an unknown lid are.
+	setContacts(b2,
+		newContact("neg_fresh@lid", "x", nil),
+		newContact("neg_stale@lid", "x", nil),
+		newContact("unknown@lid", "x", nil))
+	cands := map[string]bool{}
+	for _, id := range b2.lidCandidates() {
+		cands[id] = true
+	}
+	if cands["neg_fresh@lid"] {
+		t.Error("the 24 h negative TTL must suppress a retry")
+	}
+	if !cands["neg_stale@lid"] || !cands["unknown@lid"] {
+		t.Errorf("expired negatives and unknown lids must be retried: %v", cands)
 	}
 	if b2.lidName("220988985864200@lid") != "Mario" {
 		t.Error("name kept")
@@ -161,7 +186,7 @@ func TestLIDCacheCorruptFileStartsEmpty(t *testing.T) {
 
 func TestLIDLookupUsesDeviceTable(t *testing.T) {
 	e := newEnv(t)
-	e.lids.pn["220988985864200"] = "393331234567"
+	e.lids.put("220988985864200", "393331234567")
 	if got := e.b.lidLookup("220988985864200@lid"); got != "393331234567" {
 		t.Errorf("device table lookup = %q", got)
 	}
@@ -184,7 +209,7 @@ func TestLIDLookupUsesDeviceTable(t *testing.T) {
 
 func TestJIDToPhone(t *testing.T) {
 	e := newEnv(t)
-	e.lids.pn["220988985864200"] = "393331234567"
+	e.lids.put("220988985864200", "393331234567")
 	cases := map[string]string{
 		"393331234567@c.us":           "393331234567",
 		"393331234567@s.whatsapp.net": "393331234567",
@@ -256,7 +281,7 @@ func TestNeedsPairingOnFreshStore(t *testing.T) {
 
 func TestAddressBookMergesBookAndChats(t *testing.T) {
 	e := newEnv(t)
-	e.book.m[types.NewJID("393331234567", types.DefaultUserServer)] = types.ContactInfo{Found: true, FullName: "Mario Rossi"}
+	e.book.put(types.NewJID("393331234567", types.DefaultUserServer), types.ContactInfo{Found: true, FullName: "Mario Rossi"})
 	setContacts(e.b, chat("393331234567@c.us", "393331234567", 12345))
 	got, _ := e.b.ListAddressBook(ctx, true)
 	if len(got) != 1 {
@@ -271,8 +296,8 @@ func TestAddressBookMergesBookAndChats(t *testing.T) {
 
 func TestAddressBookLIDRowKeepsAlias(t *testing.T) {
 	e := newEnv(t)
-	e.lids.pn["220988985864200"] = "393331234567"
-	e.book.m[types.NewJID("220988985864200", types.HiddenUserServer)] = types.ContactInfo{Found: true, FullName: "Mario Rossi"}
+	e.lids.put("220988985864200", "393331234567")
+	e.book.put(types.NewJID("220988985864200", types.HiddenUserServer), types.ContactInfo{Found: true, FullName: "Mario Rossi"})
 	got, _ := e.b.ListAddressBook(ctx, true)
 	if len(got) != 1 || got[0].Extras["lid"] != "220988985864200@lid" || got[0].Extras["phone"] != "393331234567" || got[0].Extras["source"] != "wa_book" {
 		t.Fatalf("book = %+v", got)
@@ -302,8 +327,8 @@ func TestAddressBookChatNotInBookAndGroups(t *testing.T) {
 
 func TestAddressBookLIDResolvedFromCacheMergesAndUnresolvedStandalone(t *testing.T) {
 	e := newEnv(t)
-	e.lids.pn["220988985864200"] = "393331234567"
-	e.book.m[types.NewJID("393331234567", types.DefaultUserServer)] = types.ContactInfo{Found: true, FullName: "Mario Rossi"}
+	e.lids.put("220988985864200", "393331234567")
+	e.book.put(types.NewJID("393331234567", types.DefaultUserServer), types.ContactInfo{Found: true, FullName: "Mario Rossi"})
 	setContacts(e.b, chat("220988985864200@lid", "220988985864200@lid", 7), chat("77@lid", "77@lid", 3))
 	got, _ := e.b.ListAddressBook(ctx, true)
 	byID := map[string]proto.Contact{}
@@ -325,12 +350,12 @@ func TestAddressBookLIDResolvedFromCacheMergesAndUnresolvedStandalone(t *testing
 
 func TestAddressBookEmptyFetchKeepsPreviousBookEntries(t *testing.T) {
 	e := newEnv(t)
-	e.book.m[types.NewJID("393331234567", types.DefaultUserServer)] = types.ContactInfo{Found: true, FullName: "Mario Rossi"}
+	e.book.put(types.NewJID("393331234567", types.DefaultUserServer), types.ContactInfo{Found: true, FullName: "Mario Rossi"})
 	first, _ := e.b.ListAddressBook(ctx, true)
 	if len(first) != 1 {
 		t.Fatal(first)
 	}
-	e.book.m = map[types.JID]types.ContactInfo{} // a successful but entirely empty fetch
+	e.book.clear() // a successful but entirely empty fetch
 	second, _ := e.b.ListAddressBook(ctx, true)
 	if len(second) != 1 || second[0].DisplayName != "Mario Rossi" {
 		t.Fatalf("B3: an empty fetch never removes wa_book entries: %+v", second)
@@ -339,9 +364,9 @@ func TestAddressBookEmptyFetchKeepsPreviousBookEntries(t *testing.T) {
 
 func TestAddressBookTTL(t *testing.T) {
 	e := newEnv(t)
-	e.book.m[types.NewJID("393331234567", types.DefaultUserServer)] = types.ContactInfo{Found: true, FullName: "Mario"}
+	e.book.put(types.NewJID("393331234567", types.DefaultUserServer), types.ContactInfo{Found: true, FullName: "Mario"})
 	e.b.ListAddressBook(ctx, true)
-	e.book.m[types.NewJID("393339999999", types.DefaultUserServer)] = types.ContactInfo{Found: true, FullName: "Luigi"}
+	e.book.put(types.NewJID("393339999999", types.DefaultUserServer), types.ContactInfo{Found: true, FullName: "Luigi"})
 	if got, _ := e.b.ListAddressBook(ctx, false); len(got) != 1 {
 		t.Error("within the TTL the cached snapshot is served")
 	}
@@ -352,8 +377,8 @@ func TestAddressBookTTL(t *testing.T) {
 
 func TestFindAddressBookContactFallbackByPhone(t *testing.T) {
 	e := newEnv(t)
-	e.lids.pn["220988985864200"] = "393331234567"
-	e.book.m[types.NewJID("393331234567", types.DefaultUserServer)] = types.ContactInfo{Found: true, FullName: "Mario Rossi"}
+	e.lids.put("220988985864200", "393331234567")
+	e.book.put(types.NewJID("393331234567", types.DefaultUserServer), types.ContactInfo{Found: true, FullName: "Mario Rossi"})
 	setContacts(e.b, chat("220988985864200@lid", "x", 1))
 	e.b.ListAddressBook(ctx, true)
 	// The id was rewritten to @lid by the merge; the @c.us id still finds the book entry.
@@ -372,8 +397,8 @@ func TestFindAddressBookContactFallbackByPhone(t *testing.T) {
 
 func TestLIDResolverRunAppliesNamesAndSignalsWarmup(t *testing.T) {
 	e := newEnv(t)
-	e.lids.pn["1"] = "393331234567"
-	e.book.m[types.NewJID("393331234567", types.DefaultUserServer)] = types.ContactInfo{Found: true, FullName: "Mario Rossi"}
+	e.lids.put("1", "393331234567")
+	e.book.put(types.NewJID("393331234567", types.DefaultUserServer), types.ContactInfo{Found: true, FullName: "Mario Rossi"})
 	c1 := chat("1@lid", "1@lid", 1)
 	c1.Extras["phone"] = "393331234567"
 	setContacts(e.b, c1, chat("2@lid", "2@lid", 1))
@@ -386,7 +411,7 @@ func TestLIDResolverRunAppliesNamesAndSignalsWarmup(t *testing.T) {
 		t.Fatalf("lid_warmup_done must close the run: %+v", evs)
 	}
 	// The unresolvable lid got a negative cache entry (retried after 24 h).
-	if !e.b.lidCached("2@lid") {
+	if e, ok := lidCacheEntry(e.b, "2@lid"); !ok || e.Phone != "" {
 		t.Error("negative entry expected")
 	}
 }
@@ -395,7 +420,7 @@ func TestLIDResolverRunAppliesNamesAndSignalsWarmup(t *testing.T) {
 
 func TestRegisterContactFoldsIdentityTwins(t *testing.T) {
 	e := newEnv(t)
-	e.lids.pn["220988985864200"] = "393331234567"
+	e.lids.put("220988985864200", "393331234567")
 	// A ghost @c.us is registered first, then the active @lid chat of the same person arrives.
 	ghost := newContact("393331234567@c.us", "Mario", map[string]any{"phone": "393331234567", "ghost": true})
 	if !e.b.RegisterContact(*ghost) {
@@ -433,7 +458,7 @@ func TestRegisterContactFoldsIdentityTwins(t *testing.T) {
 
 func TestRegisterLosingIncomingIsAliasedToSurvivor(t *testing.T) {
 	e := newEnv(t)
-	e.lids.pn["1"] = "393331234567"
+	e.lids.put("1", "393331234567")
 	active := newContact("393331234567@c.us", "Mario", map[string]any{"source": "wa_chats", "is_chat_active": true, "phone": "393331234567", "last_message_ts": int64(50)})
 	e.b.RegisterContact(*active)
 	ghost := newContact("1@lid", "1@lid", map[string]any{"lid": "1@lid", "ghost": true})
@@ -479,7 +504,7 @@ func TestApplyContactLIDResolution(t *testing.T) {
 	e := newEnv(t)
 	e.b.RegisterContact(*newContact("205@lid", "205@lid", map[string]any{"source": "wa_chats", "is_chat_active": true}))
 	drain(e.b)
-	e.lids.pn["205"] = "393331112222"
+	e.lids.put("205", "393331112222")
 	e.b.scheduleContactLIDResolve("205@lid")
 	c, _ := e.b.FindContact("205@lid")
 	if c.Extras["phone"] != "393331112222" || c.DisplayName != "+393331112222" {
@@ -501,7 +526,7 @@ func TestApplyContactLIDResolution(t *testing.T) {
 
 func TestPlaceholderName(t *testing.T) {
 	e := newEnv(t)
-	e.book.m[types.NewJID("393331234567", types.DefaultUserServer)] = types.ContactInfo{Found: true, FullName: "Mario Rossi"}
+	e.book.put(types.NewJID("393331234567", types.DefaultUserServer), types.ContactInfo{Found: true, FullName: "Mario Rossi"})
 	e.b.ListAddressBook(ctx, true)
 	if got := e.b.PlaceholderName("393331234567@c.us"); got != "Mario Rossi" {
 		t.Errorf("placeholder by phone = %q", got)
@@ -516,7 +541,7 @@ func TestPlaceholderName(t *testing.T) {
 func TestLoadContactsFromCacheGroupsAndContactTable(t *testing.T) {
 	e := newEnv(t)
 	e.fc.joined = []*types.GroupInfo{{JID: types.NewJID("120363000000000000", types.GroupServer), GroupName: types.GroupName{Name: "Famiglia"}}}
-	e.book.m[types.NewJID("393331234567", types.DefaultUserServer)] = types.ContactInfo{Found: true, FullName: "Mario Rossi"}
+	e.book.put(types.NewJID("393331234567", types.DefaultUserServer), types.ContactInfo{Found: true, FullName: "Mario Rossi"})
 	e.b.IngestMessage(ctx, "393331234567@c.us", map[string]any{"id": "false_393331234567@c.us_A1", "text": "ciao", "is_mine": false}, 4_000)
 	e.b.loadProtocolCache(ctx)
 	e.b.loadContacts(ctx)
@@ -557,14 +582,24 @@ func TestRefreshContactsReportsNewAndRenamed(t *testing.T) {
 	// A new chat and a new saved name appear.
 	e.b.IngestMessage(ctx, "393339999999@c.us", map[string]any{"id": "false_393339999999@c.us_A2", "text": "y", "is_mine": false}, 2)
 	e.b.loadProtocolCache(ctx)
-	e.book.m[types.NewJID("393331234567", types.DefaultUserServer)] = types.ContactInfo{Found: true, FullName: "Mario Rossi"}
+	e.book.put(types.NewJID("393331234567", types.DefaultUserServer), types.ContactInfo{Found: true, FullName: "Mario Rossi"})
 	res := e.b.RefreshContacts(ctx, true)
 	if res.Errors != "" || res.Protocol != "whatsapp" || len(res.NewContacts) != 1 || res.NewContacts[0].ID != "393339999999@c.us" ||
 		len(res.RenamedContacts) != 1 || res.RenamedContacts[0].DisplayName != "Mario Rossi" {
 		t.Fatalf("refresh result: %+v", res)
 	}
-	if evs := drain(e.b); len(evs) != 2 {
-		t.Errorf("one contact_update per new/renamed contact, got %d", len(evs))
+	var updates int
+	for _, ev := range e.b.PollOnce() {
+		switch ev.Type {
+		case proto.EventContactUpdate:
+			updates++
+		case proto.EventLidWarmupDone: // the background resolver's own signal
+		default:
+			t.Errorf("unexpected event %+v", ev)
+		}
+	}
+	if updates != 2 {
+		t.Errorf("one contact_update per new/renamed contact, got %d", updates)
 	}
 	e.b.connected.Store(false)
 	if res := e.b.RefreshContacts(ctx, true); res.Errors != "not connected" {
@@ -579,5 +614,88 @@ func TestAnonymousContactsHaveNoSideEffects(t *testing.T) {
 	}
 	if _, ok := e.b.FindContact("1@c.us"); ok {
 		t.Error("unknown contact")
+	}
+}
+
+// waitLidWarmups drains events until want lid_warmup_done events arrived.
+func waitLidWarmups(t *testing.T, e *env, want int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	got := 0
+	for got < want && time.Now().Before(deadline) {
+		for _, ev := range e.b.PollOnce() {
+			if ev.Type == proto.EventLidWarmupDone {
+				got++
+			}
+		}
+		if got < want {
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+	if got != want {
+		t.Fatalf("lid_warmup_done events = %d, want %d", got, want)
+	}
+}
+
+func TestLIDResolverRerunsAfterThrottleAndAppliesBookName(t *testing.T) {
+	e := newEnv(t)
+	e.lids.put("900", "393331234567")
+	e.lids.put("902", "393331110000")
+	e.book.put(types.NewJID("393331234567", types.DefaultUserServer), types.ContactInfo{Found: true, FullName: "Mario Rossi"})
+	e.book.put(types.NewJID("393331110000", types.DefaultUserServer), types.ContactInfo{Found: true, FullName: "Anna Bianchi"})
+	// The name snapshot applyContactLIDResolution reads.
+	e.b.listAddressBook(ctx, true, false)
+	setContacts(e.b, chat("900@lid", "900@lid", 1))
+
+	e.b.StartLIDResolver()
+	waitLidWarmups(t, e, 1)
+	if c, _ := e.b.FindContact("900@lid"); c.Extras["phone"] != "393331234567" || c.DisplayName != "Mario Rossi" {
+		t.Fatalf("first run must resolve the known mapping: %+v", c)
+	}
+	// Inside the throttle window the trigger is a no-op.
+	e.b.StartLIDResolver()
+	time.Sleep(30 * time.Millisecond)
+	if evs := drain(e.b); len(evs) != 0 {
+		t.Fatalf("a throttled run must not emit events: %+v", evs)
+	}
+	// Once the window elapsed, the resolver runs again and applies the links
+	// learned in the meantime (this is the "<n>@lid" name bug).
+	e.b.lidLastRunMu.Lock()
+	e.b.lidLastRun = nowFunc().Add(-lidResolveInterval - time.Second)
+	e.b.lidLastRunMu.Unlock()
+	setContacts(e.b, chat("900@lid", "900@lid", 1), chat("902@lid", "902@lid", 1))
+	e.b.StartLIDResolver()
+	waitLidWarmups(t, e, 1)
+	c, ok := e.b.FindContact("902@lid")
+	if !ok || c.Extras["phone"] != "393331110000" || c.Extras["lid"] != "902@lid" || c.DisplayName != "Anna Bianchi" {
+		t.Fatalf("second run must apply the learned mapping and the book name: %+v ok=%v", c, ok)
+	}
+}
+
+// A contact that already carries the phone extra (RefreshContacts fills it
+// from the device table) but still shows the raw "<n>@lid" name must get the
+// address-book or "+phone" name from a resolver pass.
+func TestLIDResolverNamesAlreadyPhonedContacts(t *testing.T) {
+	e := newEnv(t)
+	e.lids.put("902", "393331110000")
+	e.lids.put("903", "393331110001")
+	e.book.put(types.NewJID("393331110000", types.DefaultUserServer), types.ContactInfo{Found: true, FullName: "Anna Bianchi"})
+	e.b.listAddressBook(ctx, true, false)
+	setContacts(e.b,
+		newContact("902@lid", "902@lid", map[string]any{"phone": "393331110000", "lid": "902@lid", "source": "wa_chats"}),
+		newContact("903@lid", "903@lid", map[string]any{"phone": "393331110001", "lid": "903@lid", "source": "wa_chats"}))
+	e.b.lidResolveCandidates()
+	if c, _ := e.b.FindContact("902@lid"); c.DisplayName != "Anna Bianchi" {
+		t.Errorf("the mapped contact must take the address-book name, got %q", c.DisplayName)
+	}
+	// No book row: the phone fallback, never the raw lid.
+	if c, _ := e.b.FindContact("903@lid"); c.DisplayName != "+393331110001" {
+		t.Errorf("the phone fallback must replace the raw lid, got %q", c.DisplayName)
+	}
+	// Idempotent: a second pass does not rename or duplicate.
+	c, _ := e.b.FindContact("902@lid")
+	e.b.lidResolveCandidates()
+	if again, _ := e.b.FindContact("902@lid"); again.DisplayName != c.DisplayName || again.Extras["phone"] != "393331110000" {
+		t.Errorf("second pass changed the contact: %+v -> %+v", c, again)
 	}
 }

@@ -240,34 +240,26 @@ func TestDetectEdit(t *testing.T) {
 		&entry{ID: "true_39@c.us_E2", Text: "due", IsMine: true, Timestamp: 20_000})
 	e.b.ingestMu.Lock()
 	defer e.b.ingestMu.Unlock()
-	if h := e.b.detectEditLocked("39@c.us", "false_39@c.us_E1", "uno modificato", false, 99, false, nil); h == nil || h.Text != "uno" {
+	if h := e.b.detectEditLocked("39@c.us", "false_39@c.us_E1", "uno modificato", false, nil); h == nil || h.Text != "uno" {
 		t.Error("id match with different text is an edit")
 	}
-	if h := e.b.detectEditLocked("39@c.us", "false_39@c.us_E1", "  uno ", false, 99, false, nil); h != nil {
+	if h := e.b.detectEditLocked("39@c.us", "false_39@c.us_E1", "  uno ", false, nil); h != nil {
 		t.Error("same text (whitespace-normalised) is not an edit")
 	}
-	if h := e.b.detectEditLocked("39@c.us", "", "", false, 10_000, false, nil); h != nil {
+	if h := e.b.detectEditLocked("39@c.us", "", "", false, nil); h != nil {
 		t.Error("empty text is never an edit")
 	}
-	// Incoming fallback by timestamp (+-2 s), unique candidate only.
-	if h := e.b.detectEditLocked("39@c.us", "OTHER", "nuovo", false, 11_500, false, nil); h == nil || h.ID != "false_39@c.us_E1" {
-		t.Error("unique candidate within 2 s")
+	if h := e.b.detectEditLocked("39@c.us", "", "uno", false, nil); h != nil {
+		t.Error("an id-less message is never an edit")
 	}
-	if h := e.b.detectEditLocked("39@c.us", "OTHER", "nuovo", true, 20_500, false, nil); h != nil {
-		t.Error("the timestamp fallback is incoming only")
-	}
-	// require_history_source: only rows ingested from history are candidates.
-	if h := e.b.detectEditLocked("39@c.us", "OTHER", "nuovo", false, 10_000, true, nil); h != nil {
-		t.Error("live rows are not history candidates")
+	// A different id is a different message, even within the old +-2 s window
+	// and with the sender's other messages right next to it.
+	if h := e.b.detectEditLocked("39@c.us", "OTHER", "nuovo", false, nil); h != nil {
+		t.Error("a different id must never fold into another message")
 	}
 	e.b.cache["39@c.us"][0].FromHistory = true
-	if h := e.b.detectEditLocked("39@c.us", "OTHER", "nuovo", false, 10_000, true, nil); h == nil {
-		t.Error("history row should be a candidate")
-	}
-	// Two forwarded messages close together: ambiguous, no edit.
-	e.b.cache["39@c.us"] = append(e.b.cache["39@c.us"], &entry{ID: "false_39@c.us_E3", Text: "tre", Timestamp: 10_500, FromHistory: true})
-	if h := e.b.detectEditLocked("39@c.us", "OTHER", "nuovo", false, 10_200, true, nil); h != nil {
-		t.Error("ambiguous candidates must be skipped")
+	if h := e.b.detectEditLocked("39@c.us", "OTHER", "nuovo", false, nil); h != nil {
+		t.Error("history rows are matched by id only")
 	}
 }
 
@@ -458,7 +450,7 @@ func TestReconcileUnread(t *testing.T) {
 		t.Fatal("incoming rows start unread")
 	}
 	e.b.cmu.Lock()
-	e.b.readOnPhone["39@c.us"] = true
+	e.b.readOnPhone["39@c.us"] = 0
 	e.b.cmu.Unlock()
 	e.b.ReconcileUnread(ctx)
 	if rows := dbRows(t, e, "39@c.us"); !rows[0].Read {

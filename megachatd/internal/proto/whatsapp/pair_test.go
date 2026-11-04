@@ -210,13 +210,20 @@ func TestConnectIdempotentAndLoadsContacts(t *testing.T) {
 		t.Fatal(err)
 	}
 	e.b.emit(proto.EventReceipt, "x@c.us", map[string]any{"message_ids": []any{}})
-	select {
-	case ev := <-ch:
-		if ev.Type != proto.EventReceipt {
-			t.Errorf("event %+v", ev)
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case ev := <-ch:
+			if ev.Type == proto.EventLidWarmupDone {
+				continue // the background LID resolver may announce itself first
+			}
+			if ev.Type != proto.EventReceipt {
+				t.Errorf("event %+v", ev)
+			}
+			return
+		case <-deadline:
+			t.Fatal("Receive must work again after a reconnect")
 		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("Receive must work again after a reconnect")
 	}
 }
 

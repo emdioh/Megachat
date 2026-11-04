@@ -175,22 +175,6 @@ func (b *Backend) lidName(lid string) string {
 	return b.lidMap[lid].Name
 }
 
-// lidCached is _lid_cached: a valid positive or (24 h) negative entry exists.
-func (b *Backend) lidCached(lid string) bool {
-	b.lidMu.Lock()
-	defer b.lidMu.Unlock()
-	b.lidCacheLoadLocked()
-	e, ok := b.lidMap[lid]
-	if !ok {
-		return false
-	}
-	age := nowFunc().Unix() - e.ResolvedAt
-	if e.Phone != "" {
-		return age <= int64(b.lidTTL/time.Second)
-	}
-	return age <= 24*3600
-}
-
 // phoneToLID is _phone_to_lid: reverse lookup phone -> "<n>@lid" (no network).
 func (b *Backend) phoneToLID(phone string) string {
 	if phone == "" {
@@ -235,14 +219,30 @@ func (b *Backend) JIDToPhone(jid string) string {
 	return ""
 }
 
+// lidResolveInterval throttles the resolver: mappings keep arriving with the
+// live traffic and the app-state syncs, and every run is local (no network).
+const lidResolveInterval = 30 * time.Second
+
 // StartLIDResolver implements core.LIDResolverStarter (start_lid_resolver):
-// imports the device's LID table into the cache once and applies the names
-// to the contacts, then publishes lid_warmup_done.
+// imports the device's LID table into the cache and applies the phone/name of
+// the chats still under an unresolved @lid, then publishes lid_warmup_done.
+//
+// It is re-runnable (throttled): whatsmeow keeps learning LID<->PN links from
+// groups, live messages and app-state syncs after the startup pass, so a
+// one-shot resolver left every later link unresolved ("<n>@lid" chats).
 func (b *Backend) StartLIDResolver() {
-	if !b.lidStarted.CompareAndSwap(false, true) {
+	b.lidLastRunMu.Lock()
+	if nowFunc().Sub(b.lidLastRun) < lidResolveInterval {
+		b.lidLastRunMu.Unlock()
 		return
 	}
-	go b.lidResolverRun()
+	b.lidLastRun = nowFunc()
+	b.lidLastRunMu.Unlock()
+	b.lidRunWG.Add(1)
+	go func() {
+		defer b.lidRunWG.Done()
+		b.lidResolverRun()
+	}()
 }
 
 func (b *Backend) lidResolverRun() {
@@ -253,20 +253,27 @@ func (b *Backend) lidResolverRun() {
 		}
 	}()
 	b.lidCacheLoad()
-	bulk := b.lidBulkImport(context.Background())
-	// Chats still under an unresolved @lid: ask the device table one by one
-	// (Python hit /lids per jid; here the answer is local, so no stagger).
+	b.lidBulkImport(context.Background())
+	b.lidResolveCandidates()
+}
+
+// lidResolveCandidates resolves the chats still under an unresolved @lid from
+// the device table (local lookups): a hit applies the phone and the address
+// book name (and folds the identity twins), a miss leaves a 24 h negative
+// entry.
+func (b *Backend) lidResolveCandidates() {
 	for _, id := range b.lidCandidates() {
-		if b.lidLookup(id) == "" {
-			b.lidMu.Lock()
-			if _, ok := b.lidMap[id]; !ok {
-				b.lidMap[id] = lidEntry{ResolvedAt: nowFunc().Unix()} // negative entry
-			}
-			b.lidMu.Unlock()
+		if phone := b.lidLookup(id); phone != "" {
+			b.applyContactLIDResolution(id, phone)
+			continue
 		}
+		b.lidMu.Lock()
+		if _, ok := b.lidMap[id]; !ok {
+			b.lidMap[id] = lidEntry{ResolvedAt: nowFunc().Unix()} // negative entry
+		}
+		b.lidMu.Unlock()
 	}
 	b.lidCacheSave()
-	_ = bulk
 	b.reapplyAddressBookNames()
 }
 
@@ -275,12 +282,30 @@ func (b *Backend) lidCandidates() []string {
 	defer b.cmu.RUnlock()
 	var out []string
 	for _, c := range b.contacts {
-		if strings.HasSuffix(c.ID, "@lid") && !b.lidCached(c.ID) {
-			out = append(out, c.ID)
-			if len(out) == 30 {
-				break
-			}
+		if !strings.HasSuffix(c.ID, "@lid") {
+			continue
 		}
+		// A raw "<n>@lid" display name is the symptom of a contact whose
+		// mapping was applied without a name (RefreshContacts fills the phone
+		// extra from the device table). It always gets a resolver pass, so the
+		// name/book fallback can be applied; contacts already carrying a real
+		// or "+phone" name are left alone to keep the pass idempotent.
+		head, _, _ := strings.Cut(c.ID, "@")
+		bareName := c.DisplayName == "" || c.DisplayName == c.ID || c.DisplayName == head
+		if exStr(c, "phone") != "" && !bareName {
+			continue // already resolved with a usable name
+		}
+		// A positive mapping may exist in the cache without ever having been
+		// applied to the contact (rebuildAliasesLocked and JIDToPhone fill the
+		// cache); only a fresh negative entry means "nothing to do yet".
+		b.lidMu.Lock()
+		b.lidCacheLoadLocked()
+		e, ok := b.lidMap[c.ID]
+		b.lidMu.Unlock()
+		if ok && e.Phone == "" && nowFunc().Unix()-e.ResolvedAt <= 24*3600 {
+			continue
+		}
+		out = append(out, c.ID)
 	}
 	return out
 }

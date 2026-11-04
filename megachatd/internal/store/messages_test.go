@@ -252,6 +252,30 @@ func TestMarkAsReadAliasKeyOnlyWhenListed(t *testing.T) {
 	eq(t, len(must(s.UnreadCounts(ctx))), 1)
 }
 
+func TestReconcileChatUnreadKeepsNewest(t *testing.T) {
+	s := newStore(t)
+	for ts := int64(1); ts <= 5; ts++ {
+		add(t, s, NewMessage{ContactNumber: "A@c.us", Protocol: "whatsapp", Text: fmt.Sprint("m", ts), Timestamp: ts})
+	}
+	add(t, s, NewMessage{ContactNumber: "A@c.us", Protocol: "whatsapp", Text: "mine", IsMine: true, Timestamp: 6})
+	add(t, s, NewMessage{ContactNumber: "A@lid", Protocol: "whatsapp", Text: "twin", Timestamp: 2})
+	// The phone reports 2 unread up to ts 5: everything older (both storage
+	// keys) is read, the newest two incoming stay unread.
+	eq(t, must(s.ReconcileChatUnread(ctx, "whatsapp", "A@c.us", 2, 5, "A@lid")), int64(4))
+	un := must(s.UnreadCounts(ctx))
+	eq(t, un[ContactKey{"whatsapp", "A@c.us"}], 2)
+	if _, ok := un[ContactKey{"whatsapp", "A@lid"}]; ok {
+		t.Fatalf("alias-key rows up to the cutoff are read: %v", un)
+	}
+	// Rows beyond the cutoff (a live message after the sync) are untouched.
+	add(t, s, NewMessage{ContactNumber: "A@c.us", Protocol: "whatsapp", Text: "live", Timestamp: 7})
+	eq(t, must(s.ReconcileChatUnread(ctx, "whatsapp", "A@c.us", 2, 5)), int64(0))
+	eq(t, must(s.UnreadCounts(ctx))[ContactKey{"whatsapp", "A@c.us"}], 3)
+	// keep 0 (a fully read chat) clears the rest up to the cutoff only.
+	eq(t, must(s.ReconcileChatUnread(ctx, "whatsapp", "A@c.us", 0, 5)), int64(2))
+	eq(t, must(s.UnreadCounts(ctx))[ContactKey{"whatsapp", "A@c.us"}], 1)
+}
+
 func TestUpdateMessageStatusRankGuard(t *testing.T) {
 	s := newStore(t)
 	id := insertRow(t, s, row{"text": "t", "is_mine": 1, "timestamp": 100, "status": "pending"})

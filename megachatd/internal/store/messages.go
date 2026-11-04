@@ -506,6 +506,49 @@ func (s *Store) MarkAsRead(ctx context.Context, protocol, contact string, extraK
 	return err
 }
 
+// ReconcileChatUnread aligns a chat's read flags with the phone's unread
+// count: incoming messages up to cutoffMs (0 = no bound; pass the timestamp of
+// the sync that reported the count) are marked read except the newest keep,
+// the ones still unread on the phone. Alias keys cover the WhatsApp @c.us/@lid
+// twin storage. Returns the number of rows updated.
+func (s *Store) ReconcileChatUnread(ctx context.Context, protocol, contact string, keep int, cutoffMs int64, extraKeys ...string) (int64, error) {
+	if err := s.settle(ctx); err != nil {
+		return 0, err
+	}
+	if protocol == "" {
+		protocol = "signal"
+	}
+	if keep < 0 {
+		keep = 0
+	}
+	keys := []string{contact}
+	for _, k := range extraKeys {
+		if k != "" {
+			keys = append(keys, k)
+		}
+	}
+	in := "(" + placeholders(len(keys)) + ")"
+	args := append([]any{protocol}, strArgs(keys)...)
+	args = append(args, cutoffMs, cutoffMs)
+	args = append(args, protocol)
+	args = append(args, strArgs(keys)...)
+	args = append(args, cutoffMs, cutoffMs, keep)
+	res, err := s.db.ExecContext(ctx,
+		"UPDATE messages SET read = 1 "+
+			"WHERE protocol = ? AND contact_number IN "+in+" AND is_mine = 0 AND read = 0 "+
+			"AND (? = 0 OR timestamp <= ?) "+
+			"AND id NOT IN ("+
+			"SELECT id FROM messages "+
+			"WHERE protocol = ? AND contact_number IN "+in+" AND is_mine = 0 "+
+			"AND (? = 0 OR timestamp <= ?) "+
+			"ORDER BY timestamp DESC, id DESC LIMIT ?)", args...)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
+}
+
 func statusGuard(newStatus string) string {
 	return " AND " + statusRankCase + " <= CASE ? WHEN 'pending' THEN 0 WHEN 'failed' THEN 0 " +
 		"WHEN 'sent' THEN 1 WHEN 'delivered' THEN 2 WHEN 'read' THEN 3 ELSE 0 END"
