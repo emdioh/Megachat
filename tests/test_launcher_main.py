@@ -114,7 +114,11 @@ class TestMainDispatch:
             launcher_cli.backend, "run", lambda **kwargs: calls.append(kwargs) or 0
         )
         launcher_cli.main(["backend-restart", "--no-wait"])
-        assert calls == [{"no_wait": True, "docker_limits": True}]
+        launcher_cli.main(["backend-restart", "--waha"])
+        assert calls == [
+            {"no_wait": True, "docker_limits": True, "waha": None},
+            {"no_wait": False, "docker_limits": True, "waha": True},
+        ]
 
     def test_server_start_dispatches(self, launcher_cli, monkeypatch):
         calls = []
@@ -129,10 +133,21 @@ class TestMainDispatch:
                 "docker_limits": True,
                 "print_token": True,
                 "opts": launcher_cli.server.ServeOptions(),
-                "whatsapp": True,
+                "whatsapp": False,
                 "foreground": False,
             }
         ]
+
+    def test_server_start_waha_flag(self, launcher_cli, monkeypatch):
+        calls = []
+        monkeypatch.setattr(
+            launcher_cli.server,
+            "start_all",
+            lambda **kwargs: calls.append(kwargs) or 0,
+        )
+        launcher_cli.main(["server", "start", "--waha"])
+        launcher_cli.main(["server", "start", "--no-whatsapp"])  # obsolete no-op
+        assert [c["whatsapp"] for c in calls] == [True, False]
 
     def test_server_start_no_token_flag(self, launcher_cli, monkeypatch):
         calls = []
@@ -173,8 +188,9 @@ class TestMainDispatch:
             launcher_cli.server, "stop_all", lambda **kw: calls.append(kw) or 0
         )
         assert launcher_cli.main(["server", "stop"]) == 0
+        assert launcher_cli.main(["server", "stop", "--waha"]) == 0
         assert launcher_cli.main(["server", "stop", "--keep-whatsapp"]) == 0
-        assert calls == [{"whatsapp": True}, {"whatsapp": False}]
+        assert calls == [{"whatsapp": False}, {"whatsapp": True}, {"whatsapp": False}]
 
     def test_server_status_dispatches(self, launcher_cli, monkeypatch):
         monkeypatch.setattr(launcher_cli.server, "status", lambda: 0)

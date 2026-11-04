@@ -87,8 +87,16 @@ class TestRemoteScripts:
 
     def test_start_runs_detached_serve_and_never_tmux_new_session(self):
         script = handover._remote_start_script()
-        serve = shlex.join([".venv/bin/python", *server_mod.SERVE_ARGS])
-        assert f"nohup {serve} </dev/null" in script
+        flags = shlex.join(server_mod.SERVE_ARGS)
+        py_serve = shlex.join(
+            [".venv/bin/python", "megachat.py", "serve", *server_mod.SERVE_ARGS]
+        )
+        # megachatd by default (binary: $MEGACHATD_BIN, repo build, PATH) ...
+        assert f'nohup "$BIN" serve {flags} --project-dir "$PWD" </dev/null' in script
+        assert "megachatd/bin/megachatd" in script
+        # ... the Python server (and WAHA) only with MEGACHAT_SERVER=python
+        assert f"nohup {py_serve} </dev/null" in script
+        assert script.index('"$ENGINE" = python') < script.index("whatsapp start")
         assert "--web-host 0.0.0.0" in script
         assert "tmux new-session" not in script
         assert "signal_tui" not in script
@@ -203,8 +211,12 @@ class TestToServer:
 
 
 class TestToLocal:
-    def _stubs(self, monkeypatch, tmp_path, *, remote_rc=0, stops=True, up=True):
+    def _stubs(
+        self, monkeypatch, tmp_path, *, remote_rc=0, stops=True, up=True, python=False
+    ):
         events = []
+        if python:
+            monkeypatch.setenv("MEGACHAT_SERVER", "python")
         monkeypatch.setattr(
             handover,
             "_run_remote",
@@ -232,6 +244,12 @@ class TestToLocal:
     def test_happy_path_order_and_message(self, monkeypatch, tmp_path, capsys):
         events = self._stubs(monkeypatch, tmp_path)
         assert handover.to_local() == 0
+        assert events == ["remote-stop", "local-stop", "spawn"]  # no WAHA
+        assert "megachatd serve" in capsys.readouterr().out
+
+    def test_python_server_starts_waha_first(self, monkeypatch, tmp_path, capsys):
+        events = self._stubs(monkeypatch, tmp_path, python=True)
+        assert handover.to_local() == 0
         assert events == ["remote-stop", "waha", "local-stop", "spawn"]
         out = capsys.readouterr().out
         assert "Handover verso il locale completato" in out
@@ -257,7 +275,7 @@ class TestToLocal:
     def test_falls_back_to_no_wait_start_when_waha_start_fails(
         self, monkeypatch, tmp_path, capsys
     ):
-        self._stubs(monkeypatch, tmp_path)
+        self._stubs(monkeypatch, tmp_path, python=True)
         starts = []
         monkeypatch.setattr(
             whatsapp_mod,

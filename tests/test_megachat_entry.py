@@ -2,21 +2,50 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
 from unittest.mock import patch
+
+import pytest
 
 import megachat
 
 ROOT = Path(__file__).resolve().parent.parent
 
 
-def test_serve_dispatches_to_server_main():
+def test_serve_dispatches_to_server_main(monkeypatch):
+    monkeypatch.setenv("MEGACHAT_SERVER", "python")
     with patch("server.main.serve", return_value=7) as serve:
         rc = megachat.main(["serve", "--no-web", "--debug"])
     assert rc == 7
     serve.assert_called_once_with(["--no-web", "--debug"])
+
+
+def test_serve_execs_megachatd_by_default(monkeypatch):
+    monkeypatch.setenv("MEGACHATD_BIN", "/opt/megachatd")
+    with (
+        patch("os.execv", side_effect=SystemExit(0)) as execv,
+        patch("server.main.serve") as serve,
+        pytest.raises(SystemExit),
+    ):
+        megachat.main(["serve", "--no-web"])
+    execv.assert_called_once_with(
+        "/opt/megachatd",
+        ["/opt/megachatd", "serve", "--no-web", "--project-dir", str(ROOT)],
+    )
+    serve.assert_not_called()
+
+
+def test_serve_without_megachatd_reports_and_fails(monkeypatch, capsys):
+    monkeypatch.delenv("MEGACHATD_BIN", raising=False)
+    monkeypatch.setattr("launcher.serverbin.shutil.which", lambda name: None)
+    monkeypatch.setattr("launcher.serverbin.REPO_BIN_REL", Path("nope/megachatd"))
+    with patch("os.execv") as execv:
+        assert megachat.main(["serve"]) == 1
+    execv.assert_not_called()
+    assert "megachatd non trovato" in capsys.readouterr().err
 
 
 def test_other_args_go_to_the_tui():
@@ -57,6 +86,7 @@ def test_in_process_tui_refuses_when_lock_is_held(capsys):
 def _run(*args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [sys.executable, *args],
+        env={**os.environ, "MEGACHAT_SERVER": "python"},
         cwd=ROOT,
         capture_output=True,
         text=True,

@@ -27,6 +27,9 @@ TMP=$(mktemp -d /tmp/mcXXXX)
 export HOME=$TMP/home XDG_DATA_HOME=$TMP/home/share
 export MEGACHAT_SOCKET=$TMP/s.sock MEGACHAT_LOCK_FILE=$TMP/l
 export SIGNAL_ENABLED=0 WHATSAPP_API_PORT=1 TERM=${TERM:-xterm}
+# This smoke exercises the Python server (megachat.py serve); megachatd has its
+# own black-box suite (`make contract-test`).
+export MEGACHAT_SERVER=python
 unset XDG_RUNTIME_DIR XDG_STATE_HOME
 mkdir -p "$HOME"
 LOCK=$MEGACHAT_LOCK_FILE SK=$MEGACHAT_SOCKET RT=$TMP/s.json

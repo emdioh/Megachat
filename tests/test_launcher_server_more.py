@@ -61,7 +61,18 @@ class TestPgrep:
 
 
 class TestStatus:
+    def test_megachatd_status_has_no_waha_line(self, monkeypatch, tmp_path, capsys):
+        monkeypatch.setattr(server, "LOCK_FILE", tmp_path / "no.lock")
+        monkeypatch.setattr(server, "_pgrep", lambda pattern: False)
+        monkeypatch.setattr(server, "_docker_container_running", lambda name: False)
+        monkeypatch.setattr(
+            server, "port_listening", lambda port, host="127.0.0.1": False
+        )
+        assert server.status() == 0
+        assert "WAHA" not in capsys.readouterr().out
+
     def test_reports_all_off(self, monkeypatch, tmp_path, capsys):
+        monkeypatch.setenv("MEGACHAT_SERVER", "python")
         monkeypatch.setattr(server, "LOCK_FILE", tmp_path / "no.lock")
         monkeypatch.setattr(server, "_pgrep", lambda pattern: False)
         monkeypatch.setattr(server, "_docker_container_running", lambda name: False)
@@ -87,7 +98,7 @@ class TestStatus:
         monkeypatch.setattr(whatsapp_mod, "session_status", lambda timeout=3: "WORKING")
         assert server.status() == 0
         out = capsys.readouterr().out
-        assert f"Server: ATTIVO (pid {os.getpid()})" in out
+        assert f"Server: ATTIVO (pid {os.getpid()}, " in out
         assert "daemon signal-cli: attivo" in out
         assert "WAHA: attivo" in out
         assert "in ascolto su 0.0.0.0:4242" in out
@@ -120,14 +131,14 @@ class TestStopAll:
         monkeypatch.setattr(server, "stop_server", lambda: True)
         monkeypatch.setattr(whatsapp_mod, "COMPOSE_FILE", "compose.yml")
         monkeypatch.setattr(server.subprocess, "run", lambda *a, **k: _cp(a[0], 0))
-        assert server.stop_all() == 0
+        assert server.stop_all(whatsapp=True) == 0
         assert "WAHA fermato" in capsys.readouterr().out
 
     def test_reports_waha_was_not_running(self, monkeypatch, capsys):
         monkeypatch.setattr(server, "stop_server", lambda: True)
         monkeypatch.setattr(whatsapp_mod, "COMPOSE_FILE", "compose.yml")
         monkeypatch.setattr(server.subprocess, "run", lambda *a, **k: _cp(a[0], 1))
-        assert server.stop_all() == 0
+        assert server.stop_all(whatsapp=True) == 0
         assert "WAHA non era attivo" in capsys.readouterr().out
 
 
@@ -144,6 +155,7 @@ class _FakeProc:
 @pytest.fixture
 def start_env(monkeypatch, tmp_path):
     """Isolate start_all from tmux, the real lock, the log and real sleeping."""
+    monkeypatch.setenv("MEGACHATD_BIN", "/opt/megachatd")
     monkeypatch.setattr(whatsapp_mod, "start", lambda **k: 0)
     monkeypatch.setattr(whatsapp_mod, "session_status", lambda timeout=3: "WORKING")
     monkeypatch.setattr(server, "LOCK_FILE", tmp_path / "signal-tui.lock")
@@ -186,7 +198,44 @@ class TestStartAll:
         out = capsys.readouterr().out
         assert "10.0.0.5:4242" in out
         assert "tok123" in out
-        assert "Sessione WhatsApp connessa." in out
+        assert "WAHA" not in out  # megachatd: WhatsApp is native
+
+    def test_waha_session_reported_with_python_server_and_flag(
+        self, monkeypatch, start_env, capsys
+    ):
+        monkeypatch.setenv("MEGACHAT_SERVER", "python")
+        monkeypatch.setattr(
+            server, "port_listening", lambda port, host="127.0.0.1": True
+        )
+        assert server.start_all(whatsapp=True) == 0
+        assert "Sessione WhatsApp connessa." in capsys.readouterr().out
+
+    def test_one_time_notice_from_the_server_output_is_shown(
+        self, monkeypatch, start_env, capsys
+    ):
+        monkeypatch.setattr(
+            server, "port_listening", lambda port, host="127.0.0.1": True
+        )
+        server.SERVER_LOG.write_text(
+            "ℹ️  WhatsApp: la sessione WAHA non è migrabile. Collega di nuovo.\n"
+            "other line\n",
+            encoding="utf-8",
+        )
+        # The notice was written by *this* run: after the offset taken at spawn.
+        real_popen = server.subprocess.Popen
+
+        def popen(cmd, **kw):
+            proc = real_popen(cmd, **kw)
+            with open(server.SERVER_LOG, "a", encoding="utf-8") as log:
+                log.write("ℹ️  WhatsApp: nuovo avviso\nrumore\n")
+            return proc
+
+        monkeypatch.setattr(server.subprocess, "Popen", popen)
+        assert server.start_all() == 0
+        out = capsys.readouterr().out
+        assert "WhatsApp: nuovo avviso" in out
+        assert "rumore" not in out
+        assert "non è migrabile" not in out  # earlier runs' output stays quiet
 
     def test_skips_token_when_print_token_is_false(
         self, monkeypatch, start_env, capsys
@@ -207,17 +256,35 @@ class TestStartAll:
         )
         assert server.start_all() == 0
         ((cmd, kwargs),) = start_env
+        assert cmd == [
+            "/opt/megachatd",
+            "serve",
+            "--web-port",
+            "4242",
+            "--web-host",
+            "0.0.0.0",
+            "--project-dir",
+            str(server.PROJECT_DIR),
+        ]
+        assert kwargs["start_new_session"] is True
+        assert kwargs["cwd"] == server.PROJECT_DIR
+
+    def test_python_fallback_spawns_the_old_server(self, monkeypatch, start_env):
+        monkeypatch.setenv("MEGACHAT_SERVER", "python")
+        monkeypatch.setattr(
+            server, "port_listening", lambda port, host="127.0.0.1": True
+        )
+        assert server.start_all() == 0
+        ((cmd, _kwargs),) = start_env
         assert cmd[0].endswith(".venv/bin/python")
         assert cmd[1:] == [
-            "megachat.py",
+            str(server.PROJECT_DIR / "megachat.py"),
             "serve",
             "--web-port",
             "4242",
             "--web-host",
             "0.0.0.0",
         ]
-        assert kwargs["start_new_session"] is True
-        assert kwargs["cwd"] == server.PROJECT_DIR
 
     def test_stops_previous_instance_before_starting(self, monkeypatch, start_env):
         order = []

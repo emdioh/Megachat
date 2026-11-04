@@ -13,7 +13,7 @@
 
 PYTHON ?= python
 
-.PHONY: test lint typecheck coverage format-check check live-test live-test-manual smoke contract-test
+.PHONY: test lint typecheck coverage format-check check live-test live-test-manual smoke contract-test megachatd
 
 # Esegue l'intera suite in tests/ — radice definita da testpaths.
 test:
@@ -67,3 +67,8 @@ smoke:
 # points at a binary. Needs Go; ~1 minute (heartbeat tests wait 5 s each).
 contract-test:
 	$(PYTHON) -m pytest tests/contract -p no:cacheprovider
+
+# Compila il server Go: megachatd/bin/megachatd (usato da launcher e TUI).
+# Serve Go (versione minima in megachatd/go.mod).
+megachatd:
+	cd megachatd && go build -o bin/megachatd ./cmd/megachatd

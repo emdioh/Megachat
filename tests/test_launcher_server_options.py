@@ -1,4 +1,4 @@
-"""``launcher.py server`` options passed through to ``megachat serve``."""
+"""``launcher.py server`` options passed through to ``megachatd serve``."""
 
 from __future__ import annotations
 
@@ -26,6 +26,8 @@ class _FakeProc:
 def env(monkeypatch, tmp_path):
     """Isolate start_all/stop_all from WAHA, tmux, the real lock and sleeping."""
     calls = {"waha": [], "spawn": [], "docker": []}
+    monkeypatch.setenv("MEGACHATD_BIN", "/opt/megachatd")
+    monkeypatch.setenv("MEGACHAT_SERVER", "megachatd")
     monkeypatch.setattr(whatsapp_mod, "start", lambda **k: calls["waha"].append(k) or 0)
     monkeypatch.setattr(whatsapp_mod, "session_status", lambda timeout=3: "WORKING")
     monkeypatch.setattr(server, "LOCK_FILE", tmp_path / "signal-tui.lock")
@@ -53,8 +55,6 @@ def env(monkeypatch, tmp_path):
 class TestServeArgs:
     def test_defaults_match_the_historical_command(self):
         assert ServeOptions().serve_args() == [
-            "megachat.py",
-            "serve",
             "--web-port",
             "4242",
             "--web-host",
@@ -71,8 +71,6 @@ class TestServeArgs:
             debug=True,
         )
         assert opts.serve_args() == [
-            "megachat.py",
-            "serve",
             "--web-port",
             "8080",
             "--web-host",
@@ -85,7 +83,7 @@ class TestServeArgs:
 
     def test_no_web_drops_the_web_flags(self):
         opts = ServeOptions(no_web=True, web_no_auth=True, no_socket=True)
-        assert opts.serve_args() == ["megachat.py", "serve", "--no-web", "--no-socket"]
+        assert opts.serve_args() == ["--no-web", "--no-socket"]
 
     @pytest.mark.parametrize(
         ("host", "probe"),
@@ -119,7 +117,13 @@ class TestStartWithOptions:
         )
         opts = ServeOptions(web_port=8080, web_no_auth=True)
         assert server.start_all(opts=opts) == 0
-        assert env["spawn"][0][1:] == opts.serve_args()
+        assert env["spawn"][0] == [
+            "/opt/megachatd",
+            "serve",
+            *opts.serve_args(),
+            "--project-dir",
+            str(server.PROJECT_DIR),
+        ]
         assert probed == [(8080, "127.0.0.1")]
         out = capsys.readouterr().out
         assert "http://10.0.0.5:8080" in out
@@ -159,12 +163,41 @@ class TestStartWithOptions:
         assert server.start_all(opts=ServeOptions(no_web=True)) == 0
         assert "senza Web UI" in capsys.readouterr().out
 
-    def test_no_whatsapp_skips_waha(self, monkeypatch, env):
+    def test_waha_is_not_started_by_default(self, monkeypatch, env):
         monkeypatch.setattr(
             server, "port_listening", lambda port, host="127.0.0.1": True
         )
-        assert server.start_all(whatsapp=False) == 0
+        assert server.start_all() == 0
         assert env["waha"] == []
+
+    def test_waha_flag_is_ignored_with_megachatd(self, monkeypatch, env, capsys):
+        monkeypatch.setattr(
+            server, "port_listening", lambda port, host="127.0.0.1": True
+        )
+        assert server.start_all(whatsapp=True) == 0
+        assert env["waha"] == []
+        assert "WAHA non serve a megachatd" in capsys.readouterr().out
+
+    def test_waha_flag_starts_waha_with_the_python_server(self, monkeypatch, env):
+        monkeypatch.setenv("MEGACHAT_SERVER", "python")
+        monkeypatch.setattr(
+            server, "port_listening", lambda port, host="127.0.0.1": True
+        )
+        assert server.start_all(whatsapp=True) == 0
+        assert len(env["waha"]) == 1
+        assert env["spawn"][0][1:3] == [
+            str(server.PROJECT_DIR / "megachat.py"),
+            "serve",
+        ]
+
+    def test_missing_binary_is_reported_in_italian(self, monkeypatch, env, capsys):
+        monkeypatch.delenv("MEGACHATD_BIN")
+        monkeypatch.setattr(server.serverbin.shutil, "which", lambda name: None)
+        monkeypatch.setattr(server.serverbin, "REPO_BIN_REL", "nope/megachatd")
+        with pytest.raises(SystemExit):
+            server.start_all()
+        assert "megachatd non trovato" in capsys.readouterr().err
+        assert env["spawn"] == []
 
     def test_foreground_execs_serve_in_this_process(self, monkeypatch, env):
         execs = []
@@ -178,17 +211,23 @@ class TestStartWithOptions:
         opts = ServeOptions(web_port=8080)
         with pytest.raises(SystemExit):
             server.start_all(opts=opts, foreground=True)
-        assert execs[0][1:] == opts.serve_args()
+        assert execs[0] == [
+            "/opt/megachatd",
+            "serve",
+            *opts.serve_args(),
+            "--project-dir",
+            str(server.PROJECT_DIR),
+        ]
         assert env["spawn"] == []
 
 
-class TestStopKeepWhatsapp:
-    def test_keep_whatsapp_leaves_waha_running(self, env):
-        assert server.stop_all(whatsapp=False) == 0
+class TestStopWaha:
+    def test_default_leaves_waha_alone(self, env):
+        assert server.stop_all() == 0
         assert env["docker"] == []
 
-    def test_default_stops_waha(self, env):
-        assert server.stop_all() == 0
+    def test_waha_flag_brings_waha_down(self, env):
+        assert server.stop_all(whatsapp=True) == 0
         assert any("down" in cmd for cmd in env["docker"])
 
     def test_stop_removes_the_state_file(self, env):

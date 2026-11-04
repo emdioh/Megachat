@@ -179,6 +179,15 @@ def isolate_instance_lock(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Pa
     return path
 
 
+@pytest.fixture(autouse=True)
+def isolate_server_engine(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Spawn code (launcher, TUI attach, ``megachat serve``) picks megachatd
+    unless ``MEGACHAT_SERVER=python``; a developer's ``.env`` must not flip that
+    under test.  Tests set ``MEGACHATD_BIN`` / ``MEGACHAT_SERVER=python`` when
+    they need a specific engine."""
+    monkeypatch.setenv("MEGACHAT_SERVER", "megachatd")
+
+
 @pytest.fixture
 def open_media_root(monkeypatch: pytest.MonkeyPatch) -> None:
     """Let ``media.*`` operations hand out any path a test's fake manager returns.

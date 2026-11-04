@@ -60,17 +60,22 @@ This protocol applies when ending a Beads implementation workflow. It is subordi
 
 ## Build & Test
 
-_Add your build and test commands here_
-
 ```bash
-# Example:
-# npm install
-# npm test
+./install.sh                       # venv + deps + signal-cli + builds megachatd (Go) when Go is available
+make megachatd                     # build megachatd/bin/megachatd (cd megachatd && go build -o bin/megachatd ./cmd/megachatd)
+pytest tests/ -q -m "not live and not live-manual and not integration"   # Python unit tests (needs the venv)
+make contract-test                 # black-box contract tests of megachatd (builds it unless $MEGACHATD_BIN is set)
+cd megachatd && go vet ./... && go test ./...                            # Go unit tests
+python3 launcher.py server start|status|stop                            # run the server (megachatd; MEGACHAT_SERVER=python = old Python server)
 ```
 
 ## Architecture Overview
 
-_Add a brief overview of your project architecture_
+- `megachatd/` is the headless Go server: chat core + event bus + SQLite store, one package per protocol (Signal via signal-cli, WhatsApp native via whatsmeow, Telegram reusing the Telethon session).
+- Clients are the Python Textual TUI (`signal_tui.py`, `tui/`) and the web SPA (`web/`); both speak the wire contract in `megachatd/CONTRACTS.md` (operations + events) over the Unix socket (`server/socket_client.py`) or HTTP/WebSocket.
+- The single-instance lock (`/tmp/signal-tui.lock`, holds the pid) and the socket + runtime file are owned by the server; `launcher/server.py` (status/stop/start) and `server/attach.py` (TUI find-or-spawn) use them.
+- Spawning goes through `launcher/serverbin.py`: `megachatd serve ... --project-dir <repo>` (binary: `$MEGACHATD_BIN`, `megachatd/bin/megachatd`, PATH) or, with `MEGACHAT_SERVER=python`, the legacy Python server (`server/`, `protocols/`, `transcription/`, to be deleted later).
+- Contract tests (`tests/contract/`) drive the real binary only through socket/HTTP/WS; device linking uses the `link.*` ops (`link_whatsapp.py`, `device_link_screen.py`), WAHA exists only for the Python fallback (`--waha`).
 
 ## Conventions & Patterns
 

@@ -71,7 +71,38 @@ type App struct {
 
 	UploadDir string
 
+	// Notices are one-time user-facing messages (Italian) collected by Build
+	// and printed by Start, e.g. the WhatsApp re-link notice.
+	Notices []string
+
 	stopOnce sync.Once
+}
+
+// whatsappRelinkMarker records that the one-time re-link notice was shown.
+const whatsappRelinkMarker = ".whatsapp-relink-notice"
+
+// WhatsAppRelinkNotice is the one-time migration message: the old WAHA session
+// cannot be carried over to whatsmeow, so WhatsApp must be linked again by QR.
+const WhatsAppRelinkNotice = "ℹ️  WhatsApp: la sessione WAHA non è migrabile. " +
+	"Collega di nuovo WhatsApp con un QR (python3 link_whatsapp.py, oppure dalla TUI: " +
+	"Collega dispositivo). Telegram riusa la sessione esistente."
+
+// whatsappRelinkNeeded reports whether the notice is due: WhatsApp is enabled,
+// no whatsmeow.db exists yet and the notice was not shown before. It records
+// the marker, so it returns true at most once per data directory.
+func whatsappRelinkNeeded(cfg *config.Config) bool {
+	dir := cfg.DataDir()
+	if _, err := os.Stat(filepath.Join(dir, "whatsmeow.db")); err == nil {
+		return false
+	}
+	marker := filepath.Join(dir, whatsappRelinkMarker)
+	if _, err := os.Stat(marker); err == nil {
+		return false
+	}
+	if err := os.MkdirAll(dir, 0o755); err == nil {
+		_ = os.WriteFile(marker, []byte("shown\n"), 0o644)
+	}
+	return true
 }
 
 // whatsappEnabled decides whether the WhatsApp backend is registered. Python
@@ -135,6 +166,10 @@ func Build(o BuildOptions) (*App, error) {
 			return nil, err
 		}
 		if whatsappEnabled(cfg) {
+			if whatsappRelinkNeeded(cfg) {
+				a.Notices = append(a.Notices, WhatsAppRelinkNotice)
+				log.Warn(WhatsAppRelinkNotice)
+			}
 			a.WhatsApp = whatsapp.New(whatsapp.Options{Config: cfg, Store: st, Logger: log})
 			if err := register(a.WhatsApp); err != nil {
 				return nil, err
@@ -317,6 +352,9 @@ func (a *App) Start(ctx context.Context, o RunOptions, shutdown func()) *Running
 	}
 	if errf == nil {
 		errf = out
+	}
+	for _, n := range a.Notices {
+		errf("%s\n", n)
 	}
 	r := &Running{App: a}
 	runCtx, cancel := context.WithCancel(context.Background())

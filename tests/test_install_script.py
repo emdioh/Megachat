@@ -980,3 +980,159 @@ class TestAliasIsolation:
             line.endswith("launcher.py server start --no-token")
             for line in recorded_calls
         )
+
+
+class TestBuildMegachatd:
+    """install.sh builds megachatd with Go, or falls back to the Python server."""
+
+    FUNCS = (
+        "go_required_version",
+        "version_ge",
+        "use_python_server",
+        "clear_python_fallback",
+        "build_megachatd",
+    )
+
+    def _run(
+        self,
+        tmp_path: Path,
+        *,
+        go_version: str | None,
+        build_ok: bool = True,
+        env_text: str | None = None,
+        gotoolchain: str | None = None,
+    ):
+        project = tmp_path / "proj"
+        (project / "megachatd").mkdir(parents=True)
+        (project / "megachatd" / "go.mod").write_text(
+            "module x\n\ngo 1.26.0\n", encoding="utf-8"
+        )
+        if env_text is not None:
+            (project / ".env").write_text(env_text, encoding="utf-8")
+        stubs = tmp_path / "stubs"
+        stubs.mkdir()
+        go_log = tmp_path / "go.log"
+        if go_version is not None:
+            _write_stub(
+                stubs / "go",
+                "#!/bin/sh\n"
+                f'if [ "$1" = version ]; then echo "go version go{go_version} linux/amd64"; exit 0; fi\n'
+                f'echo "$PWD: $*" >> {go_log}\n'
+                f"exit {0 if build_ok else 1}\n",
+            )
+        lines = INSTALL_SCRIPT.read_text(encoding="utf-8").splitlines()
+        assigns = [
+            ln
+            for ln in lines
+            if ln.startswith(("MEGACHATD_DIR=", "MEGACHATD_FALLBACK_MARK="))
+        ]
+        funcs = "\n".join(_extract_function(INSTALL_SCRIPT, f) for f in self.FUNCS)
+        script = tmp_path / "build.sh"
+        script.write_text(
+            "set -euo pipefail\n"
+            'info() { echo "[INFO] $*"; }\nok() { echo "[OK] $*"; }\n'
+            'warn() { echo "[WARN] $*"; }\n'
+            f"PROJECT_DIR='{project}'\n" + "\n".join(assigns) + f"\n{funcs}\n"
+            "build_megachatd\n",
+            encoding="utf-8",
+        )
+        # Only the stubs (and the system tools the script needs) on PATH: a real
+        # `go` of the developer must never be picked up.
+        tools = tmp_path / "tools"
+        tools.mkdir()
+        for name in (
+            "sed",
+            "grep",
+            "sort",
+            "head",
+            "mktemp",
+            "rm",
+            "cat",
+            "touch",
+            "chmod",
+            "printf",
+        ):
+            real = shutil.which(name)
+            assert real
+            (tools / name).symlink_to(real)
+        env = {"PATH": f"{stubs}:{tools}", "HOME": str(tmp_path)}
+        if gotoolchain:
+            env["GOTOOLCHAIN"] = gotoolchain
+        bash = shutil.which("bash")
+        assert bash
+        result = subprocess.run(  # noqa: PLW1510
+            [bash, str(script)], capture_output=True, text=True, env=env, timeout=30
+        )
+        return result, project, go_log
+
+    def test_builds_with_the_makefile_command(self, tmp_path: Path):
+        result, project, go_log = self._run(tmp_path, go_version="1.26.2")
+        assert result.returncode == 0, result.stderr
+        assert "megachatd compilato" in result.stdout
+        assert go_log.read_text().strip() == (
+            f"{project}/megachatd: build -o bin/megachatd ./cmd/megachatd"
+        )
+        assert not (project / ".env").exists()
+
+    def test_missing_go_warns_in_italian_and_sets_python_fallback(self, tmp_path: Path):
+        result, project, _ = self._run(tmp_path, go_version=None)
+        assert result.returncode == 0, result.stderr
+        assert "[WARN] Go non trovato" in result.stdout
+        assert "MEGACHAT_SERVER=python" in (project / ".env").read_text()
+        assert (project / ".env").stat().st_mode & 0o777 == 0o600
+
+    def test_old_go_without_toolchain_download_falls_back(self, tmp_path: Path):
+        result, project, go_log = self._run(
+            tmp_path, go_version="1.24.7", gotoolchain="local"
+        )
+        assert result.returncode == 0, result.stderr
+        assert "richiede Go 1.26.0+" in result.stdout
+        assert not go_log.exists()
+        assert "MEGACHAT_SERVER=python" in (project / ".env").read_text()
+
+    def test_old_go_may_download_its_toolchain(self, tmp_path: Path):
+        result, _, go_log = self._run(tmp_path, go_version="1.24.7")
+        assert result.returncode == 0, result.stderr
+        assert "scaricherà la toolchain" in result.stdout
+        assert go_log.exists()
+
+    def test_failed_build_falls_back(self, tmp_path: Path):
+        result, project, _ = self._run(tmp_path, go_version="1.26.0", build_ok=False)
+        assert result.returncode == 0, result.stderr
+        assert "Compilazione di megachatd fallita" in result.stdout
+        assert "MEGACHAT_SERVER=python" in (project / ".env").read_text()
+
+    def test_build_removes_the_fallback_it_wrote_and_keeps_the_rest(
+        self, tmp_path: Path
+    ):
+        mark = "# Scritto da install.sh: Go non disponibile, uso il server Python"
+        result, project, _ = self._run(
+            tmp_path,
+            go_version="1.26.0",
+            env_text=f"KEEP=1\n\n{mark}\nMEGACHAT_SERVER=python\n",
+        )
+        assert result.returncode == 0, result.stderr
+        text = (project / ".env").read_text()
+        assert "MEGACHAT_SERVER" not in text
+        assert "KEEP=1" in text
+
+    def test_users_own_python_choice_is_kept(self, tmp_path: Path):
+        result, project, _ = self._run(
+            tmp_path, go_version="1.26.0", env_text="MEGACHAT_SERVER=python\n"
+        )
+        assert result.returncode == 0, result.stderr
+        assert (project / ".env").read_text() == "MEGACHAT_SERVER=python\n"
+
+
+class TestWahaIsOptIn:
+    def test_help_lists_waha_flags_not_a_default_docker_step(self, tmp_path: Path):
+        out = _run_install(tmp_path, "--help").stdout
+        assert "--waha" in out
+        assert "--check-waha" in out
+        assert "megachatd" in out
+
+    def test_default_run_never_touches_docker(self, tmp_path: Path):
+        text = INSTALL_SCRIPT.read_text(encoding="utf-8")
+        main = text[text.index("# ─── Esecuzione principale") :]
+        assert 'if [ "$DO_WHATSAPP" -eq 1 ]' not in main.split("# 5.5")[0]
+        assert "Hai Docker installato" not in text

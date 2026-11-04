@@ -80,7 +80,8 @@ A terminal-based (TUI) multi-protocol messaging client built with [Textual](http
 | **Java 25 (JRE)** | Signal | Required by the `signal-cli` JVM build. Without it, Signal will not start. |
 | **signal-cli** (JVM build) in `./bin/` | Signal | Downloaded automatically by `install.sh`; see [Installation](#installation). |
 | **requirements-web.txt** | Web UI (optional) | Installed by default by install.sh (skip with --no-web). Never in requirements.txt by design. |
-| **Docker + Docker Compose** | WhatsApp | Runs the WAHA container. Skip if you only use Signal. |
+| **Go** (version in `megachatd/go.mod`) | The server (`megachatd`) | `install.sh` builds it (`make megachatd`). Without Go, `install.sh` warns and falls back to the Python server (`MEGACHAT_SERVER=python`). |
+| **Docker + Docker Compose** | WAHA only | Not needed: WhatsApp is native in `megachatd`. Only the Python-server fallback uses WAHA (`./install.sh --waha`). |
 | **catimg** | Image rendering | Optional; falls back to text placeholders if missing. On kitty >= 0.20 images render natively, no `catimg` needed — see [Native inline images](#native-inline-images-kitty-graphics-protocol). |
 | **A linked account** | Signal and/or WhatsApp and/or Telegram | Via `link_account.py` / `link_whatsapp.py` or the TUI `Ctrl+L` — see [Device linking](#device-linking). |
 
@@ -92,8 +93,10 @@ A terminal-based (TUI) multi-protocol messaging client built with [Textual](http
 ### Option A — Automatic installation (recommended)
 
 The easiest way is to use the provided `install.sh` script, which checks prerequisites, downloads the
-correct `signal-cli` build, optionally starts the WAHA Docker container for WhatsApp, creates a
-virtual environment and installs the Python dependencies. By default it also creates or updates
+correct `signal-cli` build, creates a virtual environment, installs the Python dependencies and
+builds the Go server `megachatd/bin/megachatd` (when Go is available; otherwise it prints a warning
+in Italian and writes `MEGACHAT_SERVER=python` to `.env`, so the old Python server is used).
+There is no Docker or WAHA step any more. By default it also creates or updates
 `config.json`, enables the local Web UI on `127.0.0.1:4242`, and generates a secure Bearer token
 without overwriting existing settings:
 
@@ -110,13 +113,23 @@ Supported options:
 ./install.sh --version 0.14.7     # download a specific signal-cli version
 ./install.sh --skip-signal-cli    # skip downloading signal-cli (if already present)
 ./install.sh --update             # update signal-cli to the latest version
-./install.sh --whatsapp           # start the WAHA Docker container for WhatsApp
-./install.sh --check-whatsapp     # check WhatsApp prerequisites (Docker, ports, firewall)
+./install.sh --waha               # Python-server fallback only: also start the WAHA Docker container
+./install.sh --check-waha         # check WAHA prerequisites (Docker, ports, firewall)
 ./install.sh --no-web             # skip Web UI dependencies and configuration
 ./install.sh --aliases            # configure the Web UI and install only its shell aliases
 ./install.sh --gmail              # configure only the optional Gmail tab (safe after git pull)
 ./install.sh --help               # show usage
 ```
+
+The server is built and run like this (the launcher and the TUI do it for you):
+
+```bash
+make megachatd                                   # = cd megachatd && go build -o bin/megachatd ./cmd/megachatd
+megachatd/bin/megachatd serve --project-dir .    # the headless server (what `megachat serve` starts)
+```
+
+Binary lookup, in order: `$MEGACHATD_BIN`, `<repo>/megachatd/bin/megachatd`, `megachatd` on `PATH`.
+Escape hatch: `MEGACHAT_SERVER=python` (environment or `.env`) runs the old Python server instead.
 
 ### Option B — Manual installation
 
@@ -200,26 +213,50 @@ Next, optionally enable the extra backends:
 
 ### Enabling the WhatsApp backend (optional)
 
-WhatsApp is an **optional** backend that talks to a lightweight WhatsApp HTTP API.
-The recommended way is to run the official **WAHA** (`devlikeapro/waha`) container
-via Docker Compose — **no Node.js to install, no manual service to run**. If it
-is not configured/started, the client runs exactly as before (Signal only) and
-gracefully skips WhatsApp.
+WhatsApp is **native** in `megachatd` (whatsmeow): no Docker, no WAHA, no Node.js. Enable it with
+`WHATSAPP_ENABLED=1` (environment or `.env`) or `"whatsapp_enabled": true` in `config.json`, restart
+the server and link the phone with a QR code:
 
-#### One-command startup (Docker)
+```bash
+echo 'WHATSAPP_ENABLED=1' >> .env
+python3 launcher.py server start      # (re)start the server so it registers the backend
+python3 link_whatsapp.py              # prints a QR to scan: WhatsApp > Linked devices
+```
+
+`link_whatsapp.py` (like the TUI's `Ctrl+L`) talks to the server through its `link.*` operations
+and starts the server if none is running. The linked device is stored in
+`~/.local/share/signal-tui-client/whatsmeow.db`. If WhatsApp is not enabled the script says how to
+enable it. Other settings: `WHATSAPP_MEDIA_DIR` / `whatsapp_media_dir` (media download dir).
+
+> **Coming from WAHA?** The WAHA session cannot be migrated. The first time `megachatd` starts with
+> WhatsApp enabled and no `whatsmeow.db`, it prints (once, in Italian) that WhatsApp must be linked
+> again with a QR; `launcher.py server start` shows the notice. Telegram needs nothing: the existing
+> Telethon session is reused.
+
+### WAHA (only for the Python-server fallback)
+
+With `MEGACHAT_SERVER=python` the old Python server talks to a WhatsApp HTTP API, the official
+**WAHA** container (`devlikeapro/waha`, `docker-compose.yml`). It is never started by default; ask for
+it explicitly:
+
+```bash
+./install.sh --waha                       # creates .env credentials and starts WAHA
+python3 launcher.py server start --waha   # (Python server only) start WAHA before the server
+python3 launcher.py server stop --waha    # ... and bring it down with the server
+docker compose up -d                      # or by hand: WAHA on http://127.0.0.1:3005
+```
+
+With megachatd these flags are ignored (`server start --waha` says so). Everything below in this
+section applies to WAHA only.
+
+#### WAHA details (Docker, credentials)
 
 ```bash
 docker compose up -d            # start WAHA (WhatsApp HTTP API) on http://127.0.0.1:3005 — no CPU/RAM caps
 ./scripts/start_whatsapp.sh     # (optional) start + wait until the API is ready — CPU/RAM caps applied by default
 ```
 
-or use the installer:
-
-```bash
-./install.sh --whatsapp
-```
-
-`./scripts/start_whatsapp.sh` and `./install.sh --whatsapp` both apply the WAHA container's CPU/RAM
+`./scripts/start_whatsapp.sh` and `./install.sh --waha` both apply the WAHA container's CPU/RAM
 caps (1.5 CPU / 4GB RAM) by default; pass `--no-docker-limits` to either to skip them. A bare
 `docker compose up -d` never applies the caps (see [below](#running-without-cpuram-caps---no-docker-limits)).
 
@@ -229,11 +266,9 @@ preserving any existing WAHA or Telegram values. The API then listens on
 persist in `./whatsapp-data/` (git-ignored).
 On ARM hosts such as Apple Silicon, the installer selects WAHA's native `:arm`
 image; x86_64 hosts continue to use `:latest`.
-If Docker isn't installed, the configuration below still lets you point the
-backend at any compatible Baileys API.
 
 > **API key (authentication):** REST calls without the correct key return `401`.
-> `./install.sh --whatsapp` generates and persists the credentials automatically.
+> `./install.sh --waha` generates and persists the credentials automatically.
 > For a manual Docker Compose setup, copy the defaults and fill in secure values:
 >
 > ```bash
@@ -249,7 +284,7 @@ backend at any compatible Baileys API.
 
 #### Running without CPU/RAM caps (`--no-docker-limits`)
 
-`./install.sh --whatsapp`, `./scripts/start_whatsapp.sh`, `./scripts/restart_backend.sh`,
+`./install.sh --waha`, `./scripts/start_whatsapp.sh`, `./scripts/restart_backend.sh`,
 `./scripts/start_on_server.sh start`, and `./scripts/tui_handover.sh {to-server,to-local}` all layer
 `docker-compose.resources.yml` on top of `docker-compose.yml` **by default**, capping the WAHA
 container at 1.5 CPU / 4GB RAM. Pass `--no-docker-limits` to any of them to skip that, or set
@@ -257,7 +292,7 @@ container at 1.5 CPU / 4GB RAM. Pass `--no-docker-limits` to any of them to skip
 
 ```bash
 ./scripts/start_whatsapp.sh --no-docker-limits
-./install.sh --whatsapp --no-docker-limits
+./install.sh --waha --no-docker-limits
 ```
 
 > **Running inside an unprivileged Proxmox/LXC container:** those CPU/RAM caps need the memory
@@ -331,22 +366,11 @@ export WHATSAPP_MEDIA_DIR="/srv/whatsapp-media"      # local media download dir
 }
 ```
 
-#### Pair the device
+#### Pair the device (WAHA)
 
-With the API running, link the device with:
-
-```bash
-source .venv/bin/activate        # use the project venv (has qrcode + deps)
-python3 link_whatsapp.py         # prints a QR to scan with WhatsApp
-```
-
-> Tip: `link_whatsapp.py` **auto-restarts** inside `.venv/bin/python` if you run
-> it with the system python, so `python3 link_whatsapp.py` works either way.
->
-> **Alternatively**, link directly from the TUI: launch the app and press `Ctrl+L`,
-> select WhatsApp, and scan the QR code. The TUI handles the entire flow including
-> waiting for server-side contacts sync with a progress indicator. See
-> [Device linking](#device-linking).
+With the Python server and WAHA running, the WhatsApp device is paired from the TUI (`Ctrl+L`,
+WhatsApp, scan the QR) — the Python server serves the same `link.*` operations. `link_whatsapp.py`
+works the same way against either server. See [Device linking](#device-linking).
 
 ### Enabling the Telegram backend (optional)
 
@@ -401,14 +425,14 @@ just prefer not to shell out.
 |---|---|---|
 | Full install | `./install.sh [options]` | `python3 launcher.py install [options]` |
 | Shell aliases only | `./install.sh --aliases` | `python3 launcher.py aliases` |
-| Start/stop WAHA | `./scripts/start_whatsapp.sh [--no-wait\|--stop]` | `python3 launcher.py whatsapp start\|stop [--no-wait]` |
-| Restart signal-cli + WAHA | `./scripts/restart_backend.sh [--no-wait]` | `python3 launcher.py backend-restart [--no-wait]` |
+| Start/stop WAHA (Python-server fallback only) | `./scripts/start_whatsapp.sh [--no-wait\|--stop]` | `python3 launcher.py whatsapp start\|stop [--no-wait]` |
+| Restart signal-cli (+ WAHA with `--waha`) | `./scripts/restart_backend.sh [--no-wait]` | `python3 launcher.py backend-restart [--no-wait] [--waha]` |
 | Run the headless server on this machine (also disaster recovery on the remote one) | `./scripts/start_on_server.sh {start\|stop\|status}` | `python3 launcher.py server start\|stop\|status` (see [Headless server](#headless-server-megachat-serve)) |
-| Local ↔ remote handover (moves `megachat serve`) | `./scripts/tui_handover.sh {to-server\|to-local\|status}` | `python3 launcher.py handover to-server\|to-local\|status` |
+| Local ↔ remote handover (moves the headless server) | `./scripts/tui_handover.sh {to-server\|to-local\|status}` | `python3 launcher.py handover to-server\|to-local\|status` |
 | CPU/I-O profiling | `./profiling/run_pyspy.sh` / `run_strace.sh` `[duration]` | `python3 launcher.py profile pyspy\|strace [duration]` |
 | Regression tests | `./tests/run_regression_tests.sh` | `python3 launcher.py test` |
 
-The handover and `start_on_server.sh` start and stop the detached headless server (`megachat serve`,
+The handover and `launcher.py server` start and stop the detached headless server (`megachatd serve`,
 web on `0.0.0.0:4242`, Unix socket enabled), not a TUI inside tmux. Stopping is SIGINT to the lock pid,
 waiting for it to exit (a legacy tmux `tui` session is still killed, never started); if the server does
 not stop, the command aborts instead of risking two servers. To work interactively on the target
@@ -462,7 +486,7 @@ line or directly from the TUI.
 
 ```bash
 python3 link_account.py          # Signal
-python3 link_whatsapp.py         # WhatsApp
+python3 link_whatsapp.py         # WhatsApp (needs WHATSAPP_ENABLED=1; talks to the server via link.* ops)
 ```
 
 Each script displays a QR code. Scan it with the respective app on your phone. There is no CLI
@@ -481,13 +505,14 @@ python3 megachat.py                  # the TUI: attach to a running server, or s
 python3 signal_tui.py                # same thing
 python3 megachat.py --connect PATH   # attach to the server on this Unix socket; never start one
 python3 megachat.py --in-process     # debugging/tests: the chat core runs inside the TUI (no server)
-python3 megachat.py serve            # the headless server only (web UI, no TUI)
+python3 megachat.py serve            # the headless server only (web UI, no TUI): execs megachatd
+megachatd/bin/megachatd serve        # the same, directly (MEGACHAT_SERVER=python: the old Python server)
 ```
 
 The TUI is a client of the chat server. At startup it looks for a server on the Unix socket
 (`$MEGACHAT_SOCKET`, else `$XDG_RUNTIME_DIR/megachat/server.sock`, else
 `~/.local/state/megachat/server.sock`); if one answers it attaches, otherwise it starts
-`megachat serve` detached (same Python and checkout, no TUI, `--no-web` unless you pass `--web...`
+`megachatd serve` detached (`--project-dir <checkout>`, no TUI, `--no-web` unless you pass `--web...`
 flags or `config.json` enables the web UI), waits for its socket (up to 30 s) and attaches. Ctrl+C only
 disconnects the TUI (the server keeps running); Ctrl+Q asks what to do, see
 [Leaving the TUI](#leaving-the-tui). Any number of TUIs can attach to the same server. Web options (`--web`, `--web-port`, ...) are forwarded to a server the TUI
@@ -495,8 +520,8 @@ starts; they are ignored, with a note, when it attaches to one already running. 
 output goes to `/tmp/megachat-serve.log`, the server's own log to `/tmp/signal-tui.log` and the
 TUI's to `/tmp/megachat-tui.log`.
 
-The app starts the `signal-cli` daemon automatically on first launch (for Signal) and a webhook
-HTTP server for WhatsApp push events. See the subsections below for details on each area.
+The server starts the `signal-cli` daemon automatically on first launch (for Signal); WhatsApp
+(when enabled) runs inside it, natively. See the subsections below for details on each area.
 
 ### Leaving the TUI
 
@@ -786,8 +811,8 @@ The automatic installer enables the Web UI in `config.json`, so a normal
 | Alias | What it does |
 |---|---|
 | `web-signal-tui` | Starts the TUI with the web server on `0.0.0.0:4242`: attaches to a running server or starts one that keeps running after the TUI exits (stop it with `web-signal-tui-stop`) |
-| `web-signal-tui-bg` | Starts the headless server (`launcher.py server start`: WAHA + `megachat serve`, no TUI) as a **detached background process** and **exports** the Bearer token to your shell as `SIGNAL_TUI_WEB_TOKEN`; extra arguments go to `server start` (e.g. `web-signal-tui-bg --web-port 8080`) |
-| `web-signal-tui-stop` | Cleanly stops the background server, leaving WAHA running (`launcher.py server stop --keep-whatsapp`) |
+| `web-signal-tui-bg` | Starts the headless server (`launcher.py server start`: `megachatd serve`, no TUI) as a **detached background process** and **exports** the Bearer token to your shell as `SIGNAL_TUI_WEB_TOKEN`; extra arguments go to `server start` (e.g. `web-signal-tui-bg --web-port 8080`) |
+| `web-signal-tui-stop` | Cleanly stops the background server (`launcher.py server stop`; WAHA, if any, is left alone) |
 
 `signal-tui-bg` and `signal-tui-stop` are shorter aliases for the two background commands.
 Starting the background command is idempotent: when the server is already running it still prints
@@ -795,9 +820,9 @@ and exports the current token instead of failing.
 
 > The web server requires the optional dependencies in requirements-web.txt (installed by default; if you used --no-web: .venv/bin/pip install -r requirements-web.txt). Without them the TUI logs "optional dependencies are missing (web down)" and continues normally.
 
-### Headless server (`megachat serve`)
+### Headless server (`megachatd serve`)
 
-The web UI no longer needs the TUI (or tmux) to stay alive. `megachat serve` runs the chat core and
+The web UI no longer needs the TUI (or tmux) to stay alive. `megachatd serve` (`megachat serve`) runs the chat core and
 the web adapter without Textual, logs to `/tmp/signal-tui.log`, prints the web URL and Bearer token,
 and runs until SIGINT/SIGTERM (then stops the core and the web server, prunes the message cache and
 releases the lock).
@@ -805,27 +830,29 @@ releases the lock).
 Start, stop and inspect it through the launcher — one command for every way of running it:
 
 ```bash
-python3 launcher.py server start                         # WAHA + server, detached, web on 0.0.0.0:4242
+python3 launcher.py server start                         # megachatd, detached, web on 0.0.0.0:4242
 python3 launcher.py server start --web-host 127.0.0.1 --web-port 8080
 python3 launcher.py server start --web-host 127.0.0.1,192.168.1.10   # several interfaces
 python3 launcher.py server start --web-no-auth           # no token (trusted networks only, warns)
 python3 launcher.py server start --foreground            # in this terminal; Ctrl+C stops it
-python3 launcher.py server start --no-whatsapp --no-web  # no WAHA, no web UI (socket only)
-python3 launcher.py server status                        # server, signal-cli, WAHA, web UI address
-python3 launcher.py server stop                          # server + WAHA
-python3 launcher.py server stop --keep-whatsapp          # server only
+python3 launcher.py server start --no-web                # no web UI (socket only)
+python3 launcher.py server status                        # server (engine, pid), signal-cli, web UI address
+python3 launcher.py server stop                          # the server (--waha: also the WAHA container)
 ```
 
 `server start` options: `--web-host` (default `0.0.0.0`; comma-separate addresses to listen on
 several interfaces, or set `web.host` in `config.json` to a list such as
 `["127.0.0.1", "192.168.1.10"]`), `--web-port` (default `4242`),
-`--web-no-auth`, `--no-web`, `--socket PATH` / `--no-socket`, `--debug`, `--no-whatsapp`,
-`--foreground`, `--no-token` (don't print the token), `--no-docker-limits`. The `--web-*`,
-`--socket`, `--no-socket`, `--no-web` and `--debug` options are passed to `megachat serve`; a
+`--web-no-auth`, `--no-web`, `--socket PATH` / `--no-socket`, `--debug`, `--foreground`,
+`--no-token` (don't print the token), and, for the Python-server fallback only, `--waha` /
+`--no-docker-limits`. The `--web-*`, `--socket`, `--no-socket`, `--no-web` and `--debug` options are
+passed to `megachatd serve` (together with `--project-dir <repo>`); a
 detached server's stdout/stderr go to `/tmp/megachat-serve.log`, and its options are recorded next
 to the lock (`/tmp/signal-tui.lock.json`) so `server status` reports the real address. `start`
 restarts a server that is already running. `python3 megachat.py serve [same --web-* options]` still
-works for running the bare server by hand.
+works for running the bare server by hand (it execs megachatd, or runs the Python server with
+`MEGACHAT_SERVER=python`). `megachatd` writes the same lock file and the same Unix socket + runtime
+file as the Python server, so `status`, `stop` and the TUI's attach work unchanged.
 
 The server holds the single-instance lock (`/tmp/signal-tui.lock`, override with
 `$MEGACHAT_LOCK_FILE`); attached TUIs never take it, only `megachat --in-process` does (so it
@@ -1044,13 +1071,20 @@ make coverage                               # test + coverage (gate 68%)
 
 This suite also runs in CI (`.github/workflows/ci.yml`, Python 3.12/3.13).
 
+The Go server has its own checks:
+
+```bash
+make contract-test                          # 583 black-box tests of megachatd (socket, HTTP, WebSocket)
+cd megachatd && go vet ./... && go test ./...
+```
+
 ### Verifica end-to-end
 
 ```bash
 make smoke                                  # oppure: scripts/smoke_e2e.sh (PY=... per l'interprete)
 ```
 
-Avvia processi reali (nessun backend configurato) in un `HOME`, un lock file e un socket temporanei
+Avvia processi reali del server Python (`MEGACHAT_SERVER=python`, nessun backend configurato) in un `HOME`, un lock file e un socket temporanei
 sotto `/tmp/mcXXXX`: non tocca un'installazione vera né un'istanza in esecuzione. Scenari: `serve`
 (HTTP `/health`, `/api/status`, `/api/contacts`, `/ws`, `/ws/v2`, socket Unix con permessi 0600/0700 e
 runtime file, stop con SIGINT); TUI che avvia il server e lo lascia vivo all'uscita (Detach); seconda
@@ -1137,7 +1171,8 @@ zero rows). Never instantiate a backend outside `pytest`/the conftest: the autou
 
 ```
 signal-tui-client/
-├── megachat.py                # Entry point — `megachat serve` (headless) or the TUI
+├── megachat.py                # Entry point — `megachat serve` (execs megachatd) or the TUI
+├── megachatd/                 # Go server (whatsmeow, Telethon-session reuse): `make megachatd`
 ├── signal_tui.py              # TUI entry point — main TUI application (Textual App), multi-protocol
 ├── server/                    # Headless core (ChatCore, EventBus, lock) + `serve` mode (main.py)
 ├── backend/                   # Shared backend: SQLite persistence, signal-cli RPC/subprocess,

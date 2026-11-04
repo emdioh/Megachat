@@ -10,7 +10,8 @@ Decision tree of :func:`attach_or_spawn`:
 2. A live server answers on the default socket path (``$MEGACHAT_SOCKET`` /
    XDG / ``~/.local/state``): attach (``spawned=False``).  A server that
    answers with another wire version is an error, not a reason to spawn.
-3. Otherwise spawn ``megachat serve`` detached and connect to it as soon as
+3. Otherwise spawn the server (``megachatd serve``, or ``megachat serve`` with
+   ``MEGACHAT_SERVER=python``; see ``launcher/serverbin.py``) detached and connect to it as soon as
    its socket answers (``spawned=True``).  If the spawned process exits first
    and the instance lock is held by someone else, another TUI won the spawn
    race: keep waiting and attach to that server (``spawned=False``).  If it
@@ -32,6 +33,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from launcher import serverbin
 from server import lock
 from server.paths import default_socket_path, runtime_file_path
 from server.socket_client import IncompatibleServer, ServerUnavailable, SocketClient
@@ -109,25 +111,28 @@ def _tail(path: Path, offset: int) -> str:
 def spawn_server(
     serve_args: list[str], socket_path: Path, log_path: Path = SERVE_LOG
 ) -> tuple[subprocess.Popen, int]:
-    """Start ``megachat serve`` detached; return ``(process, log_offset)``.
+    """Start the headless server detached; return ``(process, log_offset)``.
 
-    Same interpreter and checkout as this process, a new session (it survives
+    ``megachatd serve --socket PATH ... --project-dir <repo>`` (binary lookup
+    and the ``MEGACHAT_SERVER=python`` escape hatch: :mod:`launcher.serverbin`;
+    the Python server runs with this interpreter).  A new session (it survives
     the TUI and its terminal, Ctrl+C in the TUI does not reach it), stdin from
     ``/dev/null``, stdout/stderr appended to *log_path* (*log_offset* is where
     this run's output starts).  A daemon thread reaps the child so it never
     lingers as a zombie while the TUI runs.
     """
+    try:
+        argv = serverbin.serve_command(
+            ["--socket", str(socket_path), *serve_args],
+            python=sys.executable,
+            repo=_REPO_DIR,
+        )
+    except serverbin.ServerBinaryNotFound as exc:
+        raise AttachError(str(exc)) from exc
     with open(log_path, "ab") as log:
         offset = log.tell()
         proc = subprocess.Popen(
-            [
-                sys.executable,
-                str(_REPO_DIR / "megachat.py"),
-                "serve",
-                "--socket",
-                str(socket_path),
-                *serve_args,
-            ],
+            argv,
             cwd=_REPO_DIR,
             start_new_session=True,
             stdin=subprocess.DEVNULL,

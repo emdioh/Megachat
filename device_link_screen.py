@@ -415,7 +415,7 @@ class DeviceLinkPickerScreen(ModalScreen[None]):
         """After QR is shown, poll for linking completion.
 
         Signal: monitors the ``signal-cli link`` subprocess exit code.
-        WhatsApp: polls WAHA session status; refreshes QR on expiry.
+        WhatsApp: ``link.poll`` (megachatd/whatsmeow); the server refreshes the QR on expiry.
         Both timeout after 5 minutes.
         """
         deadline = time.time() + 300  # 5 min timeout
@@ -538,7 +538,7 @@ class DeviceLinkPickerScreen(ModalScreen[None]):
         self._signal_number = result["account"]
 
     async def _check_whatsapp_done(self) -> bool:
-        """Check WAHA session status; the server renews the QR when expired."""
+        """``link.poll`` for WhatsApp; the server renews the QR when expired."""
         result = await self._poll("whatsapp")
         if result["qr"] is not None:
             try:
@@ -749,7 +749,7 @@ class DeviceLinkPickerScreen(ModalScreen[None]):
     def _protocol_unavailable_reason(self, protocol: str) -> str:
         """Explain why an optional protocol cannot start its linking flow."""
         if protocol == "whatsapp" and not self._has_whatsapp:
-            return "start or configure WAHA"
+            return "set WHATSAPP_ENABLED=1 and restart the server"
         if protocol == "telegram" and not self._has_telegram:
             return "set TELEGRAM_API_ID and TELEGRAM_API_HASH"
         return ""

@@ -1,4 +1,5 @@
-"""Restart the signal-cli daemon (for the *configured* account only) and WAHA.
+"""Restart the signal-cli daemon (for the *configured* account only) and, for the
+Python server, WAHA.
 
 Ported from ``scripts/restart_backend.sh``.
 """
@@ -12,6 +13,7 @@ import subprocess
 import time
 from pathlib import Path
 
+from . import serverbin
 from . import whatsapp as whatsapp_mod
 from .common import PROJECT_DIR, command_exists, die, http_post, info, port_listening
 
@@ -245,10 +247,17 @@ def _restart_waha(
     )
 
 
-def run(no_wait: bool, *, docker_limits: bool = True) -> int:
+def run(no_wait: bool, *, docker_limits: bool = True, waha: bool | None = None) -> int:
+    """Restart signal-cli and, when *waha* (default: only with the Python
+    server, ``MEGACHAT_SERVER=python``), WAHA; megachatd needs no WAHA."""
+    if waha is None:
+        waha = serverbin.use_python(PROJECT_DIR)
     wait = not no_wait
     signal_timeout = int(os.environ.get("SIGNAL_DAEMON_TIMEOUT_SECONDS", "30") or "30")
     api_timeout = int(os.environ.get("WAHA_API_TIMEOUT_SECONDS", "120") or "120")
     _restart_signal_daemon(wait, signal_timeout)
-    _restart_waha(wait, api_timeout, docker_limits=docker_limits)
+    if waha:
+        _restart_waha(wait, api_timeout, docker_limits=docker_limits)
+    else:
+        info("WAHA non necessario (WhatsApp è nativo in megachatd): salto.")
     return 0

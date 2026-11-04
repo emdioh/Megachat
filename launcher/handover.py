@@ -25,6 +25,7 @@ import sys
 from pathlib import Path
 
 from . import server as server_mod
+from . import serverbin
 from . import whatsapp as whatsapp_mod
 from .common import PROJECT_DIR, command_exists, die, info, ok
 
@@ -94,15 +95,36 @@ echo "server spento"
 
 def _remote_start_script(*, docker_limits: bool = True) -> str:
     limits_flag = "" if docker_limits else " --no-docker-limits"
-    serve = shlex.join([".venv/bin/python", *server_mod.SERVE_ARGS])
+    flags = shlex.join(server_mod.SERVE_ARGS)
+    py_serve = shlex.join(
+        [".venv/bin/python", "megachat.py", "serve", *server_mod.SERVE_ARGS]
+    )
     log = shlex.quote(str(server_mod.SERVER_LOG))
+    # Same choice as launcher/serverbin.py: MEGACHAT_SERVER=python (environment
+    # or .env) = Python server + WAHA; else $MEGACHATD_BIN, the repo build,
+    # megachatd on PATH.  No binary found: fail (never a silent fallback).
     return (
         _REMOTE_FUNCS
         + f"""
 cd {shlex.quote(REMOTE_PROJECT_DIR)} || {{ echo FAIL_TUI_SERVER; exit 0; }}
-python3 launcher.py whatsapp start --no-wait{limits_flag} >/dev/null 2>&1 || true
+ENGINE="${{MEGACHAT_SERVER:-}}"
+[ -n "$ENGINE" ] || ENGINE="$(sed -n 's/^MEGACHAT_SERVER=//p' .env 2>/dev/null | tail -1)"
+BIN="${{MEGACHATD_BIN:-}}"
+[ -n "$BIN" ] || {{ [ -x megachatd/bin/megachatd ] && BIN="$PWD/megachatd/bin/megachatd"; }}
+[ -n "$BIN" ] || BIN="$(command -v megachatd || true)"
+if [ "$ENGINE" = python ]; then
+    python3 launcher.py whatsapp start --no-wait{limits_flag} >/dev/null 2>&1 || true
+elif [ -z "$BIN" ]; then
+    echo "megachatd non trovato sul server (make megachatd)" >&2
+    echo "FAIL_TUI_SERVER"
+    exit 0
+fi
 stop_serve || {{ echo FAIL_TUI_SERVER; exit 0; }}
-( nohup {serve} </dev/null >>{log} 2>&1 & )
+if [ "$ENGINE" = python ]; then
+    ( nohup {py_serve} </dev/null >>{log} 2>&1 & )
+else
+    ( nohup "$BIN" serve {flags} --project-dir "$PWD" </dev/null >>{log} 2>&1 & )
+fi
 for _ in $(seq 1 {server_mod.READY_TIMEOUT_S}); do
     if lock_pid >/dev/null && (exec 3<>/dev/tcp/127.0.0.1/{server_mod.SERVER_PORT}) 2>/dev/null; then
         echo "OK_TUI_SERVER"
@@ -234,19 +256,23 @@ def to_local(*, docker_limits: bool = True) -> int:
         return 1
 
     info("Accendo il client LOCALE...")
-    if whatsapp_mod.start(no_wait=False, docker_limits=docker_limits) == 0:
-        ok("WAHA avviato e pronto")
-    else:
-        info(
-            "avvio WAHA non riuscito o timeout; provo comunque a far partire il server"
-        )
-        whatsapp_mod.start(no_wait=True, docker_limits=docker_limits)
+    if serverbin.use_python(PROJECT_DIR):
+        if whatsapp_mod.start(no_wait=False, docker_limits=docker_limits) == 0:
+            ok("WAHA avviato e pronto")
+        else:
+            info(
+                "avvio WAHA non riuscito o timeout; provo comunque a far partire il server"
+            )
+            whatsapp_mod.start(no_wait=True, docker_limits=docker_limits)
 
     if not server_mod.stop_server():
         die(f"Il server locale (pid {server_mod.server_pid()}) non si ferma.")
         return 1
     try:
         up = server_mod.spawn_and_wait()
+    except serverbin.ServerBinaryNotFound as exc:
+        die(str(exc))
+        return 1
     except OSError as exc:
         die(f"avvio server fallito in {PROJECT_DIR}: {exc}")
         return 1
@@ -256,7 +282,7 @@ def to_local(*, docker_limits: bool = True) -> int:
             f"tail -50 /tmp/signal-tui.log {server_mod.SERVER_LOG}"
         )
         return 1
-    ok(f"Server avviato (megachat serve) in {PROJECT_DIR}")
+    ok(f"Server avviato ({serverbin.engine_name(PROJECT_DIR)} serve) in {PROJECT_DIR}")
 
     ok("Handover verso il locale completato.")
     print()

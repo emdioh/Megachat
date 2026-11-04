@@ -33,6 +33,7 @@ def isolated(monkeypatch):
         "MEGACHAT_LOCK_FILE": str(lock_file),
         "SIGNAL_ENABLED": "0",
         "WHATSAPP_API_PORT": "1",  # nothing listens: no WAHA auto-detect
+        "MEGACHAT_SERVER": "python",  # these tests exercise the Python server
     }.items():
         monkeypatch.setenv(key, value)
     monkeypatch.setattr(lock, "LOCK_FILE", str(lock_file))

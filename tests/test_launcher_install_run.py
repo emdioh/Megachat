@@ -33,7 +33,7 @@ def _args(**overrides):
 
 
 @pytest.fixture
-def wired(monkeypatch):
+def wired(monkeypatch, tmp_path):
     """Stub every side-effecting helper run() calls, tracking what fired."""
     calls: dict[str, object] = {}
     monkeypatch.setattr(install, "command_exists", lambda name: True)
@@ -50,6 +50,10 @@ def wired(monkeypatch):
         install, "remove_old_versions", lambda v: calls.setdefault("removed", v)
     )
     monkeypatch.setattr(install, "install_python_deps", lambda venv, web: web)
+    monkeypatch.setattr(
+        install, "build_megachatd", lambda: calls.setdefault("megachatd", True)
+    )
+    monkeypatch.setattr(install, "PROJECT_DIR", tmp_path)
     monkeypatch.setattr(
         install, "ensure_web_config", lambda: calls.setdefault("web_config", True)
     )
@@ -136,20 +140,26 @@ class TestAliasesSoftFailure:
 
 
 class TestFinalBanner:
-    def test_suggests_docker_whatsapp_when_docker_present_and_unused(
-        self, wired, capsys
-    ):
+    def test_no_docker_suggestion_by_default(self, wired, capsys):
         install.run(_args())
         out = capsys.readouterr().out
-        assert "Hai Docker installato" in out
-        assert "--whatsapp" in out
-
-    def test_no_docker_suggestion_when_whatsapp_already_requested(self, wired, capsys):
-        install.run(_args(whatsapp=True))
-        out = capsys.readouterr().out
         assert "Hai Docker installato" not in out
+        assert "WAHA" not in out
 
-    def test_mentions_whatsapp_pairing_step_when_requested(self, wired, capsys):
-        install.run(_args(whatsapp=True))
+    def test_default_install_builds_megachatd_and_never_touches_waha(self, wired):
+        install.run(_args())
+        assert wired["megachatd"] is True
+        assert "whatsapp_setup" not in wired
+
+    def test_always_explains_native_whatsapp_pairing(self, wired, capsys):
+        install.run(_args())
         out = capsys.readouterr().out
+        assert "WHATSAPP_ENABLED=1" in out
         assert "link_whatsapp.py" in out
+
+    def test_python_fallback_note_points_to_waha_flag(self, wired, tmp_path, capsys):
+        (tmp_path / ".env").write_text("MEGACHAT_SERVER=python\n", encoding="utf-8")
+        install.run(_args())
+        out = capsys.readouterr().out
+        assert "server Python" in out
+        assert "install --waha" in out

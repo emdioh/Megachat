@@ -1,4 +1,5 @@
-"""Full installer — signal-cli download, venv, Python deps, web config.
+"""Full installer — signal-cli download, venv, Python deps, megachatd build,
+web config.
 
 Ported from ``install.sh``.
 """
@@ -7,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import secrets
 import stat
 import subprocess
@@ -34,6 +36,7 @@ from .common import (
 )
 
 BIN_DIR = PROJECT_DIR / "bin"
+MEGACHATD_DIR = PROJECT_DIR / "megachatd"
 REPO = "AsamK/signal-cli"
 REQUIRED_PYTHON = (3, 10)
 REQUIRED_JAVA_MAJOR = 25
@@ -272,6 +275,110 @@ def install_python_deps(do_venv: bool, do_web: bool) -> bool:
     return do_web
 
 
+FALLBACK_MARK = "# Scritto da install.sh: Go non disponibile, uso il server Python"
+
+
+def _version_tuple(text: str) -> tuple[int, ...]:
+    return tuple(int(p) for p in re.findall(r"\d+", text)[:3])
+
+
+def go_required_version() -> str:
+    """Minimum Go version, the ``go X.Y[.Z]`` line of ``megachatd/go.mod``."""
+    try:
+        text = (MEGACHATD_DIR / "go.mod").read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    match = re.search(r"^go\s+([0-9][0-9.]*)", text, re.MULTILINE)
+    return match.group(1) if match else ""
+
+
+def installed_go_version() -> str:
+    try:
+        out = subprocess.run(
+            ["go", "version"], capture_output=True, text=True, timeout=30, check=False
+        ).stdout
+    except (subprocess.SubprocessError, OSError):
+        return ""
+    match = re.search(r"go([0-9][0-9.]*)", out)
+    return match.group(1) if match else ""
+
+
+def use_python_server() -> None:
+    """Fallback: ``MEGACHAT_SERVER=python`` in ``.env`` (read by launcher/TUI)."""
+    env_file = PROJECT_DIR / ".env"
+    try:
+        text = env_file.read_text(encoding="utf-8") if env_file.exists() else ""
+        if re.search(r"^MEGACHAT_SERVER=", text, re.MULTILINE):
+            return  # the user already chose
+        env_file.touch(mode=0o600)
+        env_file.chmod(stat.S_IRUSR | stat.S_IWUSR)
+        with env_file.open("a", encoding="utf-8") as handle:
+            handle.write(f"\n{FALLBACK_MARK}\nMEGACHAT_SERVER=python\n")
+    except OSError as exc:
+        warn(f"Impossibile scrivere MEGACHAT_SERVER=python in {env_file}: {exc}")
+        return
+    warn(
+        f"Server Python attivo come ripiego: MEGACHAT_SERVER=python scritto in {env_file}"
+    )
+
+
+def clear_python_fallback() -> None:
+    """Remove the fallback written by :func:`use_python_server` (only that)."""
+    env_file = PROJECT_DIR / ".env"
+    try:
+        lines = env_file.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return
+    if FALLBACK_MARK not in lines:
+        return
+    kept = [ln for ln in lines if ln not in (FALLBACK_MARK, "MEGACHAT_SERVER=python")]
+    env_file.write_text("\n".join(kept) + ("\n" if kept else ""), encoding="utf-8")
+    info(f"Rimosso il ripiego MEGACHAT_SERVER=python da {env_file}")
+
+
+def build_megachatd() -> bool:
+    """Build ``megachatd/bin/megachatd`` when Go is available; else warn in
+    Italian and fall back to the Python server.  ``True`` when built."""
+    if not (MEGACHATD_DIR / "go.mod").is_file():
+        info("Sorgenti di megachatd non trovati: compilazione saltata.")
+        return False
+    want = go_required_version()
+    if not command_exists("go"):
+        warn(
+            f"Go non trovato: megachatd non può essere compilato (serve Go {want or '1.21'}+)."
+        )
+        warn(
+            "Installa Go da https://go.dev/dl/ e rilancia l'installazione per usare megachatd."
+        )
+        use_python_server()
+        return False
+    have = installed_go_version()
+    if want and have and _version_tuple(have) < _version_tuple(want):
+        if _version_tuple(have) >= (1, 21) and os.environ.get("GOTOOLCHAIN") != "local":
+            info(
+                f"Go {have} trovato, megachatd richiede Go {want}: Go scaricherà la toolchain necessaria."
+            )
+        else:
+            warn(
+                f"Go {have} trovato, ma megachatd richiede Go {want}+: aggiornalo da https://go.dev/dl/."
+            )
+            use_python_server()
+            return False
+    info("Compilazione di megachatd (go build) ...")
+    result = subprocess.run(
+        ["go", "build", "-o", "bin/megachatd", "./cmd/megachatd"],
+        cwd=MEGACHATD_DIR,
+        check=False,
+    )
+    if result.returncode != 0:
+        warn("Compilazione di megachatd fallita.")
+        use_python_server()
+        return False
+    ok(f"megachatd compilato in {MEGACHATD_DIR / 'bin' / 'megachatd'}")
+    clear_python_fallback()
+    return True
+
+
 def run_aliases_only() -> int:
     info("Aggiunta alias web…")
     ensure_web_config()
@@ -345,6 +452,8 @@ def run(args) -> int:
 
     do_web = install_python_deps(do_venv, do_web)
 
+    build_megachatd()
+
     if do_web:
         ensure_web_config()
 
@@ -368,14 +477,10 @@ def run(args) -> int:
     if do_venv:
         print("       source .venv/bin/activate")
     print("       python3 link_account.py")
-    if do_whatsapp:
-        print("  3. Collega WhatsApp (QR code):")
-        if do_venv:
-            print("       source .venv/bin/activate")
-        print("       python3 link_whatsapp.py")
-        print("  4. Avvia il client:")
-    else:
-        print("  3. Avvia il client:")
+    print("  3. (Opzionale) Abilita e collega WhatsApp (QR code, nessun Docker):")
+    print("       echo 'WHATSAPP_ENABLED=1' >> .env")
+    print("       python3 link_whatsapp.py")
+    print("  4. Avvia il client:")
     if do_venv:
         print("       source .venv/bin/activate")
     print("       python3 signal_tui.py")
@@ -383,15 +488,27 @@ def run(args) -> int:
         print("       Web UI: http://127.0.0.1:4242")
         print("       Token:  config.json → web.token")
     print()
-    if not do_whatsapp and not do_check_whatsapp and command_exists("docker"):
-        print(f"{C_YELLOW}Suggerimento:{C_RESET} Hai Docker installato.")
+    env_file = PROJECT_DIR / ".env"
+    try:
+        python_fallback = re.search(
+            r"^MEGACHAT_SERVER=python",
+            env_file.read_text(encoding="utf-8"),
+            re.MULTILINE,
+        )
+    except OSError:
+        python_fallback = None
+    if python_fallback:
         print(
-            f"  Per usare anche WhatsApp esegui:  "
-            f"{C_BOLD}python3 launcher.py install --whatsapp{C_RESET}"
+            f"{C_YELLOW}Nota:{C_RESET} stai usando il server Python "
+            "(megachatd non compilato)."
         )
         print(
-            f"  Per solo verificare i prerequisiti: "
-            f"{C_BOLD}python3 launcher.py install --check-whatsapp{C_RESET}"
+            f"  Per compilare megachatd installa Go e rilancia "
+            f"{C_BOLD}python3 launcher.py install{C_RESET}"
+        )
+        print(
+            f"  (WhatsApp con il server Python richiede WAHA: "
+            f"{C_BOLD}python3 launcher.py install --waha{C_RESET})"
         )
         print()
     return 0

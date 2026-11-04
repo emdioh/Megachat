@@ -125,7 +125,7 @@ class TestDeviceLinkPickerScreen:
         screen = DeviceLinkPickerScreen()
 
         assert screen._protocol_unavailable_reason("whatsapp") == (
-            "start or configure WAHA"
+            "set WHATSAPP_ENABLED=1 and restart the server"
         )
         assert screen._protocol_unavailable_reason("telegram") == (
             "set TELEGRAM_API_ID and TELEGRAM_API_HASH"

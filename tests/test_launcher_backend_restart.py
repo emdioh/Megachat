@@ -148,7 +148,7 @@ class TestRun:
         monkeypatch.delenv("SIGNAL_DAEMON_TIMEOUT_SECONDS", raising=False)
         monkeypatch.delenv("WAHA_API_TIMEOUT_SECONDS", raising=False)
 
-        assert backend.run(no_wait=True, docker_limits=False) == 0
+        assert backend.run(no_wait=True, docker_limits=False, waha=True) == 0
         assert calls["signal"] == (False, 30)
         assert calls["waha"] == (False, 120, False)
 
@@ -164,8 +164,27 @@ class TestRun:
         )
         monkeypatch.setenv("SIGNAL_DAEMON_TIMEOUT_SECONDS", "5")
         monkeypatch.setenv("WAHA_API_TIMEOUT_SECONDS", "9")
-        backend.run(no_wait=False)
+        backend.run(no_wait=False, waha=True)
         assert calls == {"signal": 5, "waha": 9}
+
+
+class TestRunWahaSelection:
+    def _patch(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(backend, "_restart_signal_daemon", lambda *a: None)
+        monkeypatch.setattr(backend, "_restart_waha", lambda *a, **k: calls.append(1))
+        return calls
+
+    def test_megachatd_skips_waha_by_default(self, monkeypatch):
+        calls = self._patch(monkeypatch)
+        assert backend.run(no_wait=True) == 0
+        assert calls == []
+
+    def test_python_server_restarts_waha(self, monkeypatch):
+        calls = self._patch(monkeypatch)
+        monkeypatch.setenv("MEGACHAT_SERVER", "python")
+        assert backend.run(no_wait=True) == 0
+        assert calls == [1]
 
 
 class TestConfiguredDaemonPids:

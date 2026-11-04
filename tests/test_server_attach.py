@@ -186,7 +186,7 @@ def test_serve_args_for_web():
     assert attach.serve_args_for_web(web=True) == []
 
 
-def test_spawn_server_command_and_detachment(monkeypatch, tmp_path):
+def _capture_popen(monkeypatch):
     calls = {}
 
     class P:
@@ -200,15 +200,47 @@ def test_spawn_server_command_and_detachment(monkeypatch, tmp_path):
         return P()
 
     monkeypatch.setattr(subprocess, "Popen", popen)
+    return calls
+
+
+def test_spawn_server_command_and_detachment(monkeypatch, tmp_path):
+    monkeypatch.setenv("MEGACHATD_BIN", "/opt/megachatd")
+    calls = _capture_popen(monkeypatch)
     log = tmp_path / "log"
     log.write_bytes(b"abc")
     _proc, offset = attach.spawn_server(["--no-web"], Path("/x/s.sock"), log)
     assert offset == 3
+    assert calls["cmd"] == [
+        "/opt/megachatd",
+        "serve",
+        "--socket",
+        "/x/s.sock",
+        "--no-web",
+        "--project-dir",
+        str(attach._REPO_DIR),
+    ]
+    assert calls["kw"]["cwd"] == attach._REPO_DIR
+    assert calls["kw"]["start_new_session"] is True
+    assert calls["kw"]["stdin"] == subprocess.DEVNULL
+
+
+def test_spawn_server_python_escape_hatch(monkeypatch, tmp_path):
+    monkeypatch.setenv("MEGACHAT_SERVER", "python")
+    calls = _capture_popen(monkeypatch)
+    attach.spawn_server(["--no-web"], Path("/x/s.sock"), tmp_path / "log")
     assert calls["cmd"][0] == sys.executable
     assert calls["cmd"][1].endswith("megachat.py")
     assert calls["cmd"][2:] == ["serve", "--socket", "/x/s.sock", "--no-web"]
-    assert calls["kw"]["start_new_session"] is True
-    assert calls["kw"]["stdin"] == subprocess.DEVNULL
+
+
+def test_spawn_server_without_binary_is_an_attach_error(monkeypatch, tmp_path):
+    monkeypatch.delenv("MEGACHATD_BIN", raising=False)
+    monkeypatch.setattr(attach.serverbin.shutil, "which", lambda name: None)
+    monkeypatch.setattr(attach.serverbin, "REPO_BIN_REL", Path("nope/megachatd"))
+    calls = _capture_popen(monkeypatch)
+    with pytest.raises(attach.AttachError, match="megachatd non trovato"):
+        attach.spawn_server([], Path("/x/s.sock"), tmp_path / "log")
+    assert calls == {}
 
 
 # -- the lock -------------------------------------------------------------------

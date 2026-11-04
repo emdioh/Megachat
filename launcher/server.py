@@ -1,5 +1,6 @@
-"""Start/stop/status the headless server directly on this machine (WAHA +
-``megachat serve`` as a detached background process).
+"""Start/stop/status the headless server directly on this machine
+(``megachatd serve`` as a detached background process; with
+``MEGACHAT_SERVER=python`` the old Python server, plus WAHA on request).
 
 Ported from ``scripts/start_on_server.sh`` — a disaster-recovery utility:
 if the local machine is unreachable, this can be run from a server console
@@ -17,6 +18,7 @@ import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from . import serverbin
 from . import whatsapp as whatsapp_mod
 from .common import PROJECT_DIR, command_exists, die, info, ok, port_listening, warn
 
@@ -49,8 +51,9 @@ class ServeOptions:
     debug: bool = False
 
     def serve_args(self) -> list[str]:
-        """Arguments of ``.venv/bin/python`` that start this server."""
-        args = ["megachat.py", "serve"]
+        """``serve`` flags of this server (same for megachatd and the Python
+        server); see :func:`serve_argv` for the full command."""
+        args: list[str] = []
         if self.no_web:
             args.append("--no-web")
         else:
@@ -120,12 +123,23 @@ def _python() -> str:
     return str(PROJECT_DIR / ".venv" / "bin" / "python")
 
 
+def serve_argv(opts: ServeOptions) -> list[str]:
+    """Command that starts the server: ``megachatd serve ... --project-dir
+    <repo>``, or the Python server with ``MEGACHAT_SERVER=python``.
+
+    Raises :class:`serverbin.ServerBinaryNotFound` (Italian message)."""
+    return serverbin.serve_command(
+        opts.serve_args(), python=_python(), repo=PROJECT_DIR
+    )
+
+
 def _spawn_server(opts: ServeOptions) -> subprocess.Popen:
-    """Start ``megachat serve`` detached from this terminal and session."""
+    """Start the headless server detached from this terminal and session."""
+    argv = serve_argv(opts)
     # The child inherits its own descriptor; closing ours after Popen is safe.
     with open(SERVER_LOG, "ab") as log:
         return subprocess.Popen(
-            [_python(), *opts.serve_args()],
+            argv,
             cwd=PROJECT_DIR,
             start_new_session=True,
             stdin=subprocess.DEVNULL,
@@ -198,15 +212,34 @@ def spawn_and_wait(opts: ServeOptions | None = None) -> bool:
     ``OSError`` from the spawn itself propagates.
     """
     opts = opts or ServeOptions()
+    try:
+        offset = SERVER_LOG.stat().st_size
+    except OSError:
+        offset = 0
     proc = _spawn_server(opts)
     for _ in range(READY_TIMEOUT_S):
         if proc.poll() is not None:
             return False
         if _ready(proc, opts):
             _write_state(proc.pid, opts)
+            _show_notices(offset)
             return True
         time.sleep(1)
     return False
+
+
+def _show_notices(offset: int) -> None:
+    """Print the one-time notices (lines starting with ``ℹ️``, e.g. the WhatsApp
+    re-link notice) that megachatd wrote to its output during this start."""
+    try:
+        with open(SERVER_LOG, "rb") as handle:
+            handle.seek(offset)
+            text = handle.read().decode("utf-8", "replace")
+    except OSError:
+        return
+    for line in text.splitlines():
+        if line.startswith("ℹ️"):
+            print(line)
 
 
 def _local_ip() -> str:
@@ -272,10 +305,16 @@ def start_all(
     docker_limits: bool = True,
     print_token: bool = True,
     opts: ServeOptions | None = None,
-    whatsapp: bool = True,
+    whatsapp: bool = False,
     foreground: bool = False,
 ) -> int:
+    """Restart the headless server.  *whatsapp* starts WAHA first: only for
+    the old Python server (``MEGACHAT_SERVER=python``) and ``--waha``;
+    megachatd speaks WhatsApp natively."""
     opts = opts or ServeOptions()
+    if whatsapp and not serverbin.use_python(PROJECT_DIR):
+        info("WAHA non serve a megachatd (WhatsApp è nativo): ignoro --waha.")
+        whatsapp = False
     if whatsapp:
         info("Avvio WAHA (WhatsApp HTTP API)...")
         if whatsapp_mod.start(no_wait=False, docker_limits=docker_limits) == 0:
@@ -292,7 +331,10 @@ def start_all(
             "Web UI senza token su un indirizzo raggiungibile dalla rete: chiunque "
             f"raggiunga {opts.web_host}:{opts.web_port} legge e invia messaggi."
         )
-    info(f"Avvio il server headless (megachat serve) {_describe(opts)}...")
+    info(
+        f"Avvio il server headless ({serverbin.engine_name(PROJECT_DIR)} serve) "
+        f"{_describe(opts)}..."
+    )
     # Restart semantics: stop a running instance (lock pid, SIGINT) and any
     # legacy tmux 'tui' session before taking the lock again.
     if not stop_server():
@@ -303,11 +345,19 @@ def start_all(
         return 1
     if foreground:
         # Same process, this terminal: Ctrl+C stops it cleanly.
+        try:
+            argv = serve_argv(opts)
+        except serverbin.ServerBinaryNotFound as exc:
+            die(str(exc))
+            return 1
         os.chdir(PROJECT_DIR)
         _write_state(os.getpid(), opts)  # exec keeps the pid
-        os.execv(_python(), [_python(), *opts.serve_args()])
+        os.execv(argv[0], argv)
     try:
         up = spawn_and_wait(opts)
+    except serverbin.ServerBinaryNotFound as exc:
+        die(str(exc))
+        return 1
     except OSError as exc:
         die(f"Impossibile avviare il server: {exc}")
         return 1
@@ -332,14 +382,16 @@ def start_all(
     return 1
 
 
-def stop_all(*, whatsapp: bool = True) -> int:
+def stop_all(*, whatsapp: bool = False) -> int:
+    """Stop the server; *whatsapp* also brings WAHA down (``--waha``, only
+    relevant when WAHA was started for the Python server)."""
     info("Spegnimento server (SIGINT pulito)...")
     if not stop_server():
-        die(f"Il server (pid {server_pid()}) non si ferma; WAHA lasciato acceso.")
+        die(f"Il server (pid {server_pid()}) non si ferma.")
         return 1
     ok("Server fermato")
     if not whatsapp:
-        info("WAHA lasciato acceso (--keep-whatsapp)")
+        ok("Server spento. Per riaccendere: python3 launcher.py server start")
         return 0
 
     info("Spegnimento WAHA...")
@@ -356,10 +408,20 @@ def stop_all(*, whatsapp: bool = True) -> int:
     return 0
 
 
+def _engine_of(pid: int) -> str:
+    """``megachatd`` or ``python`` for the process *pid* (from /proc)."""
+    try:
+        cmd = Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
+    except OSError:
+        return serverbin.engine_name(PROJECT_DIR)
+    exe = os.path.basename(cmd[0].decode("utf-8", "replace")) if cmd else ""
+    return "megachatd" if exe.startswith("megachatd") else "python"
+
+
 def status() -> int:
     pid = server_pid()
     if pid is not None:
-        print(f"Server: ATTIVO (pid {pid})")
+        print(f"Server: ATTIVO (pid {pid}, {_engine_of(pid)})")
     else:
         print("Server: spento")
     print(
@@ -368,7 +430,8 @@ def status() -> int:
         else "daemon signal-cli: spento"
     )
     waha_active = _docker_container_running("signal-tui-whatsapp")
-    print("WAHA: attivo" if waha_active else "WAHA: spento")
+    if waha_active or serverbin.use_python(PROJECT_DIR):
+        print("WAHA: attivo" if waha_active else "WAHA: spento")
     if waha_active:
         whatsapp_mod.describe_session(whatsapp_mod.session_status(timeout=2))
     opts = _read_state(pid)

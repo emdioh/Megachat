@@ -1,6 +1,10 @@
 #
 # docker-compose.yml — WhatsApp HTTP API (WAHA) for signal-tui-client
 #
+# ONLY for the Python-server fallback (MEGACHAT_SERVER=python). The default
+# server, megachatd, speaks WhatsApp natively and needs no Docker: this file is
+# started only on request (./install.sh --waha, launcher.py server start --waha).
+#
 # Runs ONLY the lightweight WhatsApp HTTP API container (devlikeapro/waha),
 # the official "WhatsApp HTTP API". The Python TUI runs natively on the host
 # (it is a terminal UI), and talks to this service at

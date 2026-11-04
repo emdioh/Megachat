@@ -3,8 +3,10 @@
 # install.sh — Installazione automatica di Signal TUI Client
 #
 # Scarica la build JVM completa di signal-cli (quella giusta, con il comando
-# `daemon` per il JSON-RPC), crea un virtualenv (opzionale) e installa le
-# dipendenze Python.
+# `daemon` per il JSON-RPC), crea un virtualenv (opzionale), installa le
+# dipendenze Python e compila il server megachatd (Go, se Go è disponibile;
+# altrimenti ripiega sul server Python con MEGACHAT_SERVER=python in .env).
+# WhatsApp è nativo in megachatd: niente Docker/WAHA, salvo --waha.
 #
 # Uso:
 #   ./install.sh                     # installazione completa
@@ -14,7 +16,8 @@
 #   ./install.sh --update            # aggiorna signal-cli all'ultima versione
 #   ./install.sh --no-web           # non installare le dipendenze opzionali della Web UI
 #   ./install.sh --aliases           # installa solo gli alias shell della Web UI
-#   ./install.sh --no-docker-limits  # avvia WAHA senza i cap CPU/RAM (default: applicati)
+#   ./install.sh --waha              # solo server Python: avvia anche WAHA (Docker)
+#   ./install.sh --no-docker-limits  # con --waha: senza i cap CPU/RAM (default: applicati)
 #   ./install.sh --help              # mostra questo aiuto
 #
 set -euo pipefail
@@ -70,12 +73,14 @@ Opzioni:
   --version X.Y.Z      Scarica una versione specifica di signal-cli (es. 0.14.7)
   --skip-signal-cli    Non scaricare signal-cli (se già presente in ./bin/)
   --update             Aggiorna signal-cli all'ultima versione disponibile
-  --whatsapp           Avvia il WhatsApp HTTP API (WAHA) via Docker Compose
-  --check-whatsapp     Verifica i prerequisiti WhatsApp (Docker, porte, firewall)
+  --waha               Avvia anche WAHA (WhatsApp HTTP API) via Docker Compose:
+                       serve solo al server Python (MEGACHAT_SERVER=python);
+                       megachatd ha WhatsApp nativo e non usa Docker
+  --check-waha         Verifica i prerequisiti WAHA (Docker, porte, firewall)
   --no-web            Non installare le dipendenze opzionali della Web UI (requirements-web.txt)
   --aliases            Installa solo gli alias shell della Web UI
   --gmail              Configura solo Gmail (App Password, IMAP/SMTP, .env)
-  --no-docker-limits   Avvia WAHA senza i cap CPU/RAM (default: applicati via
+  --no-docker-limits   Con --waha: avvia WAHA senza i cap CPU/RAM (default: applicati via
                        docker-compose.resources.yml; disattiva se il tuo host
                        non delega il controller cgroup memory, es. LXC senza
                        nesting=1 — vedi README)
@@ -85,9 +90,9 @@ Esempi:
   ./install.sh                          # installazione completa
   ./install.sh --no-venv                # senza virtualenv
   ./install.sh --update                 # aggiorna signal-cli
-  ./install.sh --check-whatsapp         # controlla solo prerequisiti WhatsApp
-  ./install.sh --whatsapp               # avvia WAHA (WhatsApp HTTP API)
-  ./install.sh --whatsapp --no-docker-limits  # avvia WAHA senza cap CPU/RAM
+  ./install.sh --check-waha             # controlla solo prerequisiti WAHA
+  ./install.sh --waha                   # avvia anche WAHA (solo server Python)
+  ./install.sh --waha --no-docker-limits  # avvia WAHA senza cap CPU/RAM
   ./install.sh --aliases                # installa solo gli alias della Web UI
   ./install.sh --gmail                  # configura Gmail (dopo un git pull, senza reinstallare)
 EOF
@@ -98,8 +103,12 @@ while [ $# -gt 0 ]; do
         --no-venv)          DO_VENV=0; shift ;;
         --skip-signal-cli)  DO_SIGNAL_CLI=0; shift ;;
         --update)           DO_UPDATE=1; shift ;;
-        --whatsapp)         DO_WHATSAPP=1; shift ;;
-        --check-whatsapp)   DO_CHECK_WHATSAPP=1; shift ;;
+        --waha)             DO_WHATSAPP=1; shift ;;
+        --check-waha)       DO_CHECK_WHATSAPP=1; shift ;;
+        --whatsapp)         warn "--whatsapp è obsoleto: usa --waha (WhatsApp ora è nativo in megachatd)."
+                            DO_WHATSAPP=1; shift ;;
+        --check-whatsapp)   warn "--check-whatsapp è obsoleto: usa --check-waha."
+                            DO_CHECK_WHATSAPP=1; shift ;;
         --no-web)           DO_WEB=0; shift ;;
         --aliases)          DO_ALIASES_ONLY=1; shift ;;
         --no-docker-limits) DO_DOCKER_LIMITS=0; shift ;;
@@ -651,6 +660,77 @@ install_python_deps() {
     fi
 }
 
+# ── megachatd (server Go) ──────────────────────────────────────────────────────
+
+MEGACHATD_DIR="$PROJECT_DIR/megachatd"
+MEGACHATD_FALLBACK_MARK="# Scritto da install.sh: Go non disponibile, uso il server Python"
+
+# Versione minima di Go (riga "go X.Y[.Z]" di megachatd/go.mod)
+go_required_version() {
+    sed -n 's/^go[[:space:]][[:space:]]*\([0-9][0-9.]*\).*/\1/p' "$MEGACHATD_DIR/go.mod" | head -1
+}
+
+# version_ge A B: vero se A >= B (ordinamento per versione)
+version_ge() {
+    [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | head -1)" = "$2" ]
+}
+
+# Ripiego: MEGACHAT_SERVER=python in .env (letto da launcher e TUI)
+use_python_server() {
+    local env_file="$PROJECT_DIR/.env"
+    if [ -f "$env_file" ] && grep -q '^MEGACHAT_SERVER=' "$env_file"; then
+        return 0   # scelta già fatta dall'utente
+    fi
+    touch "$env_file"
+    chmod 600 "$env_file"
+    printf '\n%s\nMEGACHAT_SERVER=python\n' "$MEGACHATD_FALLBACK_MARK" >> "$env_file"
+    warn "Server Python attivo come ripiego: MEGACHAT_SERVER=python scritto in $env_file"
+}
+
+# Toglie il ripiego scritto da noi (solo quello) quando megachatd è disponibile
+clear_python_fallback() {
+    local env_file="$PROJECT_DIR/.env" tmp
+    [ -f "$env_file" ] && grep -qxF "$MEGACHATD_FALLBACK_MARK" "$env_file" || return 0
+    tmp="$(mktemp)"
+    grep -vxF -e "$MEGACHATD_FALLBACK_MARK" -e 'MEGACHAT_SERVER=python' "$env_file" > "$tmp" || true
+    command cat "$tmp" > "$env_file"
+    rm -f "$tmp"
+    info "Rimosso il ripiego MEGACHAT_SERVER=python da $env_file"
+}
+
+build_megachatd() {
+    local want have
+    if [ ! -f "$MEGACHATD_DIR/go.mod" ]; then
+        info "Sorgenti di megachatd non trovati: compilazione saltata."
+        return 0
+    fi
+    want="$(go_required_version)"
+    if ! command -v go >/dev/null 2>&1; then
+        warn "Go non trovato: megachatd non può essere compilato (serve Go ${want:-1.21}+)."
+        warn "Installa Go da https://go.dev/dl/ e rilancia ./install.sh per usare megachatd."
+        use_python_server
+        return 0
+    fi
+    have="$(go version | sed -n 's/.*go\([0-9][0-9.]*\).*/\1/p' | head -1)"
+    if [ -n "$want" ] && [ -n "$have" ] && ! version_ge "$have" "$want"; then
+        if version_ge "$have" "1.21" && [ "${GOTOOLCHAIN:-auto}" != "local" ]; then
+            info "Go $have trovato, megachatd richiede Go $want: Go scaricherà la toolchain necessaria."
+        else
+            warn "Go $have trovato, ma megachatd richiede Go $want+: aggiornalo da https://go.dev/dl/."
+            use_python_server
+            return 0
+        fi
+    fi
+    info "Compilazione di megachatd (go build) ..."
+    if (cd "$MEGACHATD_DIR" && go build -o bin/megachatd ./cmd/megachatd); then
+        ok "megachatd compilato in $MEGACHATD_DIR/bin/megachatd"
+        clear_python_fallback
+    else
+        warn "Compilazione di megachatd fallita."
+        use_python_server
+    fi
+}
+
 setup_gmail() {
     local py="$PROJECT_DIR/.venv/bin/python"
     [ -x "$py" ] || py="python3"
@@ -747,12 +827,15 @@ fi
 # 5. Installazione dipendenze Python
 install_python_deps
 
+# 5.05 Server megachatd (Go): compila, oppure ripiega sul server Python
+build_megachatd
+
 # 5.1 Configurazione Web — abilita il server al normale avvio della TUI
 if [ "$DO_WEB" -eq 1 ]; then
     ensure_web_config || die "Configurazione Web non riuscita."
 fi
 
-# 5.5 WhatsApp — check prerequisiti o avvio
+# 5.5 WAHA (solo server Python, opt-in con --waha) — check prerequisiti o avvio
 if [ "$DO_CHECK_WHATSAPP" -eq 1 ]; then
     setup_whatsapp 0
 elif [ "$DO_WHATSAPP" -eq 1 ]; then
@@ -783,18 +866,10 @@ if [ "$DO_VENV" -eq 1 ]; then
 else
     echo "       python3 link_account.py"
 fi
-if [ "$DO_WHATSAPP" -eq 1 ]; then
-    echo "  3. Collega WhatsApp (QR code):"
-    if [ "$DO_VENV" -eq 1 ]; then
-        echo "       source .venv/bin/activate"
-        echo "       python3 link_whatsapp.py"
-    else
-        echo "       python3 link_whatsapp.py"
-    fi
-    echo "  4. Avvia il client:"
-else
-    echo "  3. Avvia il client:"
-fi
+echo "  3. (Opzionale) Abilita e collega WhatsApp (QR code, nessun Docker):"
+echo "       echo 'WHATSAPP_ENABLED=1' >> .env"
+echo "       python3 link_whatsapp.py"
+echo "  4. Avvia il client:"
 if [ "$DO_VENV" -eq 1 ]; then
     echo "       source .venv/bin/activate"
 fi
@@ -805,11 +880,9 @@ if [ "$DO_WEB" -eq 1 ]; then
     echo "       Gmail (opzionale): ./install.sh --gmail  (oppure python3 scripts/gmail_setup.py)"
 fi
 echo
-if [ "$DO_WHATSAPP" -eq 0 ] && [ "$DO_CHECK_WHATSAPP" -eq 0 ]; then
-    if command -v docker >/dev/null 2>&1; then
-        echo "${C_YELLOW}Suggerimento:${C_RESET} Hai Docker installato."
-        echo "  Per usare anche WhatsApp esegui:  ${C_BOLD}./install.sh --whatsapp${C_RESET}"
-        echo "  Per solo verificare i prerequisiti: ${C_BOLD}./install.sh --check-whatsapp${C_RESET}"
-        echo
-    fi
+if [ -f "$PROJECT_DIR/.env" ] && grep -q '^MEGACHAT_SERVER=python' "$PROJECT_DIR/.env"; then
+    echo "${C_YELLOW}Nota:${C_RESET} stai usando il server Python (megachatd non compilato)."
+    echo "  Per compilare megachatd installa Go e rilancia ${C_BOLD}./install.sh${C_RESET}"
+    echo "  (WhatsApp con il server Python richiede WAHA: ${C_BOLD}./install.sh --waha${C_RESET})"
+    echo
 fi

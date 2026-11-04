@@ -6,17 +6,27 @@ unchanged clients: the wire contract is in `CONTRACTS.md`, the Go twin in `inter
 ## Build
 
 ```bash
-cd megachatd
-go build -o megachatd ./cmd/megachatd     # Go 1.26
-go vet ./... && go test -race ./...
+make megachatd                            # from the repo root: -> megachatd/bin/megachatd (git-ignored)
+# = cd megachatd && go build -o bin/megachatd ./cmd/megachatd     (Go 1.26, see go.mod)
+cd megachatd && go vet ./... && go test -race ./...
+make contract-test                        # 583 black-box tests against the real binary
 ```
+
+`./install.sh` runs the build when Go is available (and otherwise falls back to the Python server,
+see below).
 
 ## Run
 
 ```bash
-./megachatd serve [flags]
-./megachatd version
+megachatd/bin/megachatd serve [flags]
+megachatd/bin/megachatd version
 ```
+
+You normally don't run it by hand: `python3 launcher.py server start|stop|status`, `python3
+megachat.py serve` and the TUI's find-or-spawn all start `megachatd serve <flags> --project-dir
+<repo>`. Binary lookup: `$MEGACHATD_BIN`, else `<repo>/megachatd/bin/megachatd`, else `megachatd` on
+`PATH` (`launcher/serverbin.py`). Escape hatch: `MEGACHAT_SERVER=python` (environment or the repo's
+`.env`, where `install.sh` writes it when Go is missing) runs the old Python server instead.
 
 `serve` takes the flags of `megachat serve`, plus `--project-dir`:
 
@@ -40,9 +50,20 @@ instance holds the lock or an adapter cannot start. SIGINT/SIGTERM and the `serv
 operation stop the server gracefully.
 
 Backends: Signal is always registered (it auto-connects only when `signal_enabled`); Telegram when
-API credentials are configured; WhatsApp (native, whatsmeow, no WAHA) when `WHATSAPP_ENABLED=1` /
-`"whatsapp_enabled": true`, when `<data>/whatsmeow.db` exists, or when a legacy `WHATSAPP_API_URL`
-is set.
+API credentials are configured (the existing Telethon session file is reused as is); WhatsApp
+(native, whatsmeow, no WAHA) when `WHATSAPP_ENABLED=1` / `"whatsapp_enabled": true`, when
+`<data>/whatsmeow.db` exists, or when a legacy `WHATSAPP_API_URL` is set.
+
+Link WhatsApp with a QR: `python3 link_whatsapp.py` or the TUI's `Ctrl+L` (both use the `link.*`
+operations). **Migration from WAHA:** a WAHA session cannot be carried over. The first start with
+WhatsApp enabled and no `<data>/whatsmeow.db` prints one Italian notice ("ℹ️ WhatsApp: la sessione
+WAHA non è migrabile ...", also logged; marker file `<data>/.whatsapp-relink-notice`) and
+`launcher.py server start` shows it.
+
+Files shared with the Python server, so the launcher's `status`/`stop`/`start` and the TUI's attach
+work unchanged: the instance lock (`$MEGACHAT_LOCK_FILE`, default `/tmp/signal-tui.lock`, holds the
+pid; SIGINT = clean stop), the Unix socket and the runtime file `server.json` next to it (pid), and the
+log `/tmp/signal-tui.log`.
 
 ## Smoke tests
 

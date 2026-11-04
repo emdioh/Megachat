@@ -36,3 +36,6 @@ docs/CHECKLIST_MANUAL_KITTY.md
 .beads-credential-key
 .beads/proxieddb/
 *.gate.lock*
+
+# megachatd (server Go): binario compilato da `make megachatd`
+megachatd/bin/
