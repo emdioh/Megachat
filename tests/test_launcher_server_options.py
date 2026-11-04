@@ -237,8 +237,9 @@ class TestStopWaha:
 
 
 class TestAliasesUseTheLauncher:
-    def test_bg_forwards_arguments_and_stop_keeps_waha(self):
+    def test_bg_forwards_arguments_and_stop_is_plain(self):
         block = aliases._ALIASES_TEMPLATE
         assert 'server start --no-token "$@"' in block
-        assert "server stop --keep-whatsapp" in block
+        assert 'launcher.py" server stop;' in block
+        assert "--keep-whatsapp" not in block
         assert "kill -INT" not in block

@@ -116,3 +116,37 @@ class TestContentParity:
         aliases.install_aliases()
         content = (home / ".bashrc").read_text(encoding="utf-8")
         assert "__PROJECT_DIR__" not in content
+
+
+class TestNoObsoleteKeepWhatsappFlag:
+    """``server stop --keep-whatsapp`` is a no-op: new aliases no longer pass
+    it, the parser still accepts it for aliases already in users' rc files."""
+
+    def test_template_does_not_pass_the_flag(self):
+        assert "--keep-whatsapp" not in aliases._ALIASES_TEMPLATE
+
+    def test_reinstall_rewrites_a_legacy_block(self, home: Path, monkeypatch):
+        monkeypatch.setenv("SHELL", "/bin/bash")
+        legacy = (
+            f"export FOO=bar\n{aliases.BEGIN_MARKER}\n"
+            '_signal_tui_web_stop() { launcher.py server stop --keep-whatsapp; }\n'
+            f"{aliases.END_MARKER}\n"
+        )
+        (home / ".bashrc").write_text(legacy, encoding="utf-8")
+        assert aliases.install_aliases() is True
+        content = (home / ".bashrc").read_text(encoding="utf-8")
+        assert "--keep-whatsapp" not in content
+        assert "export FOO=bar" in content
+
+    def test_parser_still_accepts_the_flag(self):
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "launcher_cli_script", Path(aliases.__file__).parent.parent / "launcher.py"
+        )
+        launcher_cli = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(launcher_cli)
+        args = launcher_cli.build_parser().parse_args(
+            ["server", "stop", "--keep-whatsapp"]
+        )
+        assert args.keep_whatsapp is True and args.waha is False

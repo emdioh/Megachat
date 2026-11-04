@@ -183,6 +183,7 @@ func Build(o BuildOptions) (*App, error) {
 			log.Info("WhatsApp backend disabled (enable with WHATSAPP_ENABLED=1 in .env or \"whatsapp_enabled\": true in config.json)")
 		}
 		if cfg.TelegramEnabled() {
+			telegram.RunMarkedIDsMigration(context.Background(), cfg, st, log)
 			a.Telegram = telegram.New(telegram.Options{Config: cfg, Store: st, Logger: log})
 			if err := register(a.Telegram); err != nil {
 				return nil, err

@@ -120,3 +120,37 @@ c.call('server.shutdown')
 "
 curl -s localhost:47321/health   # while it runs
 ```
+
+## Telegram: raw vs marked contact ids (mc-zao.4.3, offline part)
+
+The Python backend listed Telegram groups/channels with the **raw positive id**
+(`str(entity.id)` in `protocols/telegram.py::_entity_to_contact`), while messages,
+reactions, receipts and `tgref:` media refs used Telethon's **marked id**
+(`str(msg.chat_id)`: `-id` for groups, `-100<id>` for channels). megachatd uses
+marked ids for both. Where a contact id is persisted outside `messages`:
+
+| Store | What Python wrote for groups/channels | Action |
+|---|---|---|
+| `messages`, `reactions` (`contact_number`, `author_key`), `transcriptions` (`tgref:<chat>:<msg>`), media file names | marked ids (all built from `msg.chat_id` / `-peer.chat_id` / `-1000000000000 - channel_id`) | none |
+| Unread/read state | only `messages.read` in SQLite, keyed by marked id | none |
+| Telegram address book | in memory only (`_address_book`), never persisted | none |
+| Shell aliases (`docs/ALIASES.md`, `launcher/aliases.py`) | shell aliases, no contact ids; the TUI has no contact-alias storage | none |
+| Pinned / archived lists | not in `config.json`; archive exists only for WhatsApp | none |
+| `config.json` `auto_transcribe_chats` (`telegram:<id>`) | **raw positive id** when set from the web UI (`PUT /api/autotranscribe/chat` with `contact.id` from the contact list); marked when set by the `/trascrizione` voice command | **migrated** |
+| Web SPA `localStorage` `signal-tui-web-drafts` (`telegram:<contact.id>`) | **raw positive id** | migrated client-side |
+| Other SPA keys (token, protocol, skin, sizes...) | no contact ids | none |
+
+**Migration** (`internal/proto/telegram/migrate.go`, run from `app.Build` when Telegram is
+configured, before the backend starts): rewrites `telegram:<raw>` in `auto_transcribe_chats`
+to the marked key. A raw id is rewritten only if exactly one of its group/channel forms is
+known (Telethon session `entities`, read-only, plus the telegram `contact_number`s in the
+store) and the id is not also a known user; unknown/ambiguous keys are left alone. If the
+marked key already exists it wins and the raw one is dropped. `config.json` is copied to
+`config.json.pre-telegram-marked-ids.bak` before the first change (never overwritten).
+It is idempotent: a second run changes nothing. Tests: `migrate_test.go`.
+
+The SPA moves old drafts in `loadContacts()` (`migrateTelegramDraftKeys` in `web/static/app.js`),
+only when the raw id is not also a listed user.
+
+Not verifiable offline: that real accounts' `entities` tables contain the groups/channels that
+have overrides (an override for a chat unknown to both session and messages is kept as-is).

@@ -35,8 +35,8 @@ _signal_tui_web_bg() {
     export SIGNAL_TUI_WEB_TOKEN
     echo "Server bg attivo — token: $SIGNAL_TUI_WEB_TOKEN"
 }
-# WAHA non viene fermata di proposito: resta attiva per i messaggi.
-_signal_tui_web_stop() { "$SIGNAL_TUI_DIR/.venv/bin/python" "$SIGNAL_TUI_DIR/launcher.py" server stop --keep-whatsapp; }
+# Ferma solo il server (megachatd); con il server Python WAHA resta attiva (serve --waha per fermarla).
+_signal_tui_web_stop() { "$SIGNAL_TUI_DIR/.venv/bin/python" "$SIGNAL_TUI_DIR/launcher.py" server stop; }
 _signal_tui_web_status() { "$SIGNAL_TUI_DIR/.venv/bin/python" "$SIGNAL_TUI_DIR/launcher.py" server status; }
 alias web-signal-tui-bg='_signal_tui_web_bg'
 alias web-signal-tui-stop='_signal_tui_web_stop'

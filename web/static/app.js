@@ -1229,6 +1229,7 @@ async function loadContacts({ quiet = false } = {}) {
   try {
     const response = await apiFetch("api/contacts");
     state.contacts = await response.json();
+    migrateTelegramDraftKeys(state.contacts);
     if (state.active) {
       const current = state.contacts.find((contact) => contact.id === state.active.id && contact.protocol === state.active.protocol);
       if (current) state.active = current;
@@ -3176,6 +3177,34 @@ const MAX_STAGED_ATTACHMENTS = 10;
 
 function draftKey(contact) {
   return `${contact.protocol}:${contact.id}`;
+}
+
+// Le vecchie bozze Telegram di gruppi/canali erano salvate con l'id grezzo
+// positivo (il vecchio server Python lo esponeva); ora i contatti usano l'id
+// "marked" di Telethon (-id per i gruppi, -100… per i canali). Sposta le
+// bozze una sola volta, solo se l'id grezzo non e' anche un utente noto.
+function migrateTelegramDraftKeys(contacts) {
+  try {
+    const telegram = contacts.filter((c) => c.protocol === "telegram");
+    const users = new Set(telegram.filter((c) => !/^-/.test(String(c.id))).map((c) => String(c.id)));
+    const drafts = loadStoredDrafts();
+    let changed = false;
+    for (const c of telegram) {
+      const id = String(c.id);
+      if (!/^-\d+$/.test(id)) continue;
+      const raw = c.extras?.is_channel && id.startsWith("-100") ? id.slice(4) : id.slice(1);
+      if (users.has(raw)) continue;
+      const oldKey = `telegram:${raw}`;
+      const newKey = `telegram:${id}`;
+      if (typeof drafts[oldKey] !== "string") continue;
+      if (typeof drafts[newKey] !== "string") drafts[newKey] = drafts[oldKey];
+      delete drafts[oldKey];
+      changed = true;
+    }
+    if (changed) localStorage.setItem(DRAFTS_KEY, JSON.stringify(drafts));
+  } catch {
+    // Storage non disponibile: niente da migrare.
+  }
 }
 
 function loadStoredDrafts() {

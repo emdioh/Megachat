@@ -1,7 +1,10 @@
-"""scripts/start_on_server.sh and scripts/tui_handover.sh: they start/stop
-the detached ``megachat serve`` (never a tmux-hosted TUI).
+"""scripts/start_on_server.sh, scripts/tui_handover.sh, scripts/restart_backend.sh
+and scripts/start_whatsapp.sh: thin wrappers of ``launcher.py`` (so they use
+megachatd, or the Python server with ``MEGACHAT_SERVER=python``), never a
+tmux-hosted TUI and never ``megachat.py serve`` by hand.
 
-The scripts run as subprocesses in a temporary project copy with stub
+The scripts run as subprocesses in a temporary project copy (with the real
+launcher linked in) with stub
 ``ssh``/``tmux``/``docker``/``pkill``/``pgrep`` on PATH, ``MEGACHAT_LOCK_FILE``
 pointing into tmp_path and HOME isolated.  Starting a real server is not
 covered here (the scripts probe the fixed port 4242): the Python launcher
@@ -33,10 +36,12 @@ def _stub(path: Path, body: str) -> None:
 def env(tmp_path):
     project = tmp_path / "project"
     (project / "scripts").mkdir(parents=True)
-    for name in SCRIPTS:
+    for name in SCRIPTS + ("restart_backend.sh", "start_whatsapp.sh"):
         (project / "scripts" / name).write_text(
             (ROOT / "scripts" / name).read_text(encoding="utf-8"), encoding="utf-8"
         )
+    (project / "launcher.py").symlink_to(ROOT / "launcher.py")
+    (project / "launcher").symlink_to(ROOT / "launcher")
     # the local part of the handover needs a git checkout marker
     (project / ".git").mkdir()
     bin_dir = tmp_path / "bin"
@@ -63,6 +68,7 @@ def env(tmp_path):
             "PATH": f"{bin_dir}:{os.environ['PATH']}",
             "MEGACHAT_LOCK_FILE": str(tmp_path / "signal-tui.lock"),
             "SIGNAL_TUI_HANDOVER_CONF": str(tmp_path / "none.conf"),
+            "MEGACHATD_BIN": str(tmp_path / "no-such-megachatd"),
         },
     }
 
@@ -102,30 +108,23 @@ def _spawn_fake_server(lock: Path) -> subprocess.Popen:
     return proc
 
 
-@pytest.mark.parametrize("name", SCRIPTS)
-def test_syntax_and_no_tmux_new_session(name):
+@pytest.mark.parametrize(
+    "name", SCRIPTS + ("restart_backend.sh", "start_whatsapp.sh")
+)
+def test_syntax(name):
     path = ROOT / "scripts" / name
     assert subprocess.run(["bash", "-n", str(path)], check=False).returncode == 0
-    text = path.read_text(encoding="utf-8")
+    assert "set -euo pipefail" in path.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("name", SCRIPTS + ("restart_backend.sh",))
+def test_scripts_delegate_to_the_launcher(name):
+    text = (ROOT / "scripts" / name).read_text(encoding="utf-8")
+    assert "launcher.py" in text
     assert "tmux new-session" not in text
     assert "signal_tui --web" not in text
-    assert "megachat.py serve --web-port 4242 --web-host 0.0.0.0" in text
-    assert "set -euo pipefail" in text
-
-
-def test_remote_heredoc_is_valid_bash():
-    text = (ROOT / "scripts" / "tui_handover.sh").read_text(encoding="utf-8")
-    parts = text.split("<<'REMOTE'\n")[1:]
-    assert len(parts) == 3  # status, to-server, to-local
-    for part in parts:
-        body = part.split("\nREMOTE\n")[0]
-        result = subprocess.run(
-            ["bash", "-n"], input=body, text=True, capture_output=True, check=False
-        )
-        assert result.returncode == 0, result.stderr
-        assert "tmux new-session" not in body
-        rms = [ln.strip() for ln in body.splitlines() if "rm " in ln]
-        assert all(r == 'rm -f "$LOCK"' for r in rms)
+    assert "megachat.py serve" not in text  # engine choice belongs to the launcher
+    assert "docker compose" not in text
 
 
 @pytest.mark.parametrize(
@@ -141,7 +140,7 @@ def test_status_without_server(env, name, args):
 def test_status_with_live_lock_holder_and_stale_lock(env):
     env["lock"].write_text(str(os.getpid()), encoding="utf-8")
     out = _run(env, "start_on_server.sh", "status").stdout
-    assert f"Server: ATTIVO (pid {os.getpid()})" in out
+    assert f"Server: ATTIVO (pid {os.getpid()}" in out
     env["lock"].write_text("999999999", encoding="utf-8")  # dead pid
     assert "Server: spento" in _run(env, "start_on_server.sh", "status").stdout
 
@@ -156,7 +155,7 @@ def test_start_on_server_stop_sigints_waits_and_clears_lock(env):
         calls = env["calls"].read_text()
         assert "tmux kill-session -t tui" in calls  # legacy cleanup kept
         assert "tmux new-session" not in calls
-        assert "docker compose" in calls
+        assert "docker" not in calls  # megachatd: WAHA left alone
     finally:
         if proc.poll() is None:
             proc.send_signal(signal.SIGKILL)
@@ -179,9 +178,10 @@ def test_to_server_stops_local_then_sends_serve_script_over_ssh(env):
         assert proc.wait(timeout=5) == 0
         assert not env["lock"].exists()
         assert "Handover verso il server completato" in result.stdout
-        assert "megachat.py" in result.stdout
         sent = env["ssh_stdin"].read_text()
-        assert "megachat.py serve --web-port 4242 --web-host 0.0.0.0" in sent
+        # same engine choice as launcher/serverbin.py, on the remote side
+        assert "megachatd/bin/megachatd" in sent and "MEGACHAT_SERVER" in sent
+        assert "--web-port 4242 --web-host 0.0.0.0" in sent
         assert "tmux new-session" not in sent
         assert "OK_TUI_SERVER" in sent
     finally:
@@ -210,3 +210,28 @@ def test_to_local_aborts_when_remote_stop_fails(env, tmp_path):
 def test_unknown_option_and_usage(env):
     assert _run(env, "start_on_server.sh", "status", "--bogus").returncode != 0
     assert _run(env, "tui_handover.sh", "bogus").returncode != 0
+
+
+def test_start_on_server_start_uses_launcher_and_reports_missing_binary(env):
+    result = _run(env, "start_on_server.sh", "start")
+    assert result.returncode != 0
+    assert "Avvio il server headless (megachatd serve)" in result.stdout
+    assert "Impossibile avviare il server" in result.stdout + result.stderr
+    assert "tmux new-session" not in (
+        env["calls"].read_text() if env["calls"].exists() else ""
+    )
+
+
+def test_start_whatsapp_explains_native_whatsapp_without_waha_flag(env):
+    result = _run(env, "start_whatsapp.sh")
+    assert result.returncode == 0
+    assert "python link_whatsapp.py" in result.stdout
+    assert "nativo" in result.stdout
+    assert not env["calls"].exists()  # docker never touched
+
+
+def test_start_whatsapp_stop_needs_waha_flag(env):
+    assert _run(env, "start_whatsapp.sh", "--stop").returncode == 0
+    assert not env["calls"].exists()
+    assert _run(env, "start_whatsapp.sh", "--waha", "--stop").returncode == 0
+    assert "docker compose" in env["calls"].read_text()

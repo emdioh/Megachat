@@ -1,17 +1,22 @@
 #!/usr/bin/env bash
 #
-# start_whatsapp.sh — Start (or ensure) the WAHA WhatsApp HTTP API via Docker
-# Compose and wait until it is reachable, so the Signal TUI can attach cleanly.
+# start_whatsapp.sh — WhatsApp è ora nativo (megachatd), non serve più WAHA.
 #
-# Usage:
-#   ./scripts/start_whatsapp.sh                    # start + wait (CPU/RAM caps applied)
-#   ./scripts/start_whatsapp.sh --no-wait          # start but don't wait
-#   ./scripts/start_whatsapp.sh --no-docker-limits # start without CPU/RAM caps
-#   ./scripts/start_whatsapp.sh --stop             # stop the container
+# Il collegamento avviene con un QR, senza Docker:
+#   python link_whatsapp.py
 #
-# WAHA_DOCKER_LIMITS=0 in the environment has the same effect as
-# --no-docker-limits (used by scripts that delegate to this one, e.g.
-# start_on_server.sh / tui_handover.sh).
+# Questo script serve solo a chi usa ancora il vecchio server Python
+# (MEGACHAT_SERVER=python) con WAHA (WhatsApp HTTP API via Docker Compose) e
+# funziona solo con --waha.
+#
+# Uso:
+#   ./scripts/start_whatsapp.sh                          # spiega e termina (nessun WAHA)
+#   ./scripts/start_whatsapp.sh --waha                   # avvia WAHA + attende (cap CPU/RAM attivi)
+#   ./scripts/start_whatsapp.sh --waha --no-wait         # avvia senza attendere
+#   ./scripts/start_whatsapp.sh --waha --no-docker-limits # avvia senza cap CPU/RAM
+#   ./scripts/start_whatsapp.sh --waha --stop            # ferma il container
+#
+# WAHA_DOCKER_LIMITS=0 nell'ambiente equivale a --no-docker-limits.
 set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -32,19 +37,32 @@ compose_args() {
     printf '%s\n' "${args[@]}"
 }
 
+USE_WAHA=0
+STOP=0
 for arg in "$@"; do
     case "$arg" in
+        --waha)             USE_WAHA=1;;
         --no-wait)          WAIT=0;;
         --no-docker-limits) DOCKER_LIMITS=0;;
-        --stop)
-            mapfile -t stop_args < <(compose_args)
-            docker compose "${stop_args[@]}" down
-            echo "WAHA stopped."
-            exit 0
-            ;;
+        --stop)             STOP=1;;
         *)                  die "Opzione sconosciuta: $arg";;
     esac
 done
+
+if [ "$USE_WAHA" -ne 1 ]; then
+    echo "ℹ️  WhatsApp è ora nativo (megachatd): WAHA non serve più."
+    echo "   Per collegare l'account con un QR: python link_whatsapp.py"
+    echo "   Solo con il vecchio server Python (MEGACHAT_SERVER=python) WAHA è ancora"
+    echo "   necessario: in quel caso rilancia con --waha."
+    exit 0
+fi
+
+if [ "$STOP" -eq 1 ]; then
+    mapfile -t stop_args < <(compose_args)
+    docker compose "${stop_args[@]}" down
+    echo "WAHA fermato."
+    exit 0
+fi
 
 command -v docker >/dev/null 2>&1 || { echo "❌ docker non trovato. Installa Docker e riprova."; exit 1; }
 

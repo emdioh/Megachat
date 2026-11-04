@@ -477,3 +477,23 @@ func (s *Store) MediaReferences(ctx context.Context, protocols []string) (map[st
 	}
 	return result, rows.Err()
 }
+
+// DistinctContacts lists the distinct contact_number values stored for
+// protocol (any row, incoming or outgoing).
+func (s *Store) DistinctContacts(ctx context.Context, protocol string) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx,
+		"SELECT DISTINCT contact_number FROM messages WHERE protocol=?", protocol)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var c string
+		if err := rows.Scan(&c); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
