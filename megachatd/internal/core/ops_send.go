@@ -255,7 +255,7 @@ func (c *Core) validateAttachments(atts []api.AttachmentIn) ([]Upload, error) {
 	return out, nil
 }
 
-// opSend is messages.send. It returns MessagesSendOut, MessagesSendDuplicateOut
+// opSend is messages.send (a plain success carries message_ids). It returns MessagesSendOut, MessagesSendDuplicateOut
 // or MessagesSendOptimisticOut. It is never cancelled with the caller.
 func (c *Core) opSend(ctx context.Context, req api.MessagesSendRequest) (any, error) {
 	ctx = context.WithoutCancel(ctx)
@@ -314,6 +314,7 @@ func (c *Core) opSend(ctx context.Context, req api.MessagesSendRequest) (any, er
 		failure    *ops.Error
 		lastError  *string
 		rowPending bool
+		sentIDs    = []string{}
 	)
 	setLast := func(err error) {
 		s := SafeErrorText(err, 200)
@@ -345,7 +346,8 @@ func (c *Core) opSend(ctx context.Context, req api.MessagesSendRequest) (any, er
 				pa[i] = proto.Attachment{Path: u.Path, MimeType: u.MimeType, MediaKind: u.MediaKind, Filename: u.Filename}
 			}
 			pa[0].Caption = text
-			if _, err := c.mgr.SendAttachments(ctx, protocol, contactID, pa, batchID, quote); err != nil {
+			ids, err := c.mgr.SendAttachments(ctx, protocol, contactID, pa, batchID, quote)
+			if err != nil {
 				setLast(err)
 				if errors.Is(err, proto.ErrUnsupported) {
 					failure = &ops.Error{Code: api.CodeNotSupported, Message: "Attachment send not supported"}
@@ -354,6 +356,11 @@ func (c *Core) opSend(ctx context.Context, req api.MessagesSendRequest) (any, er
 					failure = &ops.Error{Code: api.CodeBackendError, Message: "Message send failed"}
 				}
 				return
+			}
+			for _, id := range ids {
+				if id != "" {
+					sentIDs = append(sentIDs, id)
+				}
 			}
 			succeeded = true
 			return
@@ -376,6 +383,9 @@ func (c *Core) opSend(ctx context.Context, req api.MessagesSendRequest) (any, er
 			if err == nil {
 				c.logSendDuration(protocol, contactID, started)
 				messageID = id
+				if id != "" {
+					sentIDs = []string{id}
+				}
 				succeeded = true
 				return
 			}
@@ -427,7 +437,7 @@ func (c *Core) opSend(ctx context.Context, req api.MessagesSendRequest) (any, er
 		return c.finishOptimistic(ctx, p, opt, messageID), nil
 	}
 	c.PublishWebPush("message", map[string]any{"protocol": protocol, "contact_id": contactID, "is_mine": true})
-	return api.MessagesSendOut{OK: true}, nil
+	return api.MessagesSendOut{OK: true, MessageIDs: sentIDs}, nil
 }
 
 func ptrOrNil(p *string) any {

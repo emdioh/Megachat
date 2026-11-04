@@ -497,3 +497,26 @@ func (s *Store) DistinctContacts(ctx context.Context, protocol string) ([]string
 	}
 	return out, rows.Err()
 }
+
+// MessagesByWAID returns the rows of the chat (any of keys) whose msg_id is
+// waID or a WAHA-serialized id containing it ("true_<chat>_<ID>[_<part>]").
+// Candidates are a superset: callers confirm with their own id comparison.
+func (s *Store) MessagesByWAID(ctx context.Context, protocol string, keys []string, waID string) ([]Message, error) {
+	if len(keys) == 0 || waID == "" {
+		return nil, nil
+	}
+	args := append([]any{protocol}, strArgs(keys)...)
+	args = append(args, waID, "%\\_"+escapeLike(waID)+"%")
+	rows, err := s.db.QueryContext(ctx,
+		"SELECT "+messageColumns+" FROM messages WHERE protocol = ? "+
+			"AND contact_number IN ("+placeholders(len(keys))+") "+
+			"AND (msg_id = ? OR msg_id LIKE ? ESCAPE '\\') ORDER BY id DESC LIMIT 20", args...)
+	if err != nil {
+		return nil, err
+	}
+	return collectMessages(rows)
+}
+
+func escapeLike(s string) string {
+	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(s)
+}

@@ -269,7 +269,7 @@ well-known keys: `phone` (E.164 no `+`), `last_message_ts` (ms), `address_book`,
 | `messages.window` | `{protocol,contact_id,refresh:false,refresh_limit:50 (1..200)}` -> `{"messages":[CacheMessage],"refreshed":bool}` | core cache rows (TUI shape, includes unpersisted rows, WhatsApp union of storage keys); refresh downloads remote history first; `[]`,false for unknown backend | T |
 | `messages.snapshot` | `{protocol}` -> `{contact_id:[CacheMessage]}` | every chat of the protocol from the cache; WhatsApp chats appear once under canonical id | T |
 | `messages.edit` | `MessagesEditRequest{protocol,contact_id,message_id,new_text}` strict strs -> `{"ok":true}` | 4.3.3 | T W |
-| `messages.send` | `MessagesSendRequest` -> `{"ok":true}` / dup / optimistic | 4.3.2 | T W |
+| `messages.send` | `MessagesSendRequest` -> `{"ok":true,"message_ids":[...]}` / dup / optimistic | 4.3.2 | T W |
 | `messages.send.check` | `MessagesSendCheckRequest` -> `{"ok":true}` | pre-validation, sends nothing (adapter use, section 3.5) | - |
 | `reactions.set` | `{protocol,contact_id,message_id,emoji}` strict -> `{"ok":true,"reactions":[Reaction]}` | 4.3.4 | W |
 | `media.*`, `download.*` | see 4.4 | | |
@@ -358,7 +358,9 @@ file. Text sends retry up to 3 attempts (1 only if `retry=false`) with delay `1.
 for retryable errors (`classify_send_error`); before each retry a `send_retry` web-push frame is published
 (section 8.3). Failure -> `backend_error` "Message send failed" (`not_supported` "Attachment send not
 supported" for NotImplementedError on attachments). Success publishes web-push `message`
-`{"protocol","contact_id","is_mine":true}` and returns `{"ok":true}`.
+`{"protocol","contact_id","is_mine":true}` and returns `{"ok":true,"message_ids":[...]}`: the real backend ids
+(text: `[id]` when the backend returned one, else `[]`; attachments: the ids returned by the attachment send,
+empty ids dropped). The idempotent duplicate replay stays `{"ok":true,"duplicate":true}` with no `message_ids`.
 
 Optimistic flavour (`optimistic.timestamp` = client ms timestamp = row identity): publishes nothing via
 `sent_mirror`; seeds a `pending` cache row (`ingest_message`) and persists it **before** the network
@@ -617,7 +619,8 @@ Transport duties, then `messages.send`:
    non-file field -> empty slot. Each slot = `{path,filename (client's),content_type (client's)}`. A storing failure
    -> `502 {"detail":"Message send failed"}`.
 7. Call `messages.send` with `{**payload, "attachments": slots}`; delete temp files afterwards (always).
-Response `{"ok":true}` (or `{"ok":true,"duplicate":true}`). JSON bodies produced by the SPA:
+Response `{"ok":true,"message_ids":[...]}` (or `{"ok":true,"duplicate":true}`; the optimistic flavour keeps its own
+shape; the body is passed through unchanged). JSON bodies produced by the SPA:
 `{protocol,contact_id,text,client_msg_id,quote_timestamp?,quote_author?,quote_message?,reply_to_message_id?
 (non-signal) | quote_content_type?,quote_attachment_id? (signal)}`; multipart additionally `batch_id`.
 Upload pre-pruning: files older than 1 h in the upload dir are removed at startup.

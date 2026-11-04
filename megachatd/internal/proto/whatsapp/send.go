@@ -67,14 +67,11 @@ func (b *Backend) contextFor(chat types.JID, contactID string, q proto.Quote) *w
 	}
 	ci := &waE2E.ContextInfo{StanzaID: gproto.String(p.ID)}
 	fromMe := p.FromMe
-	quotedText := q.Message
-	if cached, ok := b.cachedEntry(contactID, q.ReplyToMessageID); ok {
-		if !p.Serialized {
-			fromMe = cached.IsMine
-		}
-		if quotedText == "" {
-			quotedText = cached.Text
-		}
+	// The quoted row (cache, then store) decides what the recipient's quote
+	// preview shows: q.Message is client text and may be an attachment name.
+	row := b.quotedRow(contactID, q.ReplyToMessageID)
+	if row != nil && !p.Serialized {
+		fromMe = row.IsMine
 	}
 	switch {
 	case fromMe:
@@ -94,8 +91,8 @@ func (b *Backend) contextFor(chat types.JID, contactID string, q proto.Quote) *w
 	default:
 		ci.Participant = gproto.String(chat.String())
 	}
-	if quotedText != "" {
-		ci.QuotedMessage = &waE2E.Message{Conversation: gproto.String(quotedText)}
+	if qm := b.quotedMessage(row, q.Message); qm != nil {
+		ci.QuotedMessage = qm
 	}
 	return ci
 }

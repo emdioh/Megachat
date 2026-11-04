@@ -1,6 +1,7 @@
 package media
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha1" //nolint:gosec // cache key, not security
 	"encoding/hex"
@@ -222,4 +223,24 @@ func rgbAccessor(src image.Image) func(x, y int) (uint8, uint8, uint8) {
 		c := color.NRGBAModel.Convert(src.At(x, y)).(color.NRGBA)
 		return c.R, c.G, c.B
 	}
+}
+
+// JPEGThumbnail decodes the image at path and returns a JPEG of at most
+// maxSide px on its longest side (never enlarged). ok is false when the file
+// is missing or not a decodable image.
+func JPEGThumbnail(path string, maxSide int) ([]byte, bool) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, false
+	}
+	defer f.Close()
+	img, _, err := image.Decode(f)
+	if err != nil {
+		return nil, false
+	}
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, fitRGB(img, maxSide), &jpeg.Options{Quality: thumbQuality}); err != nil {
+		return nil, false
+	}
+	return buf.Bytes(), true
 }

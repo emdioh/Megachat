@@ -56,7 +56,7 @@ var handWritten = map[string]string{
 	"ReactionsAvailableNone": `{"emojis":[]}`,
 	"ServerLogsOut":          `{"records":[{"seq":1,"time":1700000000.5,"level":"INFO","logger":"signal_tui","message":"up"}],"last_seq":1,"since":1700000000.25}`,
 	"ServerLogsOutEmpty":     `{"records":[],"last_seq":0,"since":null}`,
-	"MessagesSendOut":        `{"ok":true}`,
+	"MessagesSendOut":        `{"ok":true,"message_ids":["1700000000123"]}`,
 	"MessagesSendDup":        `{"ok":true,"duplicate":true}`,
 	"MessagesSendOpt":        `{"ok":true,"status":"sent","status_applied":true,"message_id":null}`,
 	"ChatsArchiveOut":        `{"archived":true}`,

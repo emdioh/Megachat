@@ -130,9 +130,20 @@ func (o MessagesWindowOut) MarshalJSON() ([]byte, error) {
 // MessagesSnapshotOut is messages.snapshot: contact id -> cache rows.
 type MessagesSnapshotOut map[string][]CacheMessage
 
-// MessagesSendOut is the plain messages.send result: {"ok":true}.
+// MessagesSendOut is the plain messages.send result: {"ok":true,"message_ids":[...]}.
+// message_ids holds the real backend ids of the sent messages (text: the one
+// id the backend returned, or none; attachments: the ids of the attachment
+// send), so the web client can pair its optimistic bubble with the real row.
 type MessagesSendOut struct {
-	OK bool `json:"ok"`
+	OK         bool     `json:"ok"`
+	MessageIDs []string `json:"message_ids"`
+}
+
+// MarshalJSON emits message_ids as [] instead of null.
+func (o MessagesSendOut) MarshalJSON() ([]byte, error) {
+	type alias MessagesSendOut
+	o.MessageIDs = EmptyIfNil(o.MessageIDs)
+	return json.Marshal(alias(o))
 }
 
 // MessagesSendDuplicateOut is the result of a text send that repeats an

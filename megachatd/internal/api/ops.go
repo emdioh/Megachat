@@ -19,7 +19,7 @@ func typeOf[T any]() reflect.Type { return reflect.TypeFor[T]() }
 
 // Ops is the complete operation table (68 entries, sorted by name).
 // Notes on result types that are unions:
-//   - messages.send answers MessagesSendOut, or MessagesSendDuplicateOut (text
+//   - messages.send answers MessagesSendOut ({ok,message_ids}), or MessagesSendDuplicateOut (text
 //     idempotent replay), or MessagesSendOptimisticOut (optimistic flavour).
 //   - ListResults are slices: marshal them through EmptyIfNil.
 var Ops = []OpSpec{
