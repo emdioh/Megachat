@@ -81,12 +81,12 @@ func TestSendRoutesAndMirrors(t *testing.T) {
 		t.Fatalf("mirror: %+v", mirrors)
 	}
 	// Quote-media fallback is Signal only.
-	m.SendMessage(ctx5(t), "signal", "1", "x", proto.Quote{Attachments: []string{"image/png|a.png"}})
+	m.SendMessage(ctx5(t), "signal", "1", "x", proto.Quote{Attachments: []string{"image/png:a.png"}})
 	sm := sig.CallsTo("EnqueueSentMessage")[0].Args["message"].(proto.SentMessage)
 	if sm.QuoteContentType != "image/png" || sm.QuoteFilename != "a.png" {
 		t.Fatalf("%+v", sm)
 	}
-	m.SendMessage(ctx5(t), "telegram", "1", "x", proto.Quote{Attachments: []string{"image/png|a.png"}})
+	m.SendMessage(ctx5(t), "telegram", "1", "x", proto.Quote{Attachments: []string{"image/png:a.png"}})
 	sm = tg.CallsTo("EnqueueSentMessage")[1].Args["message"].(proto.SentMessage)
 	if sm.QuoteContentType != "" {
 		t.Fatalf("telegram must not get quote media: %+v", sm)
@@ -403,7 +403,7 @@ func TestContactHelpers(t *testing.T) {
 	if _, ok := c.Extras["x"]; ok || c2.Extras["x"] != 1 {
 		t.Fatal("WithExtra must copy")
 	}
-	if ct, fn := proto.ParseQuoteAttachmentDescriptor("a/b|f.x"); ct != "a/b" || fn != "f.x" {
+	if ct, fn := proto.ParseQuoteAttachmentDescriptor("a/b: f.x :/p:q"); ct != "a/b" || fn != "f.x" {
 		t.Fatal(ct, fn)
 	}
 }

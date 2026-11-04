@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -687,17 +688,20 @@ func firstOf(l []string) string {
 }
 
 // ParseQuoteAttachmentDescriptor splits a Signal quote-attachment descriptor
-// "<content-type>|<filename>" (models.parse_quote_attachment_descriptor).
+// "content_type[:filename[:path]]" (models.parse_quote_attachment_descriptor).
+// Everything after the second ':' is the path and ignored; parts are trimmed
+// and empty parts are "".
 func ParseQuoteAttachmentDescriptor(d string) (contentType, filename string) {
 	if d == "" {
 		return "", ""
 	}
-	for i := 0; i < len(d); i++ {
-		if d[i] == '|' {
-			return d[:i], d[i+1:]
-		}
+	ct, rest, found := strings.Cut(d, ":")
+	contentType = strings.TrimSpace(ct)
+	if !found {
+		return contentType, ""
 	}
-	return d, ""
+	fn, _, _ := strings.Cut(rest, ":")
+	return contentType, strings.TrimSpace(fn)
 }
 
 // ---- other routed operations ---------------------------------------------------
