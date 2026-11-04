@@ -10,7 +10,7 @@ require (
 	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
 	go.mau.fi/whatsmeow v0.0.0-20261102152715-54038813c47f
 	golang.org/x/image v0.47.0
-	golang.org/x/net v0.61.0
+	golang.org/x/net v0.62.0
 	golang.org/x/text v0.43.0
 	google.golang.org/protobuf v1.36.12
 	modernc.org/sqlite v1.61.1
@@ -26,6 +26,7 @@ require (
 	github.com/dlclark/regexp2 v1.12.0 // indirect
 	github.com/dustin/go-humanize v1.1.0 // indirect
 	github.com/elliotchance/orderedmap/v3 v3.1.0 // indirect
+	github.com/emersion/go-imap/v2 v2.0.0-beta.8 // indirect
 	github.com/fatih/color v1.19.0 // indirect
 	github.com/ghodss/yaml v1.0.0 // indirect
 	github.com/go-faster/errors v0.8.0 // indirect
@@ -49,6 +50,7 @@ require (
 	github.com/segmentio/asm v1.2.1 // indirect
 	github.com/shopspring/decimal v1.4.0 // indirect
 	github.com/stretchr/testify v1.12.1 // indirect
+	github.com/vanng822/go-premailer v1.38.0 // indirect
 	github.com/vektah/gqlparser/v2 v2.5.27 // indirect
 	github.com/yuin/goldmark v1.8.5 // indirect
 	go.mau.fi/libsignal v0.2.2 // indirect
