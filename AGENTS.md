@@ -153,6 +153,7 @@ only `bd export -o .beads/issues.jsonl` right after an import.
 | `needs-review` | worker | hand-off done on `worker/<id>`, waiting for the controller |
 | `rework` | controller | rejected; `rework:` notes say what to fix |
 | `needs-user` | either | needs the user's accounts or a decision; worker skips it |
+| `shutdown` | controller | all work is done: claim it, push the claim to `worker/<id>`, then run `poweroff` (no child agent) |
 
 Status: the worker claims (`in_progress`); only the controller closes.
 
