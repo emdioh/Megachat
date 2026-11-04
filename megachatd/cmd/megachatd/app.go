@@ -108,9 +108,9 @@ func whatsappRelinkNeeded(cfg *config.Config) bool {
 // whatsappEnabled decides whether the WhatsApp backend is registered. Python
 // registered it when a WAHA URL was configured or a local WAHA answered; the Go
 // backend is native (whatsmeow) and has no service to probe, so it is enabled
-// by an explicit WHATSAPP_ENABLED / config.json "whatsapp_enabled", by a
-// previously paired device store (<data>/whatsmeow.db), or by a legacy
-// WHATSAPP_API_URL (an existing WAHA install being migrated).
+// by an explicit WHATSAPP_ENABLED (environment, config.json "whatsapp_enabled"
+// or .env), by a previously paired device store (<data>/whatsmeow.db), or by a
+// legacy WHATSAPP_API_URL (an existing WAHA install being migrated).
 func whatsappEnabled(cfg *config.Config) bool {
 	if v, ok := lookupBool(cfg.Env("WHATSAPP_ENABLED")); ok {
 		return v
@@ -124,6 +124,11 @@ func whatsappEnabled(cfg *config.Config) bool {
 				return v
 			}
 		}
+	}
+	// The documented way to enable WhatsApp is `echo WHATSAPP_ENABLED=1 >> .env`
+	// (README, install.sh, link_whatsapp.py); the same source as SIGNAL_ENABLED.
+	if v, ok := lookupBool(cfg.LoadDotenv()["WHATSAPP_ENABLED"]); ok {
+		return v
 	}
 	if _, err := os.Stat(filepath.Join(cfg.DataDir(), "whatsmeow.db")); err == nil {
 		return true
@@ -174,6 +179,8 @@ func Build(o BuildOptions) (*App, error) {
 			if err := register(a.WhatsApp); err != nil {
 				return nil, err
 			}
+		} else {
+			log.Info("WhatsApp backend disabled (enable with WHATSAPP_ENABLED=1 in .env or \"whatsapp_enabled\": true in config.json)")
 		}
 		if cfg.TelegramEnabled() {
 			a.Telegram = telegram.New(telegram.Options{Config: cfg, Store: st, Logger: log})
