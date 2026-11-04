@@ -2,6 +2,7 @@ package whatsapp
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/emdioh/megachat/megachatd/internal/store"
 	"go.mau.fi/whatsmeow/appstate"
+	"go.mau.fi/whatsmeow/proto/waAdv"
 	"go.mau.fi/whatsmeow/proto/waSyncAction"
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
@@ -74,6 +76,34 @@ func (f *fakeChatSettings) GetChatSettings(_ context.Context, chat types.JID) (t
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.m[chat.String()], nil
+}
+
+// archivedDeviceStore opens a paired whatsmeow device store and marks the given
+// chats archived the way the phone does (whatsmeow_chat_settings).
+func archivedDeviceStore(t *testing.T, chats ...string) *sql.DB {
+	t.Helper()
+	dir := t.TempDir()
+	db, container, _, err := openStore(context.Background(), filepath.Join(dir, "whatsmeow.db"), quietLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	dev := container.NewDevice()
+	own := types.NewJID("390000000000", types.DefaultUserServer)
+	dev.ID = &own
+	dev.Account = &waAdv.ADVSignedDeviceIdentity{
+		Details: []byte{}, AccountSignature: make([]byte, 64),
+		AccountSignatureKey: make([]byte, 32), DeviceSignature: make([]byte, 64),
+	}
+	if err := container.PutDevice(context.Background(), dev); err != nil {
+		t.Fatal(err)
+	}
+	for _, chat := range chats {
+		if _, err := db.Exec(`INSERT INTO whatsmeow_chat_settings (our_jid, chat_jid, archived) VALUES (?, ?, true)`, own.String(), chat); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return db
 }
 
 // appStateCalls snapshots the FetchAppState invocations.
@@ -154,6 +184,89 @@ func TestAppStateSyncFlushesUnreadDespiteThrottle(t *testing.T) {
 	e.b.appStateSync()
 	if rows := dbRows(t, e, chat); !rows[0].Read {
 		t.Error("the app-state tail must flush unread even right after the throttle window was spent")
+	}
+}
+
+// TestSyncArchiveFlagsSeedsChatsWithoutHistory covers the restart path: the
+// archived chats only exist in whatsmeow_chat_settings, with no local message
+// and no contact of their own.
+func TestSyncArchiveFlagsSeedsChatsWithoutHistory(t *testing.T) {
+	e := newEnv(t)
+	e.book.put(types.NewJID("393331234567", types.DefaultUserServer), types.ContactInfo{Found: true, FullName: "Mario Rossi"})
+	e.lids.put("157968947515605", "393339999999")
+	e.b.db = archivedDeviceStore(t,
+		"393331234567@s.whatsapp.net", // named by the contact table
+		"157968947515605@lid",         // named by the LID map, "+phone" fallback
+		"214340544290860@lid",         // unknown, name stays empty
+		"120363194870061140@g.us",
+		"status@broadcast",
+	)
+	e.b.syncArchiveFlags(context.Background())
+
+	e.b.cmu.RLock()
+	chats := map[string]chatMeta{}
+	for id, m := range e.b.chats {
+		chats[id] = *m
+	}
+	e.b.cmu.RUnlock()
+	cases := map[string]string{
+		"393331234567@c.us":       "Mario Rossi",
+		"157968947515605@lid":     "+393339999999",
+		"214340544290860@lid":     "",
+		"120363194870061140@g.us": "",
+	}
+	for id, name := range cases {
+		m, ok := chats[id]
+		if !ok {
+			t.Errorf("%s: an archived chat without history must be registered", id)
+			continue
+		}
+		if !m.Archived {
+			t.Errorf("%s: must stay archived", id)
+		}
+		if m.LastTS != 0 {
+			t.Errorf("%s: last ts = %d, want 0", id, m.LastTS)
+		}
+		if m.Name != name {
+			t.Errorf("%s: name = %q, want %q", id, m.Name, name)
+		}
+	}
+	if _, ok := chats["status@broadcast"]; ok {
+		t.Error("broadcast chats must not enter the registry")
+	}
+	// The archived-only chats end up in the contact list the wire serves.
+	e.b.loadContacts(context.Background())
+	for _, id := range []string{"393331234567@c.us", "157968947515605@lid", "214340544290860@lid", "120363194870061140@g.us"} {
+		c, ok := e.b.FindContact(id)
+		if !ok {
+			t.Errorf("%s: missing from the contact list", id)
+			continue
+		}
+		if !exBool(&c, "archived") {
+			t.Errorf("%s: contact is not archived", id)
+		}
+	}
+}
+
+func TestSyncArchiveFlagsSeedKeepsExistingChat(t *testing.T) {
+	e := newEnv(t)
+	e.b.IngestMessage(ctx, "393472482603@c.us", map[string]any{"id": "false_393472482603@c.us_A1", "text": "x", "is_mine": false}, 4_000)
+	e.b.loadProtocolCache(ctx)
+	e.b.db = archivedDeviceStore(t, "393472482603@s.whatsapp.net")
+	e.b.syncArchiveFlags(context.Background())
+	e.b.loadContacts(ctx)
+	list, _ := e.b.ListContacts(ctx)
+	n := 0
+	for _, c := range list {
+		if c.ID == "393472482603@c.us" {
+			n++
+			if !exBool(&c, "archived") || c.LastMessageTS() != 4_000 {
+				t.Errorf("merged chat lost its data: %+v", c)
+			}
+		}
+	}
+	if n != 1 {
+		t.Errorf("contacts for the chat = %d, want 1", n)
 	}
 }
 

@@ -359,6 +359,10 @@ func (b *Backend) buildContactsFromChats(rows []chatRow) []*proto.Contact {
 // loadContacts is _load_contacts.
 func (b *Backend) loadContacts(ctx context.Context) {
 	b.lidCacheLoad()
+	// Archived chats without local history only exist in whatsmeow's
+	// chat-settings table: register them before the registry rebuild, or the
+	// first chat list after a restart lacks them.
+	b.seedArchivedChats(ctx)
 	if err := b.refreshChatRegistry(ctx, true); err != nil {
 		b.log.Debug("WhatsApp joined groups unavailable", "err", err)
 	}
