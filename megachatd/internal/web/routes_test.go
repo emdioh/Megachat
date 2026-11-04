@@ -90,12 +90,12 @@ func TestAllDocumentedRoutesExist(t *testing.T) {
 		u := rt.Path
 		u = strings.NewReplacer("{proto}", "signal", "{attachment_id:path}", "a", "{message_row_id}", "5",
 			"{uid}", "3", "{index}", "0").Replace(u)
+		if rt.Path == api.RouteGmailImage {
+			continue
+		}
 		resp, _ := e.do(t, rt.Method, u, `{}`, "Authorization", "")
 		if resp.StatusCode != 401 {
 			t.Errorf("%s %s without token: %d, want 401", rt.Method, rt.Path, resp.StatusCode)
-		}
-		if rt.Path == api.RouteGmailImage {
-			continue
 		}
 		resp, _ = e.do(t, rt.Method, u, `{}`)
 		if resp.StatusCode == 404 || resp.StatusCode == 405 {

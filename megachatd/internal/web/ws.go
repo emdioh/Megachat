@@ -398,4 +398,3 @@ func (s *Server) streamV2(ctx context.Context, conn *websocket.Conn, since *uint
 		}
 	}
 }
-

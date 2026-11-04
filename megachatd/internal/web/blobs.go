@@ -253,4 +253,3 @@ func (s *Server) handleGmailImage(w http.ResponseWriter, r *http.Request) {
 		"Content-Security-Policy", "default-src 'none'",
 		"X-Content-Type-Options", "nosniff")
 }
-

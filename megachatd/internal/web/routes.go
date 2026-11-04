@@ -17,7 +17,9 @@ type respCfg struct {
 
 type respOpt func(*respCfg)
 
-func withHeaders(kv ...string) respOpt { return func(c *respCfg) { c.headers = append(c.headers, kv...) } }
+func withHeaders(kv ...string) respOpt {
+	return func(c *respCfg) { c.headers = append(c.headers, kv...) }
+}
 func withPost(f func(s *Server, c *call, res any) (any, error)) respOpt {
 	return func(c *respCfg) { c.post = f }
 }

@@ -217,4 +217,3 @@ func toLegacy(ev bus.Event) (frame map[string]any, ok bool) {
 	}
 	return nil, false
 }
-
