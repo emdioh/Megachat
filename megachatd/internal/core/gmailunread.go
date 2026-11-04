@@ -53,6 +53,7 @@ func (w *GmailUnreadWatcher) Start(ctx context.Context) {
 		return
 	}
 	w.started = true
+	stopCh := w.stopCh
 	go func() {
 		for {
 			w.CheckOnce(ctx)
@@ -61,7 +62,7 @@ func (w *GmailUnreadWatcher) Start(ctx context.Context) {
 			case <-ctx.Done():
 				t.Stop()
 				return
-			case <-w.stopCh:
+			case <-stopCh:
 				t.Stop()
 				return
 			case <-w.wake:
