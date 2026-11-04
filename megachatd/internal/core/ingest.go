@@ -68,7 +68,7 @@ func (c *Core) ingest(ctx context.Context, protocol, contactID string, msg map[s
 
 	if isMine && hasID {
 		// Attach the real id to the optimistic twin, keeping its timestamp.
-		upgraded, err := c.st.UpdateMessageID(ctx, protocol, contactID, text, true, ts, id)
+		upgraded, err := c.attachMessageID(ctx, protocol, contactID, text, ts, id)
 		if err != nil {
 			return IngestUnchanged, err
 		}
@@ -238,3 +238,36 @@ func (c *Core) processReceipt(ctx context.Context, protocol, contactID string, p
 }
 
 func trimSpace(s string) string { return strings.TrimSpace(s) }
+
+// attachMessageID gives the closest id-less outgoing row of text (within the
+// echo window around ts) its real id while KEEPING the row's own (optimistic)
+// timestamp, which is the entry's identity for receipts.
+func (c *Core) attachMessageID(ctx context.Context, protocol, contactID, text string, ts int64, id string) (bool, error) {
+	since := ts - store.EchoMatchWindowMs
+	rows, err := c.st.ListMessages(ctx, store.MessageQuery{Protocol: protocol, Keys: []string{contactID}, Since: &since})
+	if err != nil {
+		return false, err
+	}
+	var best *store.Message
+	var bestDelta int64
+	for i := range rows {
+		m := &rows[i]
+		if !m.IsMine || store.Deref(m.Text) != text || (m.MsgID != nil && *m.MsgID != "") {
+			continue
+		}
+		d := m.Timestamp - ts
+		if d < 0 {
+			d = -d
+		}
+		if d > store.EchoMatchWindowMs {
+			continue
+		}
+		if best == nil || d < bestDelta {
+			best, bestDelta = m, d
+		}
+	}
+	if best == nil {
+		return false, nil
+	}
+	return c.st.UpdateMessageID(ctx, protocol, contactID, text, true, best.Timestamp, id)
+}
