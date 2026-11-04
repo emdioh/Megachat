@@ -54,6 +54,10 @@ type Config interface {
 	WAResyncWorkers() int
 	WAResyncDownloadMedia() bool
 	WALazyMediaNegativeTTLS() int
+	// Browser identity announced to WhatsApp ("" keeps the backend default).
+	WhatsAppBrowser() string
+	WhatsAppBrowserVersion() string
+	WhatsAppBrowserOS() string
 }
 
 // Store is the slice of internal/store the backend persists through.
@@ -119,6 +123,8 @@ type Backend struct {
 	cfg Config
 	st  Store
 	log *slog.Logger
+
+	browser browserIdentity
 
 	dataDir, mediaDir, thumbsDir, dbPath, lidMapPath string
 	bookTTL, lidTTL, lazyNegTTL                      time.Duration
@@ -213,6 +219,7 @@ func New(o Options) *Backend {
 	}
 	b := &Backend{
 		cfg: o.Config, st: o.Store, log: o.Logger,
+		browser: resolveBrowserIdentity(o.Config, o.Logger),
 		dataDir: o.DataDir, mediaDir: o.MediaDir, thumbsDir: o.LocationThumbsDir, dbPath: o.DBPath,
 		lidMapPath: o.LIDMapPath, bookTTL: o.AddressBookTTL, lidTTL: o.LIDCacheTTL,
 		resyncLimit: o.ResyncLimit, resyncMaxChats: o.ResyncMaxChats, resyncWorkers: o.ResyncWorkers,
@@ -361,6 +368,7 @@ func (b *Backend) ensureClientLocked(ctx context.Context) (waClient, error) {
 	if b.dbPath == "" {
 		return nil, errors.New("whatsapp: no device store path configured")
 	}
+	applyBrowserIdentity(b.browser)
 	if b.db == nil {
 		db, container, dev, err := openStore(ctx, b.dbPath, b.log)
 		if err != nil {

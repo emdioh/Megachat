@@ -81,6 +81,14 @@ WhatsApp enabled and no `<data>/whatsmeow.db` prints one Italian notice ("ℹ️
 WAHA non è migrabile ...", also logged; marker file `<data>/.whatsapp-relink-notice`) and
 `launcher.py server start` shows it.
 
+The WhatsApp client registers as a recent desktop Chrome (phone: "Chrome (Linux)", QR client type
+Chrome) instead of whatsmeow's default "whatsmeow" identity. config.json overrides it
+(env equivalents in parentheses): `whatsapp_browser` (`WHATSAPP_BROWSER`, one of Chrome, Firefox,
+Edge, Opera, Safari, IE, Desktop, Android; unknown names warn and keep Chrome),
+`whatsapp_browser_version` (`WHATSAPP_BROWSER_VERSION`, default tracks Chrome stable) and
+`whatsapp_browser_os` (`WHATSAPP_BROWSER_OS`, default `Linux`). The identity is fixed server-side at
+registration, so it applies to the next pairing; restart the server after editing config.json.
+
 Files shared with the Python server, so the launcher's `status`/`stop`/`start` and the TUI's attach
 work unchanged: the instance lock (`$MEGACHAT_LOCK_FILE`, default `/tmp/signal-tui.lock`, holds the
 pid; SIGINT = clean stop), the Unix socket and the runtime file `server.json` next to it (pid), and the

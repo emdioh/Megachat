@@ -57,6 +57,26 @@ func (c *Config) WhatsAppMediaDirConfigured() string {
 	return strings.TrimSpace(c.Get("whatsapp_media_dir", "WHATSAPP_MEDIA_DIR", ""))
 }
 
+// WhatsAppBrowser is the browser name announced to WhatsApp at registration
+// (whatsapp_browser / WHATSAPP_BROWSER). "" leaves the backend default
+// (Chrome); accepted names are the browsers WhatsApp itself lists, see the
+// whatsapp package.
+func (c *Config) WhatsAppBrowser() string {
+	return strings.TrimSpace(c.Get("whatsapp_browser", "WHATSAPP_BROWSER", ""))
+}
+
+// WhatsAppBrowserVersion overrides the browser version string
+// (whatsapp_browser_version / WHATSAPP_BROWSER_VERSION); "" = backend default.
+func (c *Config) WhatsAppBrowserVersion() string {
+	return strings.TrimSpace(c.Get("whatsapp_browser_version", "WHATSAPP_BROWSER_VERSION", ""))
+}
+
+// WhatsAppBrowserOS overrides the OS part of the device name
+// (whatsapp_browser_os / WHATSAPP_BROWSER_OS); "" = backend default.
+func (c *Config) WhatsAppBrowserOS() string {
+	return strings.TrimSpace(c.Get("whatsapp_browser_os", "WHATSAPP_BROWSER_OS", ""))
+}
+
 // WhatsAppEnabled is true when an API URL is configured or a local WAHA
 // answers on the default port (auto-detect, 1s timeout).
 func (c *Config) WhatsAppEnabled() bool {
