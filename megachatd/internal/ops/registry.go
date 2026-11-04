@@ -112,7 +112,8 @@ func (r *Registry) Call(ctx context.Context, name string, params json.RawMessage
 	if len(params) == 0 || string(params) == "null" {
 		params = json.RawMessage("{}")
 	}
-	if verr := validateRequest(name, params); verr != nil {
+	params, verr := validateRequest(name, params)
+	if verr != nil {
 		return nil, verr
 	}
 	return op.Handler(ctx, params)

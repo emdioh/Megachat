@@ -70,7 +70,57 @@ func serveBlobFile(w http.ResponseWriter, r *http.Request, b blob) {
 	w.Header().Set("Content-Type", ct)
 	w.Header().Set("Cache-Control", cc)
 	w.Header().Set("ETag", etagFor(st.ModTime(), st.Size()))
+	if rh := r.Header.Get("Range"); rh != "" {
+		if status, msg := starletteRangeProblem(rh, st.Size()); status != 0 {
+			// Starlette's FileResponse answers these itself (plain text).
+			w.Header().Del("ETag")
+			w.Header().Del("Cache-Control")
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			if status == http.StatusRequestedRangeNotSatisfiable {
+				w.Header().Set("Content-Range", "bytes */"+strconv.FormatInt(st.Size(), 10))
+			}
+			w.Header().Set("Content-Length", strconv.Itoa(len(msg)))
+			w.WriteHeader(status)
+			_, _ = w.Write([]byte(msg))
+			return
+		}
+	}
 	http.ServeContent(w, r, b.Path, st.ModTime(), f)
+}
+
+// starletteRangeProblem mirrors the errors of Starlette's Range handling that
+// net/http words differently: it returns (0, "") when the header is usable.
+func starletteRangeProblem(h string, size int64) (int, string) {
+	unit, spec, ok := strings.Cut(h, "=")
+	if !ok {
+		return http.StatusBadRequest, "Malformed range header."
+	}
+	if strings.ToLower(strings.TrimSpace(unit)) != "bytes" {
+		return http.StatusBadRequest, "Only support bytes range"
+	}
+	unsatisfiable := false
+	for _, part := range strings.Split(spec, ",") {
+		a, z, ok := strings.Cut(strings.TrimSpace(part), "-")
+		a, z = strings.TrimSpace(a), strings.TrimSpace(z)
+		if !ok || (a == "" && z == "") {
+			return http.StatusBadRequest, "Range header: range must be requested"
+		}
+		start, e1 := strconv.ParseInt(a, 10, 64)
+		end, e2 := strconv.ParseInt(z, 10, 64)
+		if (a != "" && e1 != nil) || (z != "" && e2 != nil) {
+			return http.StatusBadRequest, "Range header: range must be requested"
+		}
+		if a != "" && z != "" && start > end {
+			return http.StatusBadRequest, "Range header: start must be less than end"
+		}
+		if a != "" && start >= size {
+			unsatisfiable = true
+		}
+	}
+	if unsatisfiable {
+		return http.StatusRequestedRangeNotSatisfiable, ""
+	}
+	return 0, ""
 }
 
 // writeBody sends a whole in-memory body; Content-Type only when known.

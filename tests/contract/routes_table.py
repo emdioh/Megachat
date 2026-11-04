@@ -9,6 +9,7 @@ under ``/api/``; the samples below are concrete instances of them.
 from __future__ import annotations
 
 SIG = "+15550100001"
+SIGQ = "%2B15550100001"  # url-quoted: a raw + in a query string is a space
 WA = "393331110001@c.us"
 TG = "424242"
 
@@ -36,10 +37,10 @@ SAMPLES: list[tuple[str, str, object]] = [
     ("PUT", "/api/transcribe/api-key", {"provider": "openai", "api_key": ""}),
     ("GET", "/api/autotranscribe", None),
     ("PUT", "/api/autotranscribe/global/signal", {"enabled": False}),
-    ("GET", f"/api/autotranscribe/chat?proto=signal&contact_id={SIG}", None),
-    ("PUT", f"/api/autotranscribe/chat?proto=signal&contact_id={SIG}", {"enabled": None}),
+    ("GET", f"/api/autotranscribe/chat?proto=signal&contact_id={SIGQ}", None),
+    ("PUT", f"/api/autotranscribe/chat?proto=signal&contact_id={SIGQ}", {"enabled": None}),
     ("GET", "/api/transcribe/signal/sigvoice1", None),
-    ("GET", f"/api/messages?proto=signal&contact_id={SIG}", None),
+    ("GET", f"/api/messages?proto=signal&contact_id={SIGQ}", None),
     ("POST", "/api/messages/read", {"protocol": "signal", "contact_id": SIG}),
     ("POST", "/api/chats/archive", {"protocol": "signal", "contact_id": SIG, "archived": True}),
     ("POST", "/api/messages/edit", {"protocol": "signal", "contact_id": SIG, "message_id": "x", "new_text": "y"}),

@@ -18,7 +18,7 @@ import sys
 from pathlib import Path
 
 import pytest
-from harness import REPO, TOKEN, Server, short_tmp, start_server
+from harness import REPO, TOKEN, Server, copy_python_project, short_tmp, start_server
 
 
 @pytest.fixture(scope="session")
@@ -92,18 +92,21 @@ def py_seeded(seed_home) -> Server:
     missing = _py_missing()
     if missing:
         pytest.skip(f"Python server dependency missing: {missing}")
+    proj_root = short_tmp("mcpyproj")
+    py_root = copy_python_project(proj_root / "megachat")
     try:
         # SIGNAL_ENABLED=1 only makes the Python Signal backend load its message cache
         # from the DB (what window/snapshot read); signal-cli does not exist, so no
         # connection is ever made.
         srv = start_server(
-            "py", seed_home=seed_home,
+            "py", seed_home=seed_home, py_root=py_root,
             extra_env={"SIGNAL_ENABLED": "1", "SIGNAL_USER_NUMBER": "+15550100002"},
         )
     except RuntimeError as exc:
         pytest.skip(f"Python server could not start: {exc}")
     yield srv
     srv.stop()
+    shutil.rmtree(proj_root, ignore_errors=True)
 
 
 @pytest.fixture(scope="session")

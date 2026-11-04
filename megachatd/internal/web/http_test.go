@@ -323,9 +323,10 @@ func TestGmailSend(t *testing.T) {
 	if resp.StatusCode != 400 || out != `{"detail":"forward_uid non valido"}` {
 		t.Error(resp.StatusCode, out)
 	}
-	// not multipart
+	// not multipart: Starlette's request.form() is an empty form, the operation
+	// decides (verified against the Python server: unconfigured Gmail -> 503)
 	resp, out = e.do(t, "POST", "/api/gmail/send", `{}`)
-	if resp.StatusCode != 400 || out != `{"detail":"Richiesta non valida"}` {
+	if resp.StatusCode != 200 || out != `{"ok":true}` {
 		t.Error(resp.StatusCode, out)
 	}
 }

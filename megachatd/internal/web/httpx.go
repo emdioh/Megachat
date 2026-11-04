@@ -272,7 +272,8 @@ func etagFor(mod time.Time, size int64) string {
 func contentTypeFor(name string) string {
 	ct := mime.TypeByExtension(strings.ToLower(path.Ext(name)))
 	if ct == "" {
-		return "text/plain; charset=utf-8"
+		// Starlette >= 0.4x FileResponse default (older releases: text/plain).
+		return "application/octet-stream"
 	}
 	return ct
 }

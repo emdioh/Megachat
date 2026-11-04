@@ -224,10 +224,25 @@ func (s *Server) handleBulkDelete(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleGmailSend(w http.ResponseWriter, r *http.Request) {
-	form, err := s.parseForm(w, r, "file[]", gmailMaxFiles+1, 11*gmailMaxFile)
-	if err != nil {
-		writeDetail(w, 400, "Richiesta non valida")
-		return
+	var form *parsedForm
+	if ct := strings.ToLower(r.Header.Get("Content-Type")); !strings.HasPrefix(ct, "multipart/form-data") {
+		// Starlette's request.form() answers an empty form for any other
+		// content type (and parses urlencoded bodies).
+		form = &parsedForm{fields: map[string]string{}}
+		if strings.HasPrefix(ct, "application/x-www-form-urlencoded") && r.ParseForm() == nil {
+			for k, v := range r.PostForm {
+				if len(v) > 0 {
+					form.fields[k] = v[len(v)-1]
+				}
+			}
+		}
+	} else {
+		var err error
+		form, err = s.parseForm(w, r, "file[]", gmailMaxFiles+1, 11*gmailMaxFile)
+		if err != nil {
+			writeDetail(w, 400, "Richiesta non valida")
+			return
+		}
 	}
 	defer form.cleanup()
 	field := func(n string) string { return form.fields[n] }

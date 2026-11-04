@@ -13,7 +13,7 @@
 
 PYTHON ?= python
 
-.PHONY: test lint typecheck coverage format-check check live-test live-test-manual smoke
+.PHONY: test lint typecheck coverage format-check check live-test live-test-manual smoke contract-test
 
 # Esegue l'intera suite in tests/ — radice definita da testpaths.
 test:
@@ -59,3 +59,11 @@ live-test-manual:
 # Richiede `script` (util-linux) e curl. Vedi scripts/smoke_e2e.sh.
 smoke:
 	PY=$(PYTHON) bash scripts/smoke_e2e.sh
+
+# Black-box contract + parity tests of the Go server (megachatd): the binary is
+# driven only through its Unix socket (SocketClient), HTTP and WebSocket, and,
+# when fastapi/uvicorn are installed, diffed against `python -m server` on the
+# same seeded SQLite DB. Builds megachatd/cmd/megachatd unless $MEGACHATD_BIN
+# points at a binary. Needs Go; ~1 minute (heartbeat tests wait 5 s each).
+contract-test:
+	$(PYTHON) -m pytest tests/contract -p no:cacheprovider

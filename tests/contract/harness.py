@@ -150,6 +150,8 @@ def _env(root: Path, home: Path, token: str | None) -> dict[str, str]:
     run.mkdir(exist_ok=True)
     proj = root / "proj"
     proj.mkdir(exist_ok=True)
+    if not (proj / "web").exists():  # the SPA the Go server serves from <project>/web/static
+        (proj / "web").symlink_to(REPO / "web")
     env.update(
         HOME=str(home),
         XDG_RUNTIME_DIR=str(run),
@@ -176,6 +178,7 @@ def start_server(
     token: str | None = TOKEN,
     extra_args: tuple[str, ...] = (),
     extra_env: dict[str, str] | None = None,
+    py_root: Path | None = None,
 ) -> Server:
     """Start the Go binary (``kind="go"``) or the Python server (``"py"``) in
     a fresh temp HOME (a copy of *seed_home* when given), no real backend."""
@@ -198,7 +201,7 @@ def start_server(
     log = root / "stdout.log"
     with log.open("wb") as fh:
         proc = subprocess.Popen(
-            cmd, env=env, cwd=str(REPO if kind == "py" else root),
+            cmd, env=env, cwd=str(py_root or REPO) if kind == "py" else str(root),
             stdout=fh, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
         )
     srv = Server(kind, root, home, port, token or "", sock, proc, log)
@@ -214,6 +217,21 @@ def start_server(
     out = srv.log()
     srv.stop()
     raise RuntimeError(f"{kind} server did not come up:\n{out[-3000:]}")
+
+
+def copy_python_project(dest: Path) -> Path:
+    """A private copy of the Python sources.
+
+    ``protocols.config`` reads and WRITES ``<project>/config.json`` (and reads
+    ``.env``) next to the sources, so the Python server must not run from the
+    developer's checkout: settings writes would leak into it and between runs.
+    """
+    skip = shutil.ignore_patterns(
+        ".git", "tests", "docs", "documentation", "assets", "megachatd", "profiling",
+        "__pycache__", "*.png", "*.pyc", "config.json", ".env", ".venv*", "node_modules",
+    )
+    shutil.copytree(REPO, dest, ignore=skip)
+    return dest
 
 
 def _port_open(port: int) -> bool:
