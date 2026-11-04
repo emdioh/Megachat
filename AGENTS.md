@@ -126,3 +126,51 @@ bd prime                # Refresh Beads context
 
 **Architecture in one line:** issues live in a local Dolt DB; sync uses `refs/dolt/data` on your git remote; `.beads/issues.jsonl` is a passive export. See https://github.com/gastownhall/beads/blob/main/docs/core-concepts/sync-concepts.md for details and anti-patterns.
 <!-- END BEADS CODEX SETUP -->
+
+## Remote Worker Protocol (supervised)
+
+Workers implement beads; a supervisor session verifies and closes them. Dolt
+remote sync (`refs/dolt/data`) is NOT used: the shared queue is the git-tracked
+`.beads/issues.jsonl` on the integration branch `claude/elegant-cray-86jkrz`.
+
+**Setup (once per clone)**
+
+```bash
+git clone https://github.com/emdioh/Megachat && cd Megachat
+git checkout claude/elegant-cray-86jkrz
+npm i -g @beads/bd            # or: brew install beads
+bd bootstrap                  # builds the local DB from .beads/issues.jsonl
+git config beads.role contributor
+```
+
+Tooling: Go (version per `megachatd/go.mod`), Python 3.12+ with
+`pip install -r requirements.txt -r requirements-web.txt -r requirements-dev.txt`.
+
+**Per task**
+
+1. Sync: `git pull origin claude/elegant-cray-86jkrz && bd import`.
+2. Take the bead you were assigned (or `bd ready -l worker`):
+   `bd show <id>` and `bd update <id> --claim`.
+3. Branch: `git checkout -b worker/<id> origin/claude/elegant-cray-86jkrz`.
+4. Implement. Python under `server/`, `protocols/` is the behavioural
+   reference; the wire contract is `megachatd/CONTRACTS.md`. Never weaken or
+   skip tests to get green.
+5. Gates (all must pass; paste the summary lines in the note):
+   ```bash
+   cd megachatd && go vet ./... && go test -race ./... && cd ..
+   make contract-test
+   pytest tests/ -q -m "not live and not live-manual and not integration"
+   ```
+6. Hand off — do NOT close the bead, the supervisor does:
+   ```bash
+   bd label add <id> needs-review
+   bd note <id> "worker: <what changed, files, gate results, open questions>"
+   bd export -o .beads/issues.jsonl
+   git add -A && git commit -m "<id>: <summary>" && git push -u origin worker/<id>
+   ```
+7. Tell the user the bead is done. The supervisor fetches `worker/<id>`,
+   verifies, merges it into `claude/elegant-cray-86jkrz` and closes the bead,
+   or adds a `rework:` note and removes `needs-review`.
+
+Never push to `claude/elegant-cray-86jkrz` or `master` directly, never run
+`bd dolt push`, and keep one bead per branch.
