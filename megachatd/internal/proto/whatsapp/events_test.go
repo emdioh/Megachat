@@ -564,3 +564,78 @@ func TestWaitReadyRunsWarmupOnce(t *testing.T) {
 		t.Fatalf("lid_warmup_done published %d times", n)
 	}
 }
+
+// ---- HD dual upload (48c5d46) -----------------------------------------------------------------
+
+// hdParentMsg is the visible SD parent of an HD photo: the caption lives here.
+func hdParentMsg(caption string) *waE2E.Message {
+	return &waE2E.Message{ImageMessage: &waE2E.ImageMessage{
+		Mimetype: str("image/jpeg"), Caption: str(caption), DirectPath: str("/parent"),
+		ContextInfo: &waE2E.ContextInfo{PairedMediaType: waE2E.ContextInfo_SD_IMAGE_PARENT.Enum()},
+	}}
+}
+
+// hdChildMsg is the hidden HD child: associationType HD_*_DUAL_UPLOAD,
+// pairedMediaType *_CHILD, viewMode HIDDEN.
+func hdChildMsg(caption string) *waE2E.Message {
+	return &waE2E.Message{
+		ImageMessage: &waE2E.ImageMessage{
+			Mimetype: str("image/jpeg"), Caption: str(caption), DirectPath: str("/child"),
+			ContextInfo: &waE2E.ContextInfo{PairedMediaType: waE2E.ContextInfo_HD_IMAGE_CHILD.Enum()},
+		},
+		MessageContextInfo: &waE2E.MessageContextInfo{MessageAssociation: &waE2E.MessageAssociation{
+			AssociationType: waE2E.MessageAssociation_HD_IMAGE_DUAL_UPLOAD.Enum(),
+		}},
+	}
+}
+
+func TestIsHDChild(t *testing.T) {
+	if !isHDChild(hdChildMsg("foto con caption")) {
+		t.Error("HD dual-upload child not recognized")
+	}
+	if !isHDChild(&waE2E.Message{VideoMessage: &waE2E.VideoMessage{
+		Mimetype:    str("video/mp4"),
+		ContextInfo: &waE2E.ContextInfo{PairedMediaType: waE2E.ContextInfo_HD_VIDEO_CHILD.Enum()},
+	}}) {
+		t.Error("HD_VIDEO_CHILD paired type not recognized")
+	}
+	if isHDChild(hdParentMsg("foto con caption")) {
+		t.Error("SD parent must not be an HD child")
+	}
+	if isHDChild(&waE2E.Message{}) || isHDChild(nil) {
+		t.Error("empty/nil message must not be an HD child")
+	}
+}
+
+func TestMessageEventsDropsHDChild(t *testing.T) {
+	e := newEnv(t)
+	for _, fromMe := range []bool{false, true} {
+		child := dmEvent("391234567890", types.DefaultUserServer, "3A00000000000000000B", fromMe, hdChildMsg("foto con caption"))
+		if evs := e.b.messageEvents(child, false); len(evs) != 0 {
+			t.Errorf("fromMe=%v: HD child published %d events", fromMe, len(evs))
+		}
+		parent := dmEvent("391234567890", types.DefaultUserServer, "3A00000000000000000A", fromMe, hdParentMsg("foto con caption"))
+		got := one(t, e.b.messageEvents(parent, false))
+		if got.Type != proto.EventMessage || got.Payload["msg_type"] != "image" {
+			t.Fatalf("fromMe=%v: parent event = %+v", fromMe, got)
+		}
+	}
+}
+
+func TestOnMessageDropsHDChild(t *testing.T) {
+	e := newEnv(t)
+	e.b.onMessage(dmEvent("391234567890", types.DefaultUserServer, "3A00000000000000000B", false, hdChildMsg("foto con caption")))
+	if evs := drain(e.b); len(evs) != 0 {
+		t.Fatalf("HD child enqueued %d events", len(evs))
+	}
+	e.b.onMessage(dmEvent("391234567890", types.DefaultUserServer, "3A00000000000000000A", false, hdParentMsg("foto con caption")))
+	var messages int
+	for _, ev := range drain(e.b) {
+		if ev.Type == proto.EventMessage {
+			messages++
+		}
+	}
+	if messages != 1 {
+		t.Fatalf("parent published %d message events", messages)
+	}
+}

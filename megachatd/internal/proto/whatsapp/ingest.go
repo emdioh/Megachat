@@ -159,8 +159,33 @@ func (b *Backend) addCachedLocked(contact string, e *entry) {
 	b.sortContactCacheLocked(contact)
 }
 
+// reconcileTextCandidatesLocked is _reconcile_text_candidates: the outgoing
+// text rows of contact that may be the local "ghost" of a remote history
+// message. History reconcile: the same send can come back from the phone with
+// a different id than the one of the web path (#198). A candidate is plausible
+// only if it is CLOSE in time (echoMatchWindowMs) and its id is NOT among the
+// ids of the same remote page (otherwise it is a distinct remote message).
+// Without these bounds a "Grazie mille" sent today was merged into an
+// identical one from weeks before and disappeared.
+func (b *Backend) reconcileTextCandidatesLocked(contact, text string, ts int64, remoteIDs map[string]bool) []*entry {
+	var cands []*entry
+	for _, m := range b.cache[contact] {
+		if !m.IsMine || m.Text != text || m.msgType() != "text" || m.AttachmentID != "" {
+			continue
+		}
+		if absInt64(m.Timestamp-ts) > echoMatchWindowMs {
+			continue
+		}
+		if m.ID != "" && remoteIDs[CanonicalMsgID(m.ID)] {
+			continue
+		}
+		cands = append(cands, m)
+	}
+	return cands
+}
+
 // messageAlreadyCachedLocked is _message_already_cached.
-func (b *Backend) messageAlreadyCachedLocked(contact string, ts int64, isMine bool, text, msgID, attachmentID, msgType string, reconcile bool) *entry {
+func (b *Backend) messageAlreadyCachedLocked(contact string, ts int64, isMine bool, text, msgID, attachmentID, msgType string, reconcile bool, remoteIDs map[string]bool) *entry {
 	entries := b.cache[contact]
 	var bestIdless *entry
 	var bestDelta int64 = -1
@@ -216,13 +241,7 @@ func (b *Backend) messageAlreadyCachedLocked(contact string, ts int64, isMine bo
 		return bestIdless
 	}
 	if reconcile && isMine && msgID != "" && strings.TrimSpace(text) != "" && attachmentID == "" && msgType == "text" {
-		var cands []*entry
-		for _, m := range entries {
-			if m.IsMine && m.Text == text && m.msgType() == "text" && m.AttachmentID == "" {
-				cands = append(cands, m)
-			}
-		}
-		if len(cands) == 1 {
+		if cands := b.reconcileTextCandidatesLocked(contact, text, ts, remoteIDs); len(cands) == 1 {
 			return cands[0]
 		}
 	}
@@ -339,18 +358,18 @@ func (b *Backend) upgradeOutgoingAttachmentLocked(ctx context.Context, contactID
 func (b *Backend) IngestMessage(ctx context.Context, contactID string, msg map[string]any, ts int64) (proto.IngestResult, error) {
 	b.ingestMu.Lock()
 	defer b.ingestMu.Unlock()
-	return b.ingestLocked(ctx, contactID, parseInMsg(msg), ts, true, false), nil
+	return b.ingestLocked(ctx, contactID, parseInMsg(msg), ts, true, false, nil), nil
 }
 
 // ingestLocked is ingest_message with ingestMu held: it stores a message into
 // SQLite and the in-memory cache, deduplicating against what is cached.
-func (b *Backend) ingestLocked(ctx context.Context, contactID string, d inMsg, ts int64, persist, reconcile bool) proto.IngestResult {
+func (b *Backend) ingestLocked(ctx context.Context, contactID string, d inMsg, ts int64, persist, reconcile bool, remoteIDs map[string]bool) proto.IngestResult {
 	if d.MsgType == "image" {
 		d.Text = ""
 	}
 	text, isMine, msgID := d.Text, d.IsMine, d.ID
 
-	existing := b.messageAlreadyCachedLocked(contactID, ts, isMine, text, msgID, d.AttachmentID, d.MsgType, reconcile)
+	existing := b.messageAlreadyCachedLocked(contactID, ts, isMine, text, msgID, d.AttachmentID, d.MsgType, reconcile, remoteIDs)
 	if existing != nil {
 		if reconcile && msgID != "" && existing.ID != "" && existing.ID != msgID {
 			b.log.Info("history reconcile kept original id", "kept", existing.ID, "remote", msgID, "contact", contactID)
@@ -431,13 +450,7 @@ func (b *Backend) ingestLocked(ctx context.Context, contactID string, d inMsg, t
 	}
 
 	if reconcile && isMine && msgID != "" && strings.TrimSpace(text) != "" && d.AttachmentID == "" && d.MsgType == "text" {
-		n := 0
-		for _, m := range b.cache[contactID] {
-			if m.IsMine && m.Text == text && m.msgType() == "text" && m.AttachmentID == "" {
-				n++
-			}
-		}
-		if n >= 2 {
+		if n := len(b.reconcileTextCandidatesLocked(contactID, text, ts, remoteIDs)); n >= 2 {
 			b.log.Warn("history reconcile skipped ambiguous outgoing text", "contact", contactID, "remote_id", msgID, "candidates", n)
 			return proto.IngestUnchanged
 		}

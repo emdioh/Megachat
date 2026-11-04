@@ -224,10 +224,96 @@ func TestHistoryReconcileKeepsOriginalID(t *testing.T) {
 	e := newEnv(t)
 	seed(e.b, "39@c.us", &entry{ID: "true_39@c.us_OLD1", IsMine: true, Text: "x", Timestamp: 1000, Status: "sent"})
 	e.b.ingestMu.Lock()
-	r := e.b.ingestLocked(ctx, "39@c.us", inMsg{ID: "true_39@c.us_NEW2", Text: "x", IsMine: true, MsgType: "text"}, 1500, true, true)
+	r := e.b.ingestLocked(ctx, "39@c.us", inMsg{ID: "true_39@c.us_NEW2", Text: "x", IsMine: true, MsgType: "text"}, 1500, true, true, nil)
 	e.b.ingestMu.Unlock()
 	if r != proto.IngestUnchanged || cached(e.b, "39@c.us")[0].ID != "true_39@c.us_OLD1" {
 		t.Fatalf("history reconcile must keep the original id (r=%v)", r)
+	}
+}
+
+// ---- history reconcile ghost (48c5d46) -------------------------------------------------------
+
+// The out-of-window/remote-page guards on the "unique outgoing text" merge:
+// without them an identical message from weeks before swallowed a new send.
+const (
+	reconcileTestTS int64 = 1_700_000_000_000
+	reconcileWeek   int64 = 7 * 24 * 3600 * 1000
+)
+
+func reconcileIngest(t *testing.T, b *Backend, contact string, d inMsg, ts int64, remoteIDs map[string]bool) proto.IngestResult {
+	t.Helper()
+	b.ingestMu.Lock()
+	defer b.ingestMu.Unlock()
+	return b.ingestLocked(ctx, contact, d, ts, true, true, remoteIDs)
+}
+
+func cachedIDs(b *Backend, contact string) []string {
+	var ids []string
+	for _, m := range cached(b, contact) {
+		ids = append(ids, m.ID)
+	}
+	return ids
+}
+
+func TestReconcileSameTextWeeksApartIsNewMessage(t *testing.T) {
+	e := newEnv(t)
+	if _, err := e.b.IngestMessage(ctx, "39@c.us", map[string]any{
+		"id": "true_39@c.us_OLD1", "text": "Grazie mille", "is_mine": true}, reconcileTestTS); err != nil {
+		t.Fatal(err)
+	}
+	r := reconcileIngest(t, e.b, "39@c.us",
+		inMsg{ID: "true_39@c.us_NEW2", Text: "Grazie mille", IsMine: true, MsgType: "text"}, reconcileTestTS+4*reconcileWeek, nil)
+	if r != proto.IngestAdded {
+		t.Fatalf("a send weeks after an identical one is a new message (r=%v)", r)
+	}
+	if got := cachedIDs(e.b, "39@c.us"); len(got) != 2 || got[0] != "true_39@c.us_OLD1" || got[1] != "true_39@c.us_NEW2" {
+		t.Errorf("cache ids = %v", got)
+	}
+	if rows := dbRows(t, e, "39@c.us"); len(rows) != 2 {
+		t.Errorf("db rows = %d", len(rows))
+	}
+}
+
+func TestReconcileOldAmbiguousCandidatesDoNotSkip(t *testing.T) {
+	e := newEnv(t)
+	seed(e.b, "39@c.us",
+		&entry{ID: "X", IsMine: true, Text: "OK", Timestamp: reconcileTestTS, Status: "sent"},
+		&entry{ID: "Y", IsMine: true, Text: "OK", Timestamp: reconcileTestTS + 1000, Status: "sent"})
+	r := reconcileIngest(t, e.b, "39@c.us",
+		inMsg{ID: "Z", Text: "OK", IsMine: true, MsgType: "text"}, reconcileTestTS+reconcileWeek, nil)
+	if r != proto.IngestAdded {
+		t.Fatalf("old candidates outside the echo window must not skip the message (r=%v)", r)
+	}
+	if got := cachedIDs(e.b, "39@c.us"); len(got) != 3 || got[2] != "Z" {
+		t.Errorf("cache ids = %v", got)
+	}
+}
+
+func TestReconcileCandidatePresentInRemotePageIsDistinct(t *testing.T) {
+	e := newEnv(t)
+	seed(e.b, "39@c.us", &entry{ID: "X", IsMine: true, Text: "OK", Timestamp: reconcileTestTS, Status: "sent"})
+	// X is in the same remote page: it is a distinct message, not Z's ghost.
+	r := reconcileIngest(t, e.b, "39@c.us",
+		inMsg{ID: "Z", Text: "OK", IsMine: true, MsgType: "text"}, reconcileTestTS+2000, map[string]bool{"X": true, "Z": true})
+	if r != proto.IngestAdded {
+		t.Fatalf("a candidate whose id is in the remote page must not be merged (r=%v)", r)
+	}
+	if got := cachedIDs(e.b, "39@c.us"); len(got) != 2 || got[0] != "X" || got[1] != "Z" {
+		t.Errorf("cache ids = %v", got)
+	}
+}
+
+func TestReconcileEchoWithinWindowMerges(t *testing.T) {
+	e := newEnv(t)
+	seed(e.b, "39@c.us", &entry{ID: "local-id", IsMine: true, Text: "from web", Timestamp: reconcileTestTS, Status: "sent"})
+	r := reconcileIngest(t, e.b, "39@c.us",
+		inMsg{ID: "history-hex-id", Text: "from web", IsMine: true, MsgType: "text"}, reconcileTestTS+1000,
+		map[string]bool{"history-hex-id": true})
+	if r != proto.IngestUnchanged {
+		t.Fatalf("a recent distant-id echo of the web send must merge (r=%v)", r)
+	}
+	if got := cachedIDs(e.b, "39@c.us"); len(got) != 1 || got[0] != "local-id" {
+		t.Errorf("cache ids = %v", got)
 	}
 }
 

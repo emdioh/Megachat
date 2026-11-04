@@ -248,6 +248,44 @@ func extractContent(m *waE2E.Message) content {
 	return c
 }
 
+// hdChildPairedTypes are the ContextInfo.PairedMediaType values that mark the
+// hidden HD twin of a media message (they all end in "_CHILD").
+var hdChildPairedTypes = map[waE2E.ContextInfo_PairedMediaType]bool{
+	waE2E.ContextInfo_HD_VIDEO_CHILD:       true,
+	waE2E.ContextInfo_HD_IMAGE_CHILD:       true,
+	waE2E.ContextInfo_MOTION_PHOTO_CHILD:   true,
+	waE2E.ContextInfo_HEVC_VIDEO_CHILD:     true,
+	waE2E.ContextInfo_AV1_VIDEO_CHILD:      true,
+	waE2E.ContextInfo_STREAMED_VIDEO_CHILD: true,
+}
+
+// hdDualUploadAssociations are the MessageAssociation types of an HD dual
+// upload (the child carries one; the visible parent does not).
+var hdDualUploadAssociations = map[waE2E.MessageAssociation_AssociationType]bool{
+	waE2E.MessageAssociation_HD_VIDEO_DUAL_UPLOAD: true,
+	waE2E.MessageAssociation_HD_IMAGE_DUAL_UPLOAD: true,
+}
+
+// isHDChild is _is_hd_child: true for the hidden HD child of an "HD dual
+// upload". A photo/video uploaded in HD travels as TWO messages — the visible
+// SD parent (pairedMediaType SD_*_PARENT, with the caption) and, about a
+// second later, the hidden HD child (associationType HD_*_DUAL_UPLOAD,
+// pairedMediaType *_CHILD, viewMode HIDDEN, pointing at the parent). Official
+// clients show only the parent: the child must be dropped, or the chat shows
+// the same photo twice.
+func isHDChild(m *waE2E.Message) bool {
+	if m == nil {
+		return false
+	}
+	if a := m.GetMessageContextInfo().GetMessageAssociation().GetAssociationType(); hdDualUploadAssociations[a] {
+		return true
+	}
+	if c := extractContent(m).Ctx; c != nil && hdChildPairedTypes[c.GetPairedMediaType()] {
+		return true
+	}
+	return false
+}
+
 // mapsURL is location_thumbs.maps_url.
 func mapsURL(lat, lng float64) string {
 	return fmt.Sprintf("https://maps.google.com/?q=%.6f,%.6f", lat, lng)

@@ -266,3 +266,71 @@ func TestSelectResyncTargetsAndResync(t *testing.T) {
 		t.Error("not connected")
 	}
 }
+
+// ---- HD dual upload (48c5d46) -----------------------------------------------------------------
+
+func mediaWebMsg(chat, id string, fromMe bool, ts uint64, m *waE2E.Message) *waHistorySync.HistorySyncMsg {
+	return &waHistorySync.HistorySyncMsg{Message: &waWeb.WebMessageInfo{
+		Key:              &waCommon.MessageKey{RemoteJID: gproto.String(chat), FromMe: gproto.Bool(fromMe), ID: gproto.String(id)},
+		MessageTimestamp: gproto.Uint64(ts),
+		Message:          m,
+		Status:           waWeb.WebMessageInfo_READ.Enum(),
+	}}
+}
+
+func TestHistorySyncSkipsHDChild(t *testing.T) {
+	e := newEnv(t)
+	chat := "391234567890@s.whatsapp.net"
+	e.b.onHistorySync(&events.HistorySync{Data: &waHistorySync.HistorySync{
+		Conversations: []*waHistorySync.Conversation{conv(chat, 0,
+			mediaWebMsg(chat, "3A00000000000000000A", false, 1_700_000_001, hdParentMsg("foto con caption")),
+			mediaWebMsg(chat, "3A00000000000000000B", false, 1_700_000_002, hdChildMsg("foto con caption")),
+		)},
+	}})
+	rows := dbRows(t, e, "391234567890@c.us")
+	if len(rows) != 1 || store0(rows[0].MsgID) != "false_391234567890@c.us_3A00000000000000000A" {
+		t.Fatalf("history must keep only the SD parent: %+v", rows)
+	}
+	// The child's media is not remembered either: nothing to download.
+	childKey := CanonicalMsgID("false_391234567890@c.us_3A00000000000000000B")
+	e.b.mediaInfo.mu.Lock()
+	_, remembered := e.b.mediaInfo.mem[childKey]
+	e.b.mediaInfo.mu.Unlock()
+	if remembered {
+		t.Error("the HD child media must not be remembered")
+	}
+	for _, ev := range drain(e.b) {
+		if ev.Type == proto.EventMessage {
+			t.Errorf("history must not publish message events: %+v", ev)
+		}
+	}
+}
+
+// ---- history reconcile ghost (48c5d46) -------------------------------------------------------
+
+func TestHistorySyncKeepsRepeatedTextSentFromPhone(t *testing.T) {
+	e := newEnv(t)
+	chat := "391234567890@s.whatsapp.net"
+	oldID, newID := "3A00000000000000000001", "3A00000000000000000002"
+	if _, err := e.b.IngestMessage(ctx, "391234567890@c.us", map[string]any{
+		"id": "true_391234567890@c.us_" + oldID, "text": "Grazie mille", "is_mine": true}, reconcileTestTS); err != nil {
+		t.Fatal(err)
+	}
+	newTS := reconcileTestTS + 4*reconcileWeek
+	e.b.onHistorySync(&events.HistorySync{Data: &waHistorySync.HistorySync{
+		Conversations: []*waHistorySync.Conversation{conv(chat, 0,
+			webMsg(chat, oldID, true, uint64(reconcileTestTS/1000), "Grazie mille", waWeb.WebMessageInfo_READ),
+			webMsg(chat, newID, true, uint64(newTS/1000), "Grazie mille", waWeb.WebMessageInfo_READ),
+		)},
+	}})
+	rows := dbRows(t, e, "391234567890@c.us")
+	want := []string{"true_391234567890@c.us_" + oldID, "true_391234567890@c.us_" + newID}
+	if len(rows) != len(want) {
+		t.Fatalf("both sends must survive the reconcile: %+v", rows)
+	}
+	for i, w := range want {
+		if got := store0(rows[i].MsgID); got != w {
+			t.Errorf("row %d id = %q, want %q", i, got, w)
+		}
+	}
+}

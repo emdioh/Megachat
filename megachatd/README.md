@@ -154,3 +154,31 @@ only when the raw id is not also a listed user.
 
 Not verifiable offline: that real accounts' `entities` tables contain the groups/channels that
 have overrides (an override for a chat unknown to both session and messages is kept as-is).
+
+## WhatsApp: HD dual upload and the WAHA purge script (mc-zao.5.3)
+
+A photo/video uploaded in HD arrives from WhatsApp as **two** messages: the visible SD
+parent (`pairedMediaType: SD_*_PARENT`, carrying the caption) and, about a second later, the
+hidden HD child (`associationType: HD_*_DUAL_UPLOAD`, `pairedMediaType: *_CHILD`). Official
+clients show only the parent. Python's 48c5d46 added `_is_hd_child` and dropped the child in
+the event mapping, in the `fetch_history` loop (before any download) and in the synthetic
+`message.ack` path.
+
+The Go backend does the same from whatsmeow's protobufs
+(`internal/proto/whatsapp/convert.go::isHDChild`): it reads
+`messageContextInfo.messageAssociation.associationType` (the HD_IMAGE/HD_VIDEO_DUAL_UPLOAD
+values) or the media `contextInfo.pairedMediaType` (`*_CHILD`). `messageEvents` returns no
+event for a child, so the live path, the history-sync ingestion (and its media prefetch) skip
+it. WAHA's separate `message.ack` synthetic-message path has no whatsmeow equivalent:
+whatsmeow delivers the real message events, so there is nothing else to guard.
+
+`purge_wa_hd_children.py` (repo root, Python) is **not ported**. It repairs a DB written by
+the old WAHA backend by fetching each "suspect" row from WAHA
+(`GET /api/{session}/chats/{chat}/messages/{id}?downloadMedia=false`) and deleting only the
+ones WAHA confirms as HD children. whatsmeow has no fetch-message-by-id call and megachatd's
+`messages` table does not store `associationType`/`pairedMediaType`, so that verification
+cannot be reproduced in Go; an unverified "same chat, same type, same caption, ±3 s"
+heuristic would also match legitimate album photos. A DB that already contains WAHA-era HD
+children must be cleaned with the Python script (it operates on the shared `messages.db`)
+while the WAHA API is still reachable; after the cutover the Go backend cannot tell those old
+rows apart. New traffic never stores the child.
