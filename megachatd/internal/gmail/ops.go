@@ -113,6 +113,11 @@ func RegisterOps(reg *ops.Registry, deps Deps) *Service {
 				}
 				folder = &f
 			}
+			// Python loads the settings (Gmail non configurato) before it
+			// validates the UID list.
+			if _, err := svc.loadSettings(); err != nil {
+				return api.GmailBulkDeleteOut{}, svc.mapErr("delete_messages", err)
+			}
 			uids, err := validateUIDs(r.Uids)
 			if err != nil {
 				return api.GmailBulkDeleteOut{}, svc.mapErr("delete_messages", err)

@@ -24,6 +24,24 @@ func invalid(errs ...fieldError) *ops.Error {
 	return &ops.Error{Code: api.CodeInvalidRequest, Message: "Invalid request", Details: errs}
 }
 
+// merge combines the failures of several fields into one invalid_request:
+// pydantic reports every offending field, not only the first.
+func merge(errs ...*ops.Error) *ops.Error {
+	var all []fieldError
+	for _, e := range errs {
+		if e == nil {
+			continue
+		}
+		if d, ok := e.Details.([]fieldError); ok {
+			all = append(all, d...)
+		}
+	}
+	if len(all) == 0 {
+		return nil
+	}
+	return invalid(all...)
+}
+
 type fields map[string]json.RawMessage
 
 func parseFields(params json.RawMessage) (fields, *ops.Error) {
@@ -135,25 +153,23 @@ func decodePage(params json.RawMessage) (api.MessagesPageRequest, *ops.Error) {
 	if err != nil {
 		return req, err
 	}
-	if req.Protocol, err = f.protocolField(); err != nil {
-		return req, err
-	}
-	if req.ContactID, err = f.stringField("contact_id"); err != nil {
-		return req, err
-	}
-	if req.Refresh, err = f.boolField("refresh"); err != nil {
-		return req, err
-	}
+	var perr, cerr, rerr, lerr, serr *ops.Error
+	req.Protocol, perr = f.protocolField()
+	req.ContactID, cerr = f.stringField("contact_id")
+	req.Refresh, rerr = f.boolField("refresh")
 	if v, ok, e := f.intField("limit"); e != nil {
-		return req, e
+		lerr = e
 	} else if ok {
 		n := int(v)
 		req.Limit = &n
 	}
 	if v, ok, e := f.intField("since"); e != nil {
-		return req, e
+		serr = e
 	} else if ok {
 		req.Since = &v
+	}
+	if e := merge(perr, cerr, rerr, lerr, serr); e != nil {
+		return req, e
 	}
 	return req, nil
 }
@@ -165,30 +181,27 @@ func decodeWindow(params json.RawMessage) (api.MessagesWindowRequest, *ops.Error
 	if err != nil {
 		return req, err
 	}
-	if req.Protocol, err = f.protocolField(); err != nil {
-		return req, err
-	}
-	if req.ContactID, err = f.stringField("contact_id"); err != nil {
-		return req, err
-	}
-	if req.Refresh, err = f.boolField("refresh"); err != nil {
-		return req, err
-	}
+	var perr, cerr, rerr, lerr *ops.Error
+	req.Protocol, perr = f.protocolField()
+	req.ContactID, cerr = f.stringField("contact_id")
+	req.Refresh, rerr = f.boolField("refresh")
 	if raw, ok := f.get("refresh_limit"); ok {
 		v, present, e := f.intField("refresh_limit")
-		if e != nil {
-			return req, e
+		switch {
+		case e != nil:
+			lerr = e
+		case !present && isNull(raw):
+			lerr = invalid(fieldError{"int_type", []string{"refresh_limit"}, "Input should be a valid integer"})
+		case v < 1:
+			lerr = invalid(fieldError{"greater_than_equal", []string{"refresh_limit"}, "Input should be greater than or equal to 1"})
+		case v > maxRefreshLimit:
+			lerr = invalid(fieldError{"less_than_equal", []string{"refresh_limit"}, "Input should be less than or equal to 200"})
+		default:
+			req.RefreshLimit = int(v)
 		}
-		if !present && isNull(raw) {
-			return req, invalid(fieldError{"int_type", []string{"refresh_limit"}, "Input should be a valid integer"})
-		}
-		if v < 1 {
-			return req, invalid(fieldError{"greater_than_equal", []string{"refresh_limit"}, "Input should be greater than or equal to 1"})
-		}
-		if v > maxRefreshLimit {
-			return req, invalid(fieldError{"less_than_equal", []string{"refresh_limit"}, "Input should be less than or equal to 200"})
-		}
-		req.RefreshLimit = int(v)
+	}
+	if e := merge(perr, cerr, rerr, lerr); e != nil {
+		return req, e
 	}
 	return req, nil
 }

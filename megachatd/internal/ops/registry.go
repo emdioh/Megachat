@@ -112,6 +112,9 @@ func (r *Registry) Call(ctx context.Context, name string, params json.RawMessage
 	if len(params) == 0 || string(params) == "null" {
 		params = json.RawMessage("{}")
 	}
+	if verr := validateRequest(name, params); verr != nil {
+		return nil, verr
+	}
 	return op.Handler(ctx, params)
 }
 
@@ -175,7 +178,7 @@ func (r *Registry) ClientCounts() map[string]int {
 func Decode[T any](params json.RawMessage) (T, error) {
 	var v T
 	if err := json.Unmarshal(params, &v); err != nil {
-		return v, &Error{Code: api.CodeInvalidRequest, Message: "Invalid request", Details: err.Error()}
+		return v, &Error{Code: api.CodeInvalidRequest, Message: "Invalid request", Details: decodeDetails(err)}
 	}
 	return v, nil
 }
@@ -189,4 +192,33 @@ func Typed[Req any, Resp any](f func(ctx context.Context, req Req) (Resp, error)
 		}
 		return f(ctx, req)
 	}
+}
+
+// decodeDetails maps a Go decoding failure to pydantic-shaped details (the
+// wire never carries Go error texts).
+func decodeDetails(err error) []api.ValidationDetail {
+	var te *json.UnmarshalTypeError
+	if errors.As(err, &te) {
+		loc := []any{}
+		if te.Field != "" {
+			loc = append(loc, te.Field)
+		}
+		typ, msg := "value_error", "Input is not valid"
+		switch te.Type.Kind().String() {
+		case "string":
+			typ, msg = "string_type", "Input should be a valid string"
+		case "bool":
+			typ, msg = "bool_type", "Input should be a valid boolean"
+		case "int", "int8", "int16", "int32", "int64", "uint", "uint8", "uint16", "uint32", "uint64":
+			typ, msg = "int_type", "Input should be a valid integer"
+		case "float32", "float64":
+			typ, msg = "float_type", "Input should be a valid number"
+		case "slice", "array":
+			typ, msg = "list_type", "Input should be a valid list"
+		case "map", "struct":
+			typ, msg = "dict_type", "Input should be a valid dictionary"
+		}
+		return []api.ValidationDetail{{Type: typ, Loc: loc, Msg: msg}}
+	}
+	return []api.ValidationDetail{{Type: "json_invalid", Loc: []any{}, Msg: "Invalid JSON"}}
 }
