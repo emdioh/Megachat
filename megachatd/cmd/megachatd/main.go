@@ -23,8 +23,6 @@ import (
 
 	"github.com/emdioh/megachat/megachatd/internal/config"
 	"github.com/emdioh/megachat/megachatd/internal/core"
-	"github.com/emdioh/megachat/megachatd/internal/proto"
-	"github.com/emdioh/megachat/megachatd/internal/proto/fake"
 	"github.com/emdioh/megachat/megachatd/internal/rpc"
 )
 
@@ -33,16 +31,6 @@ var Version = "0.1.0-go"
 
 // LogFileEnv overrides the log file (Python: fixed /tmp/signal-tui.log).
 const LogFileEnv = "MEGACHAT_LOG_FILE"
-
-// FakeBackendEnv, when set to a protocol id ("signal", "whatsapp",
-// "telegram"), makes "serve" register the in-memory proto/fake backend for
-// that protocol instead of the configured ones and seeds a single contact
-// named FakeContactID. It is a contract-test hook: unset (the default) leaves
-// the production wiring untouched.
-const (
-	FakeBackendEnv = "MEGACHAT_FAKE_BACKEND"
-	FakeContactID  = "fake-contact"
-)
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
@@ -205,13 +193,7 @@ func serve(args []string, stdout, stderr io.Writer, hooks *serveHooks) int {
 	defer release()
 
 	opts := BuildOptions{Config: cfg, Log: log, LogBuffer: logBuf}
-	if protocol := strings.TrimSpace(os.Getenv(FakeBackendEnv)); protocol != "" {
-		fb := fake.New(protocol)
-		fb.SetContacts(proto.Contact{ID: FakeContactID, DisplayName: "Fake Contact", Protocol: protocol})
-		opts.ExtraBackends = []proto.Backend{fb}
-		opts.OnlyExtraBackends = true
-		log.Warn("test-only fake backend registered", "protocol", protocol, "env", FakeBackendEnv)
-	}
+	applyFakeBackend(&opts, log) // no-op unless built with -tags contracttest
 	app, err := Build(opts)
 	if err != nil {
 		log.Error("startup failed", "err", err)

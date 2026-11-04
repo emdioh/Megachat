@@ -1,8 +1,9 @@
 """``messages.send`` / ``POST /api/send`` carry the real backend message ids.
 
 The Go server is started with the contract-only fake backend hook
-(``MEGACHAT_FAKE_BACKEND``, see megachatd/cmd/megachatd/main.go): the hook
-registers megachatd/internal/proto/fake and seeds one contact.  The assertions
+(``MEGACHAT_FAKE_BACKEND``, compiled in only for ``-tags contracttest``: see
+megachatd/cmd/megachatd/fakebackend_contracttest.go): the hook registers
+megachatd/internal/proto/fake and seeds the contacts below.  The assertions
 are the documented contract (megachatd/CONTRACTS.md 4.3.2 and 7.2, mirroring
 server/ops/send.py, tests/test_send_message_ids.py):
 
@@ -22,6 +23,9 @@ from harness import Server, start_server
 
 #: Seeded by the fake-backend hook.
 CONTACT = "fake-contact"
+
+#: Seeded by the fake-backend hook; its sends carry no backend id.
+EMPTY_ID_CONTACT = "fake-empty-id"
 
 #: Smallest valid PNG (the same bytes tests/test_send_message_ids.py uses).
 _PNG_1X1 = bytes.fromhex(
@@ -161,3 +165,20 @@ def test_socket_op_send_returns_message_ids(send_server: Server):
         },
     )
     assert replay == {"ok": True, "duplicate": True}
+
+
+def test_send_without_backend_id_answers_empty_message_ids(send_server: Server):
+    """A send the backend acknowledges without an id still answers ok with []."""
+    out = send_server.call(
+        "messages.send",
+        {"protocol": "signal", "contact_id": EMPTY_ID_CONTACT, "text": "no id"},
+    )
+    assert out == {"ok": True, "message_ids": []}
+
+    r = send_server.http(
+        "POST",
+        "/api/send",
+        json_body={"protocol": "signal", "contact_id": EMPTY_ID_CONTACT, "text": "no id"},
+    )
+    assert r.status == 200, r.body
+    assert r.json() == {"ok": True, "message_ids": []}

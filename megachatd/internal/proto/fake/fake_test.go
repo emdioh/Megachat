@@ -43,3 +43,25 @@ func TestFakeBasics(t *testing.T) {
 		t.Fatal("delay must honour ctx")
 	}
 }
+
+// SetEmptySendIDs simulates a backend that acknowledges a send without an id.
+func TestEmptySendIDs(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	f := fake.New("signal")
+	f.SetEmptySendIDs("silent")
+	if id, err := f.SendMessage(ctx, "silent", "hi", proto.Quote{}); err != nil || id != "" {
+		t.Fatalf("empty-id send = %q, %v", id, err)
+	}
+	if h, _ := f.FetchHistory(ctx, "silent", 0); len(h) != 0 {
+		t.Fatalf("a send without an id must not add history: %+v", h)
+	}
+	// Other contacts keep real ids, and the knob clears.
+	if id, err := f.SendMessage(ctx, "loud", "hi", proto.Quote{}); err != nil || id == "" {
+		t.Fatalf("default send = %q, %v", id, err)
+	}
+	f.SetEmptySendIDs()
+	if id, err := f.SendMessage(ctx, "silent", "hi", proto.Quote{}); err != nil || id == "" {
+		t.Fatalf("cleared knob send = %q, %v", id, err)
+	}
+}

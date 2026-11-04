@@ -63,10 +63,15 @@ smoke:
 # Black-box contract + parity tests of the Go server (megachatd): the binary is
 # driven only through its Unix socket (SocketClient), HTTP and WebSocket, and,
 # when fastapi/uvicorn are installed, diffed against `python -m server` on the
-# same seeded SQLite DB. Builds megachatd/cmd/megachatd unless $MEGACHATD_BIN
-# points at a binary. Needs Go; ~1 minute (heartbeat tests wait 5 s each).
+# same seeded SQLite DB. Needs Go; ~1 minute (heartbeat tests wait 5 s each).
+#
+# The binary is built with -tags contracttest: that build alone carries the
+# MEGACHAT_FAKE_BACKEND hook the send tests drive. Release targets
+# (megachatd, megachatd-static, .github/workflows/megachatd.yml) stay tag-free.
+# A $MEGACHATD_BIN from outside must have been built with the same tag.
 contract-test:
-	$(PYTHON) -m pytest tests/contract -p no:cacheprovider
+	cd megachatd && go build -tags contracttest -o bin/megachatd-contracttest ./cmd/megachatd
+	MEGACHATD_BIN=$(CURDIR)/megachatd/bin/megachatd-contracttest $(PYTHON) -m pytest tests/contract -p no:cacheprovider
 
 # Compila il server Go: megachatd/bin/megachatd (usato da launcher e TUI).
 # Serve Go (versione minima in megachatd/go.mod).
