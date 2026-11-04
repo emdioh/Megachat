@@ -35,6 +35,8 @@ def run(tmp_path: Path):
         "MEGACHAT_OPENRC_RUNLEVELS": str(tmp_path / "runlevels"),
         "MEGACHAT_PUBLIC_HOST": "myhost",
         "MEGACHAT_INIT": "systemd",
+        # No real server behind the service stubs: skip the readiness wait.
+        "MEGACHAT_SERVER_WAIT_S": "0",
     }
     # The suite's own lock/socket overrides would hide the instance's ones.
     for key in ("MEGACHAT_HOME", "MEGACHAT_LOCK_FILE", "MEGACHAT_SOCKET"):
@@ -176,6 +178,10 @@ def test_docker_limits_and_extra_compose_files(run, tmp_path: Path) -> None:
     _run("up", "a1", "--no-docker-limits", "--compose-file", str(extra))
     last = _compose_calls(log)[-1]
     assert "resources.yml" not in last and last.endswith(f"-f {extra} up -d")
+    # The choice is persisted so service starts (which run `up` again) match.
+    assert "\nWAHA_DOCKER_LIMITS=0\n" in (root / "a1" / ".env").read_text()
+    _run("up", "a1")
+    assert "resources.yml" not in _compose_calls(log)[-1]
 
     _run("create", "a2", "--no-docker-limits", "--compose-file", str(extra))
     env = (root / "a2" / ".env").read_text()
@@ -295,6 +301,33 @@ def test_doctor_reports_problems(run) -> None:
     assert "not running" in out
     assert "not listening yet" in out  # webhook: only a warning before linking
     assert "problem(s) found" in out
+
+
+def test_up_fails_when_the_container_is_not_running(run, tmp_path: Path) -> None:
+    """A silent `docker compose up` success must not hide a dead container."""
+    _run, _, _ = run
+    _run("create", "amico")
+    fakebin = tmp_path / "dockerbin"
+    fakebin.mkdir()
+    stub = fakebin / "docker"
+    stub.write_text(
+        "#!/bin/sh\n"
+        'case "$1" in\n'
+        "  inspect) echo exited ;;\n"
+        '  logs) echo "WAHA exited before binding" ;;\n'
+        "esac\n"
+        "exit 0\n"
+    )
+    stub.chmod(0o755)
+    result = _run(
+        "up",
+        "amico",
+        check=False,
+        extra={"PATH": f"{fakebin}:{os.environ['PATH']}", "MEGACHAT_WAHA_WAIT_S": "0"},
+    )
+    assert result.returncode != 0
+    assert "is 'exited' after 'up'" in result.stderr
+    assert "WAHA exited before binding" in result.stderr
 
 
 def test_probe_helper() -> None:

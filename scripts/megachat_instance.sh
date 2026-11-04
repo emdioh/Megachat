@@ -373,15 +373,103 @@ describe_compose() {
     echo "$joined"
 }
 
+# Seconds to wait for the WAHA API after `up` (0 disables the wait).
+waha_wait_seconds() {
+    local value="${MEGACHAT_WAHA_WAIT_S:-60}"
+    case "$value" in ''|*[!0-9]*) value=60 ;; esac
+    echo "$value"
+}
+
+container_status() {
+    docker inspect -f '{{.State.Status}}' "$1" 2>/dev/null || true
+}
+
+# Last lines of the container log, indented for a diagnostic message.
+waha_log_tail() {
+    local container="$1" lines="${2:-20}"
+    docker logs --tail "$lines" "$container" 2>&1 | sed 's/^/       /' || true
+}
+
+# Wait until WAHA answers HTTP on the instance URL.  Any HTTP status counts
+# (401/404 still mean the server is listening); only "no answer" is a miss.
+wait_waha_api() {
+    local dir="$1" timeout="$2" deadline url key answer helper container status
+    container="$(env_value "$dir/.env" WAHA_CONTAINER_NAME)"
+    url="$(env_value "$dir/.env" WHATSAPP_API_URL)"
+    [ -n "$url" ] || url="http://127.0.0.1:$(env_value "$dir/.env" WHATSAPP_API_PORT)"
+    key="$(env_value "$dir/.env" WAHA_API_KEY)"
+    helper="$REPO_DIR/scripts/instance_config.py"
+    deadline=$((SECONDS + timeout))
+    while :; do
+        answer="$("$(python_bin)" "$helper" probe "$url/api/sessions/default" "$key")" \
+            || answer="0 probe failed"
+        [ "${answer%% *}" != 0 ] && { echo "$answer"; return 0; }
+        if [ "$SECONDS" -ge "$deadline" ]; then
+            echo "$answer"
+            return 1
+        fi
+        # A container that already died will not recover: fail fast.
+        status="$(container_status "$container")"
+        case "$status" in
+            running|created|restarting|"") ;;
+            *) echo "$answer (container is '$status')"; return 1 ;;
+        esac
+        sleep 1
+    done
+}
+
+# Remember a runtime `--no-docker-limits` in the instance .env: the service
+# start path (systemd ExecStartPre / OpenRC start_pre) re-runs `up` without
+# the flag and would otherwise re-apply cgroup limits the host rejects.
+persist_no_docker_limits() {
+    local dir="$1" env_file="$1/.env" tmp
+    [ -f "$env_file" ] || return 0
+    if grep -qE '^WAHA_DOCKER_LIMITS=0[[:space:]]*$' "$env_file"; then
+        return 0
+    fi
+    tmp="$env_file.tmp"
+    if grep -qE '^#?[[:space:]]*WAHA_DOCKER_LIMITS=[^[:space:]]*[[:space:]]*$' "$env_file"; then
+        sed 's/^#\{0,1\}[[:space:]]*WAHA_DOCKER_LIMITS=[^[:space:]]*[[:space:]]*$/WAHA_DOCKER_LIMITS=0/' \
+            "$env_file" > "$tmp" || { rm -f "$tmp"; return 0; }
+    else
+        { cat "$env_file"; echo 'WAHA_DOCKER_LIMITS=0'; } > "$tmp" \
+            || { rm -f "$tmp"; return 0; }
+    fi
+    chmod 600 "$tmp" 2>/dev/null || true
+    mv "$tmp" "$env_file"
+    info "saved WAHA_DOCKER_LIMITS=0 in $env_file (service starts skip the limits too; edit it to re-enable)"
+}
+
 cmd_up() {
-    local dir
+    local dir desc container status answer wait_s
     parse_docker_opts "$@"
     set -- "${REST_ARGS[@]+"${REST_ARGS[@]}"}"
     dir="$(require_instance "${1:-}")"
-    local desc
+    [ "$RUN_NO_LIMITS" != 1 ] || persist_no_docker_limits "$dir"
     desc="$(describe_compose "$dir")" || exit 1
     info "compose files: $desc"
-    compose "$dir" up -d
+    compose "$dir" up -d || die "docker compose up failed"
+    container="$(env_value "$dir/.env" WAHA_CONTAINER_NAME)"
+    status="$(container_status "$container")"
+    case "$status" in
+        running) ;;
+        "")
+            warn "could not read the state of $container; skipping the readiness check"
+            return 0
+            ;;
+        *)
+            die "container '$container' is '$status' after 'up' — logs:"$'\n'"$(waha_log_tail "$container")"
+            ;;
+    esac
+    wait_s="$(waha_wait_seconds)"
+    if [ "$wait_s" -gt 0 ]; then
+        info "waiting for the WAHA API (up to ${wait_s}s)..."
+        if answer="$(wait_waha_api "$dir" "$wait_s")"; then
+            ok "WAHA API ready ($answer)"
+        else
+            die "WAHA did not answer within ${wait_s}s ($answer). Last container logs:"$'\n'"$(waha_log_tail "$container" 30)"
+        fi
+    fi
 }
 
 cmd_down() {
@@ -445,7 +533,7 @@ cmd_serve() {
 }
 
 cmd_start() {
-    local name="${1:-}" dir
+    local name="${1:-}" dir pid="" wait_s i
     dir="$(require_instance "$name")"
     shift || true
     if pid="$(server_pid "$dir")"; then
@@ -456,7 +544,26 @@ cmd_start() {
     if service_installed "$name"; then
         [ $# -eq 0 ] || die "instance '$name' runs as a service: no extra ARGS (re-run 'install $name' after changing config.json)"
         service_start "$name"
-        echo "✅ instance '$name' started via $(service_kind "$name") ($(service_name "$name"))"
+        # supervise-daemon/systemd fork: rc-service returns before the server
+        # has taken the lock, so wait for it instead of reporting a false success.
+        wait_s="${MEGACHAT_SERVER_WAIT_S:-30}"
+        case "$wait_s" in ''|*[!0-9]*) wait_s=30 ;; esac
+        if [ "$wait_s" -gt 0 ]; then
+            for i in $(seq 1 $((wait_s * 2))); do
+                pid="$(server_pid "$dir")" && break
+                sleep 0.5
+            done
+            if [ -z "$pid" ]; then
+                local log="$dir/logs/service.log"
+                [ -f "$log" ] || log="$dir/logs/megachat-serve.log"
+                die "the service did not start the server within ${wait_s}s (see $log):"$'\n'"$(tail -n 20 "$log" 2>/dev/null | sed 's/^/       /')"
+            fi
+        fi
+        if [ -n "$pid" ]; then
+            echo "✅ instance '$name' started via $(service_kind "$name") ($(service_name "$name"), PID $pid)"
+        else
+            echo "✅ instance '$name' started via $(service_kind "$name") ($(service_name "$name"))"
+        fi
         print_status_page "$name" "$dir"
         return 0
     fi
@@ -765,6 +872,8 @@ Environment=PYTHONUNBUFFERED=1
 WorkingDirectory=$REPO_DIR
 # Its WAHA container (restart: unless-stopped): make sure it is up.
 Environment=MEGACHAT_INSTANCES_DIR=$INSTANCES_DIR
+# Do not block the server on the WAHA readiness wait at boot.
+Environment=MEGACHAT_WAHA_WAIT_S=0
 # Its WAHA container: create it if missing, start it (no-op when running).
 ExecStartPre=-$(command -v bash || echo /bin/bash) $REPO_DIR/scripts/megachat_instance.sh up $name
 ExecStart=$(python_bin) $REPO_DIR/megachat.py serve ${args% }
@@ -862,11 +971,18 @@ depend() {
 }
 
 start_pre() {
-    # Its WAHA container: create it if missing, start it (no-op when running).
+    local status=""
     if [ -x "$docker_bin" ]; then
-        MEGACHAT_INSTANCES_DIR='$INSTANCES_DIR' "$(command -v bash || echo /bin/bash)" \\
-            '$REPO_DIR/scripts/megachat_instance.sh' up '$name' >/dev/null 2>&1 \\
-            || ewarn "could not start the WAHA container $container (see: megachat_instance.sh doctor $name)"
+        status="\$(docker inspect -f '{{.State.Status}}' '$container' 2>/dev/null)" || status=""
+    fi
+    # Its WAHA container: create it if missing, start it (no-op when running).
+    # Keep the output: start_pre must not block the server for long, but the
+    # reason the container did not come up has to survive for "doctor".
+    if [ -x "$docker_bin" ] && [ "\$status" != running ]; then
+        MEGACHAT_WAHA_WAIT_S=0 MEGACHAT_INSTANCES_DIR='$INSTANCES_DIR' '$(command -v bash || echo /bin/bash)' \\
+            '$REPO_DIR/scripts/megachat_instance.sh' up '$name' \\
+            >'$dir/logs/waha-up.log' 2>&1 \\
+            || ewarn "could not start the WAHA container $container (output: $dir/logs/waha-up.log; see: megachat_instance.sh doctor $name)"
     fi
     checkpath --directory --owner "$user:$group" "$dir/logs"
     return 0
@@ -1010,7 +1126,8 @@ cmd_doctor() {
             fi
             if [ "$wstate" = running ]; then
                 local errors
-                errors="$(docker logs --tail 200 "$container" 2>&1 | grep -iE 'error|fatal' | tail -n 3)" || errors=""
+                errors="$(docker logs --tail 200 "$container" 2>&1 | grep -iE 'error|fatal' \
+                    | grep -vE '"statusCode":4[0-9][0-9]|"error": "Not Found"' | tail -n 3)" || errors=""
                 [ -z "$errors" ] || { warn "recent errors in the WAHA log:"; echo "$errors" | sed 's/^/       /'; }
             fi
         fi
@@ -1024,8 +1141,19 @@ cmd_doctor() {
             *) warn "http_proxy is set ($proxy) without 127.0.0.1 in no_proxy: local requests may go to the proxy" ;;
         esac
     fi
-    local answer code body linked=0
-    answer="$("${probe[@]}" "$url/api/sessions/$session" "$key")" || answer="0 probe failed"
+    local answer code body linked=0 wait_s deadline
+    wait_s="${MEGACHAT_DOCTOR_WAIT_S:-10}"
+    case "$wait_s" in ''|*[!0-9]*) wait_s=10 ;; esac
+    [ -n "$wstate" ] || wait_s=0  # no container to wait for (stub/absent docker)
+    deadline=$((SECONDS + wait_s))
+    # Give WAHA the time it needs to bind after a fresh `up` instead of
+    # reporting a startup race as a broken connection.
+    while :; do
+        answer="$("${probe[@]}" "$url/api/sessions/$session" "$key")" || answer="0 probe failed"
+        [ "${answer%% *}" != 0 ] && break
+        [ "$SECONDS" -ge "$deadline" ] && break
+        sleep 1
+    done
     code="${answer%% *}"
     body="${answer#* }"
     case "$code" in
@@ -1041,6 +1169,14 @@ cmd_doctor() {
                     bad "no answer: $body — nothing listens on port 3000 inside the container (WAHA still starting? see $0 logs $name waha)" ;;
                 *) bad "no answer: $body" ;;
             esac
+            if command -v docker >/dev/null 2>&1 && [ -n "$container" ]; then
+                warn "last WAHA log lines:"; waha_log_tail "$container" 30
+                local up_log="$dir/logs/waha-up.log"
+                if [ -f "$up_log" ]; then
+                    warn "output of the last 'up' ($up_log):"
+                    tail -n 20 "$up_log" 2>/dev/null | sed 's/^/       /'
+                fi
+            fi
             ;;
         *) bad "HTTP $code: $body" ;;
     esac
@@ -1348,12 +1484,16 @@ up NOME [--no-docker-limits] [--compose-file FILE ...]
   dell'istanza, chiamato megachat-NOME-whatsapp:
     docker compose -p megachat-NOME --env-file instances/NOME/.env \
       -f docker-compose.yml [-f docker-compose.resources.yml] [-f ...] up -d
-  Stampa i file compose usati. Il container ha `restart: unless-stopped`,
-  quindi riparte da solo con docker. La sessione WhatsApp sta in
-  instances/NOME/whatsapp-data/.
+  Stampa i file compose usati. Aspetta che l'API WAHA risponda (fino a
+  MEGACHAT_WAHA_WAIT_S=60 secondi; 0 disabilita) e, se non risponde, fallisce
+  mostrando lo stato e gli ultimi log del container. Il container ha
+  `restart: unless-stopped`, quindi riparte da solo con docker. La sessione
+  WhatsApp sta in instances/NOME/whatsapp-data/.
 
-  Le opzioni valgono solo per questa esecuzione (per renderle permanenti
-  usa il .env dell'istanza, vedi `help docker`):
+  --no-docker-limits viene salvato come WAHA_DOCKER_LIMITS=0 nel .env:
+  anche i riavvii via servizio (che rilanciano `up`) useranno le stesse
+  opzioni. Le altre opzioni valgono solo per questa esecuzione (per
+  renderle permanenti usa il .env dell'istanza, vedi `help docker`):
     --no-docker-limits    senza docker-compose.resources.yml
     --compose-file FILE   aggiunge FILE in fondo (ripetibile)
 TXT
@@ -1469,6 +1609,9 @@ doctor NOME
     - container WAHA esistente e acceso, porta pubblicata uguale a
       WHATSAPP_API_PORT, stessa WAHA_API_KEY del .env, errori recenti nel log
     - API WAHA: risponde? la chiave è accettata? stato della sessione
+      (aspetta fino a MEGACHAT_DOCTOR_WAIT_S=10 secondi: un container appena
+      avviato non viene scambiato per una connessione rotta; se non risponde
+      stampa gli ultimi log del container e di logs/waha-up.log)
     - http_proxy che potrebbe deviare le richieste locali
     - server Megachat avviato, porta webhook in ascolto, pagina di stato
     - ultimi errori in logs/signal-tui.log
