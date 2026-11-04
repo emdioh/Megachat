@@ -13,7 +13,7 @@
 
 PYTHON ?= python
 
-.PHONY: test lint typecheck coverage format-check check live-test live-test-manual smoke contract-test megachatd
+.PHONY: test lint typecheck coverage format-check check live-test live-test-manual smoke contract-test megachatd megachatd-static
 
 # Esegue l'intera suite in tests/ — radice definita da testpaths.
 test:
@@ -72,3 +72,9 @@ contract-test:
 # Serve Go (versione minima in megachatd/go.mod).
 megachatd:
 	cd megachatd && go build -o bin/megachatd ./cmd/megachatd
+
+# Binario statico senza cgo (gira su Alpine/musl e qualsiasi Linux).
+# Cross-compile: make megachatd-static GOARCH=arm64
+GOARCH ?= $(shell go env GOARCH)
+megachatd-static:
+	cd megachatd && CGO_ENABLED=0 GOOS=linux GOARCH=$(GOARCH) go build -trimpath -ldflags="-s -w" -o bin/megachatd-linux-$(GOARCH) ./cmd/megachatd

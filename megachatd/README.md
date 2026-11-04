@@ -15,6 +15,27 @@ make contract-test                        # 583 black-box tests against the real
 `./install.sh` runs the build when Go is available (and otherwise falls back to the Python server,
 see below).
 
+### Alpine / musl
+
+megachatd has no cgo dependencies (SQLite is `modernc.org/sqlite`, WhatsApp is whatsmeow, Telegram is
+gotd), so a `CGO_ENABLED=0` build is a fully static binary that runs on Alpine unchanged:
+
+```bash
+make megachatd-static                     # -> megachatd/bin/megachatd-linux-<arch>
+make megachatd-static GOARCH=arm64        # cross-compile, e.g. for a Raspberry Pi on Alpine
+```
+
+Or build on Alpine itself: `apk add go make && make megachatd-static` (Go is fetched per `go.mod`'s
+toolchain line if the packaged one is older). Point the launcher at the result with
+`MEGACHATD_BIN=/path/to/megachatd-linux-amd64`.
+
+Runtime tools are separate packages on Alpine:
+
+- `apk add ffmpeg` for voice-note conversion and video thumbnails.
+- `signal-cli` needs Java (`apk add openjdk21-jre`) and its `libsignal_jni` native library, which
+  upstream ships for glibc only; on Alpine use `gcompat` or a musl build of libsignal-client.
+- The Python TUI still needs its venv (`python3`, `py3-pip`).
+
 ## Run
 
 ```bash
