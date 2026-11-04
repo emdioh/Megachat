@@ -386,7 +386,7 @@ func buildMessage(from string, to, cc []string, subject, msgID, inReplyTo, refer
 		b.WriteString("\r\n--" + boundary + "\r\n")
 		b.WriteString("Content-Type: " + ct + "\r\n")
 		b.WriteString("Content-Transfer-Encoding: base64\r\n")
-		b.WriteString("Content-Disposition: attachment; " + mime.FormatMediaType("x", map[string]string{"filename": f.Filename})[2:] + "\r\n\r\n")
+		b.WriteString("Content-Disposition: attachment; " + dispositionFilename(f.Filename) + "\r\n\r\n")
 		b.Write(wrapBase64(f.Data))
 	}
 	b.WriteString("\r\n--" + boundary + "--\r\n")
@@ -451,4 +451,13 @@ func (s *Service) smtpSend(ctx context.Context, st settings, rcpts []string, msg
 	}
 	_ = c.Quit()
 	return nil
+}
+
+// dispositionFilename renders the filename parameter: quoted when ASCII,
+// RFC 2231 (filename*=utf-8”...) otherwise.
+func dispositionFilename(name string) string {
+	if isASCII(name) {
+		return `filename="` + strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(name) + `"`
+	}
+	return mime.FormatMediaType("x", map[string]string{"filename": name})[2:]
 }

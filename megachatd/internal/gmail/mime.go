@@ -42,7 +42,8 @@ func charsetReader(label string, input io.Reader) (io.Reader, error) {
 		return strings.NewReader(strings.ToValidUTF8(string(b), "�")), nil
 	}
 	b, _ := io.ReadAll(input)
-	return strings.NewReader(enc.NewDecoder().String(string(b))), nil
+	out, _ := enc.NewDecoder().String(string(b))
+	return strings.NewReader(strings.ToValidUTF8(out, "\uFFFD")), nil
 }
 
 func lookupCharset(label string) (encoding.Encoding, error) {
