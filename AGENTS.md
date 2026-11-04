@@ -130,8 +130,11 @@ bd prime                # Refresh Beads context
 ## Remote Worker Protocol (supervised)
 
 Workers implement beads; a supervisor session verifies and closes them. Dolt
-remote sync (`refs/dolt/data`) is NOT used: the shared queue is the git-tracked
-`.beads/issues.jsonl` on the integration branch `claude/elegant-cray-86jkrz`.
+remote sync (`refs/dolt/data`) is NOT used and may be stale: the shared queue is
+the git-tracked `.beads/issues.jsonl` on the integration branch
+`claude/elegant-cray-86jkrz`. Always `bd import` right after every `git pull`,
+and only ever `bd export` from a DB that was just imported — exporting a stale
+DB silently reverts other people's status changes.
 
 **Setup (once per clone)**
 
@@ -139,7 +142,9 @@ remote sync (`refs/dolt/data`) is NOT used: the shared queue is the git-tracked
 git clone https://github.com/emdioh/Megachat && cd Megachat
 git checkout claude/elegant-cray-86jkrz
 npm i -g @beads/bd            # or: brew install beads
-bd bootstrap                  # builds the local DB from .beads/issues.jsonl
+bd bootstrap                  # creates the local DB
+bd import                     # .beads/issues.jsonl is the source of truth (bootstrap may
+                              # have cloned an older refs/dolt/data snapshot)
 git config beads.role contributor
 ```
 
