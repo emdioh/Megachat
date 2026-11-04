@@ -118,8 +118,9 @@ type idJSON = json.RawMessage
 var nullID = idJSON("null")
 
 // parseID validates a request id (string, integer, or - as Python's
-// isinstance(True, int) lets through - a boolean) and returns its canonical
-// JSON form.
+// isinstance(True, int) lets through when echoing "Too many requests" - a
+// boolean) and returns its canonical JSON form. Callers that must reject
+// booleans check isBoolID.
 func parseID(raw json.RawMessage) (idJSON, bool) {
 	raw = bytes.TrimSpace(raw)
 	if len(raw) == 0 {
@@ -147,6 +148,8 @@ func parseID(raw json.RawMessage) (idJSON, bool) {
 	}
 	return nil, false
 }
+
+func isBoolID(id idJSON) bool { return string(id) == "true" || string(id) == "false" }
 
 func isIntegerLiteral(raw []byte) bool {
 	for i, c := range raw {
@@ -192,9 +195,9 @@ func pyRepr(s string) string {
 // -- response frames ----------------------------------------------------------
 
 type errorBody struct {
-	Code    int              `json:"code"`
-	Message string           `json:"message"`
-	Data    *api.ErrorData   `json:"data,omitempty"`
+	Code    int            `json:"code"`
+	Message string         `json:"message"`
+	Data    *api.ErrorData `json:"data,omitempty"`
 }
 
 type errorFrame struct {
