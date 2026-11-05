@@ -108,9 +108,11 @@ func pageFixture(cfg *config.Config) []row {
 		in(row{"protocol": "whatsapp", "contact_number": waGrp, "text": "quoting", "sender": "333@lid", "timestamp": at(300), "msg_id": "G3",
 			"quote_text": "hi all", "quote_timestamp": at(100), "quote_author": "111@lid"}),
 		in(row{"protocol": "whatsapp", "contact_number": waGrp, "text": "who", "sender": "Bob", "timestamp": at(400), "msg_id": "G4",
-			"quote_text": "hello", "quote_timestamp": at(500), "quote_author": "999@lid"}),
+			"quote_text": "hello", "quote_timestamp": at(500), "quote_author": "999@c.us"}),
 		in(row{"protocol": "whatsapp", "contact_number": waGrp, "text": "pushname", "sender": "Zed", "timestamp": at(500), "msg_id": "G5"}),
-		in(row{"protocol": "whatsapp", "contact_number": waGrp, "text": "stranger", "sender": "555@lid", "timestamp": at(600), "msg_id": "G6",
+		// A sender nobody knows: "@c.us" keeps Python's bare number (parity, see
+		// groupFallbackRows for the "@lid" placeholder divergence).
+		in(row{"protocol": "whatsapp", "contact_number": waGrp, "text": "stranger", "sender": "555@c.us", "timestamp": at(600), "msg_id": "G6",
 			"quote_text": "q", "quote_author": "444@c.us"}),
 		out(row{"protocol": "whatsapp", "contact_number": waGrp, "text": "my message", "timestamp": at(700), "msg_id": "G7", "status": "read"}),
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 
+	"github.com/emdioh/megachat/megachatd/internal/core"
 	"github.com/emdioh/megachat/megachatd/internal/proto"
 )
 
@@ -21,7 +22,12 @@ type addressBooker interface {
 
 // groupSenderResolver is _group_sender_resolver: it resolves a sender JID or
 // number to the address-book name, as the TUI does. The fallback is always a
-// readable number, never a raw "@lid"/"@c.us" JID.
+// readable value, never a raw "@lid"/"@c.us" JID: an unresolved "@lid" gets
+// the annotated placeholder a nameless @lid chat gets (core.UnresolvedLIDName,
+// mc-zao.5.7), because a LID's bare digits read like a phone number it is not;
+// a "@c.us" sender keeps Python's bare number (wire parity). The backend now
+// stores that placeholder itself, so the resolver only sees a raw "@lid" on
+// rows written before the fix.
 func groupSenderResolver(ctx context.Context, book addressBooker, backend proto.Backend, protocol string) func(string) string {
 	phoneToName := map[string]string{}
 	idToName := map[string]string{}
@@ -90,6 +96,12 @@ func groupSenderResolver(ctx context.Context, book addressBooker, backend proto.
 			return n
 		}
 		if strings.HasSuffix(sender, "@lid") || strings.HasSuffix(sender, "@c.us") {
+			// Python returns the bare local part for both: for an unresolved
+			// @lid those digits look like a phone number the LID is not, so
+			// the placeholder replaces them (deliberate divergence, mc-zao.5.7).
+			if strings.HasSuffix(sender, "@lid") && local != "" {
+				return core.UnresolvedLIDName(local)
+			}
 			return local
 		}
 		return sender

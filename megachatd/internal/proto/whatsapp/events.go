@@ -155,7 +155,14 @@ func (b *Backend) onMessage(e *events.Message) {
 // resolveSenderName is _resolve_sender_name: a known contact's display name
 // for a JID-like sender (exact id, then the number before "@"), then the
 // address book (a group participant who never had a direct chat is not in the
-// contact list), else sender.
+// contact list), else the sender itself or, for an unnamed "@lid", the chat
+// placeholder (chatDisplayFallback). A LID is not a phone number: the message
+// sender is stored and shown as-is by the frontends (live message event, and
+// the stored row behind messages.page/window/snapshot), so the raw
+// "<n>@lid" must never get there. The placeholder is still a placeholder
+// (isPlaceholderDisplayName), so a later name replaces it. Python keeps the
+// raw JID here: the placeholder is the deliberate divergence of mc-zao.5.7,
+// limited to @lid (a "@c.us" sender still falls back to itself, wire parity).
 func (b *Backend) resolveSenderName(sender string) string {
 	if sender == "" || !strings.Contains(sender, "@") {
 		return sender
@@ -186,7 +193,7 @@ func (b *Backend) resolveSenderName(sender string) string {
 	if n := cachedAddressBookName(book, phone, lid); n != "" {
 		return n
 	}
-	return sender
+	return chatDisplayFallback(sender)
 }
 
 var mentionRe = regexp.MustCompile(`@(\d{5,20})`)
@@ -211,7 +218,9 @@ func (b *Backend) resolveTextMentions(text string) string {
 		digits := text[m[2]:m[3]]
 		jid := digits + "@lid"
 		repl := text[m[0]:m[1]]
-		if r := b.resolveSenderName(jid); r != jid {
+		// The unresolved placeholder is not a name in a sentence: keep the
+		// literal mention (Python parity) and try the phone cache instead.
+		if r := b.resolveSenderName(jid); r != jid && !unresolvedLIDDisplay(r, jid) {
 			repl = "@" + r
 		} else if phone := b.lidLookup(jid); phone != "" {
 			repl = "@+" + phone
@@ -386,7 +395,8 @@ func (b *Backend) messageEvents(e *events.Message, history bool) []proto.Event {
 		caption = strings.TrimSpace(text)
 	}
 
-	// Sender: push name, else the sender jid / chat / "You".
+	// Sender: push name, else the sender jid / chat / "You". An unnamed @lid
+	// sender becomes the annotated placeholder in resolveSenderName.
 	sender := ""
 	switch {
 	case isMine:
@@ -683,7 +693,7 @@ func (b *Backend) onIdentityChange(e *events.IdentityChange) {
 // securityNoticeText renders the notice for a contact id.
 func (b *Backend) securityNoticeText(jid string) string {
 	name := ""
-	if r := b.resolveSenderName(jid); r != jid {
+	if r := b.resolveSenderName(jid); r != jid && !unresolvedLIDDisplay(r, jid) {
 		name = r
 	} else if phone := b.lidLookup(jid); phone != "" && strings.HasSuffix(jid, "@lid") {
 		name = "+" + phone
