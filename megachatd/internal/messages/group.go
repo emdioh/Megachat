@@ -99,11 +99,24 @@ func groupSenderResolver(ctx context.Context, book addressBooker, backend proto.
 			// Python returns the bare local part for both: for an unresolved
 			// @lid those digits look like a phone number the LID is not, so
 			// the placeholder replaces them (deliberate divergence, mc-zao.5.7).
+			// A "<user>:<device>@lid" head names the same user as "<user>@lid":
+			// the placeholder names the user, never a device (mc-zao.5.8).
 			if strings.HasSuffix(sender, "@lid") && local != "" {
-				return core.UnresolvedLIDName(local)
+				return core.UnresolvedLIDName(lidUser(local))
 			}
 			return local
 		}
 		return sender
 	}
+}
+
+// lidUser is the user part of a LID local part: "<user>:<device>" and
+// "<user>" name the same LID user, and core.UnresolvedLIDName callers spell the
+// bare user part. An empty user falls back to the local part unchanged.
+func lidUser(local string) string {
+	user, _, _ := strings.Cut(local, ":")
+	if user == "" {
+		return local
+	}
+	return user
 }

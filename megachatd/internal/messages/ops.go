@@ -243,27 +243,93 @@ type cacheRow struct {
 	BatchIndex          *int64  `json:"batch_index"`
 }
 
-func toCacheRow(m msg) cacheRow {
+// isGroupCacheRow reports whether a cache row belongs to a WhatsApp group: the
+// only chat kind where a raw "@lid" used to leak into sender/quote_author.
+func isGroupCacheRow(m msg) bool {
+	return m.Protocol == api.ProtocolWhatsApp && strings.HasSuffix(m.ContactNumber, "@g.us")
+}
+
+// legacyRawLID reports whether v is a raw "<n>@lid" value (one "@" at most),
+// the shape group rows stored before mc-zao.5.7 still carry in sender/
+// quote_author. A "<n>:<device>@lid" head is one too: it names the same user.
+func legacyRawLID(v *string) bool {
+	if v == nil {
+		return false
+	}
+	head, ok := strings.CutSuffix(*v, "@lid")
+	return ok && head != "" && !strings.Contains(head, "@")
+}
+
+// lidDisplay is the display-time rescue of a group row stored before
+// mc-zao.5.7: such a row still carries the raw "<n>@lid" sender or
+// quote_author, and messages.window/messages.snapshot return cache rows
+// verbatim (Python parity), so the TUI and the web showed the JID. Resolving it
+// here through the same group sender resolver messages.page uses (mc-zao.5.8)
+// makes the two operations name a sender alike: a resolvable LID shows its
+// name, and only an unresolvable one keeps the annotated placeholder the
+// resolver itself falls back to. Nothing is written to the shared
+// Python-owned messages.db, the raw JID stays in the store so messages.page can
+// still resolve a real name, and every other value keeps Python's bytes.
+func lidDisplay(resolve func(string) string) func(*string) *string {
+	return func(v *string) *string {
+		if resolve == nil || !legacyRawLID(v) {
+			return v
+		}
+		s := resolve(*v)
+		return &s
+	}
+}
+
+// cacheRowLIDResolver is the group sender resolver of messages.page, built only
+// when a cache-row batch still carries a legacy raw "@lid" in a group row (no
+// address-book read in the common case, and none at all for other protocols).
+func (s *service) cacheRowLIDResolver(ctx context.Context, protocol string, rows []msg) func(string) string {
+	if protocol != api.ProtocolWhatsApp {
+		return nil
+	}
+	stale := false
+	for _, m := range rows {
+		if isGroupCacheRow(m) && (legacyRawLID(m.Sender) || legacyRawLID(m.QuoteAuthor)) {
+			stale = true
+			break
+		}
+	}
+	if !stale {
+		return nil
+	}
+	backend, ok := s.deps.Manager().Get(protocol)
+	if !ok || backend == nil {
+		return nil
+	}
+	return groupSenderResolver(ctx, s.deps.Manager(), backend, protocol)
+}
+
+func toCacheRow(m msg, fix func(*string) *string) cacheRow {
 	text := m.Text
 	if strOf(m.MsgType) == api.MsgTypeImage {
 		text = api.Ptr("")
 	}
+	sender, quoteAuthor := m.Sender, m.QuoteAuthor
+	if isGroupCacheRow(m) {
+		sender = fix(sender)
+		quoteAuthor = fix(quoteAuthor)
+	}
 	return cacheRow{
-		ID: m.MsgID, Text: text, IsMine: m.IsMine, Sender: m.Sender, Timestamp: m.Timestamp,
+		ID: m.MsgID, Text: text, IsMine: m.IsMine, Sender: sender, Timestamp: m.Timestamp,
 		QuoteText: m.QuoteText, MsgType: m.MsgType, AttachmentInfo: m.AttachmentInfo,
 		AttachmentID: m.AttachmentID, ContentType: m.ContentType,
 		QuoteAttachmentID: m.QuoteAttachmentID, QuoteAttachmentPath: m.QuoteAttachmentPath,
 		QuoteContentType: m.QuoteContentType, QuoteTimestamp: m.QuoteTimestamp,
-		QuoteAuthor: m.QuoteAuthor, ReplyToMessageID: m.ReplyToMessageID,
+		QuoteAuthor: quoteAuthor, ReplyToMessageID: m.ReplyToMessageID,
 		Edited: m.Edited, Read: m.Read, Status: m.Status, Protocol: m.Protocol,
 		BatchID: m.BatchID, BatchIndex: m.BatchIndex,
 	}
 }
 
-func toCacheRows(msgs []msg) []cacheRow {
+func toCacheRows(msgs []msg, fix func(*string) *string) []cacheRow {
 	out := make([]cacheRow, len(msgs))
 	for i, m := range msgs {
-		out[i] = toCacheRow(m)
+		out[i] = toCacheRow(m, fix)
 	}
 	return out
 }
@@ -333,7 +399,7 @@ func (s *service) window(ctx context.Context, req api.MessagesWindowRequest) (an
 		}
 		rows = unionCacheRows(byKey, *contact)
 	}
-	return windowOut{Messages: toCacheRows(rows), Refreshed: refreshed}, nil
+	return windowOut{Messages: toCacheRows(rows, lidDisplay(s.cacheRowLIDResolver(ctx, protocol, rows))), Refreshed: refreshed}, nil
 }
 
 // orderedCache is a JSON object that keeps the Python dict insertion order.
@@ -397,11 +463,22 @@ func (s *service) snapshot(ctx context.Context, req api.MessagesSnapshotRequest)
 		return a.RowID < b.RowID
 	})
 
+	// One resolver for the whole snapshot: it is needed only if some group row
+	// still carries a legacy raw "@lid".
+	var fix func(*string) *string
+	if protocol == api.ProtocolWhatsApp {
+		var all []msg
+		for _, rows := range cache {
+			all = append(all, rows...)
+		}
+		fix = lidDisplay(s.cacheRowLIDResolver(ctx, protocol, all))
+	}
+
 	add := func(key string, rows []msg) {
 		if _, dup := out.rows[key]; !dup {
 			out.keys = append(out.keys, key)
 		}
-		out.rows[key] = toCacheRows(rows)
+		out.rows[key] = toCacheRows(rows, fix)
 	}
 	if protocol != api.ProtocolWhatsApp {
 		for _, cid := range cids {
