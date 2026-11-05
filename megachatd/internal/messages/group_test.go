@@ -8,10 +8,10 @@ import (
 	"github.com/emdioh/megachat/megachatd/internal/proto"
 )
 
-// groupFallbackRows are group rows whose sender nobody knows. They cannot go in
-// pageFixture: for an unresolved "@lid" the row builder deliberately differs
-// from Python (which shows the bare digits) and the byte-for-byte parity test
-// there must stay green, so the divergence is pinned here instead.
+// groupFallbackRows are group rows whose sender or quote author nobody knows,
+// exercising the page row builder directly (the byte-parity fixture in
+// fixture_test.go pins the same divergence through the allowlist in
+// parity_test.go).
 func groupFallbackRows(*config.Config) []row {
 	return []row{
 		{"protocol": "whatsapp", "contact_number": waGrp, "is_mine": 0, "text": "lid stranger", "sender": "20508603076702@lid", "timestamp": at(1), "msg_id": "L1"},
