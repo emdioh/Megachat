@@ -118,16 +118,59 @@ func TestGroupMessage(t *testing.T) {
 	if got.Payload["id"] != "false_120363000000000000@g.us_3EB0ABC_20508603076702@lid" {
 		t.Errorf("id = %v", got.Payload["id"])
 	}
-	// No push name: the sender is the participant jid, resolved to a contact name when known.
+	// No push name: the sender is the participant jid, resolved to a contact name
+	// when known. An unknown "@lid" becomes the annotated placeholder a nameless
+	// @lid chat gets (mc-zao.5.7), never the raw JID and never its bare digits,
+	// which would read like a phone number.
 	ev = groupEvent("120363000000000000", "20508603076702@lid", "3EB0ABD", false, "", text("yo"))
 	got = one(t, e.b.messageEvents(ev, false))
-	if got.Payload["sender"] != "20508603076702@lid" {
+	if got.Payload["sender"] != "Contatto WhatsApp (ID 20508603076702)" {
 		t.Errorf("sender fallback = %v", got.Payload["sender"])
+	}
+	if s, _ := got.Payload["sender"].(string); strings.Contains(s, "@lid") || s == "20508603076702" {
+		t.Errorf("sender leaks the lid: %q", s)
 	}
 	e.b.RegisterContact(*newContact("20508603076702@lid", "Luigi Verdi", nil))
 	got = one(t, e.b.messageEvents(ev, false))
 	if got.Payload["sender"] != "Luigi Verdi" {
 		t.Errorf("resolved sender = %v", got.Payload["sender"])
+	}
+	// The address book resolves it too (no direct chat needed); the placeholder
+	// still goes away.
+	e2 := newEnv(t)
+	e2.b.cmu.Lock()
+	e2.b.addressBook = []proto.Contact{*newContact("20508603076702@c.us", "Luigi Verdi",
+		map[string]any{"source": "wa_book", "phone": "20508603076702", "lid": "20508603076702@lid"})}
+	e2.b.cmu.Unlock()
+	got = one(t, e2.b.messageEvents(groupEvent("120363000000000000", "20508603076702@lid", "3EB0ABE", false, "", text("yo")), false))
+	if got.Payload["sender"] != "Luigi Verdi" {
+		t.Errorf("address book sender = %v", got.Payload["sender"])
+	}
+}
+
+// A DM whose chat is an unknown "@lid" gets the same annotated placeholder as a
+// chat title; a phone-number JID keeps Python's raw-JID fallback.
+func TestUnknownLIDSenderPlaceholder(t *testing.T) {
+	e := newEnv(t)
+	got := one(t, e.b.messageEvents(dmEvent("189025889575055", types.HiddenUserServer, "3A268CF1", false, text("x")), false))
+	if got.Payload["sender"] != "Contatto WhatsApp (ID 189025889575055)" {
+		t.Errorf("lid dm sender = %v", got.Payload["sender"])
+	}
+	if s, _ := got.Payload["sender"].(string); strings.Contains(s, "@") || s == "189025889575055" {
+		t.Errorf("lid dm sender leaks the lid: %q", s)
+	}
+	// PushName wins over the placeholder, resolved or not.
+	pushEv := dmEvent("189025889575055", types.HiddenUserServer, "3A268CF2", false, text("x"))
+	pushEv.Info.PushName = "Pino"
+	got = one(t, e.b.messageEvents(pushEv, false))
+	if got.Payload["sender"] != "Pino" {
+		t.Errorf("push name = %v", got.Payload["sender"])
+	}
+	// "@c.us" is untouched: an unknown sender still falls back to the JID, as
+	// Python does (_resolve_sender_name).
+	got = one(t, e.b.messageEvents(dmEvent("3912345678901", types.DefaultUserServer, "3A268CF3", false, text("x")), false))
+	if got.Payload["sender"] != "3912345678901@c.us" {
+		t.Errorf("phone dm sender = %v", got.Payload["sender"])
 	}
 }
 

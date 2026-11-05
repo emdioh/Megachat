@@ -107,6 +107,10 @@ func pageFixture(cfg *config.Config) []row {
 		in(row{"protocol": "whatsapp", "contact_number": waGrp, "text": "me too", "sender": "222@c.us", "timestamp": at(200), "msg_id": "G2"}),
 		in(row{"protocol": "whatsapp", "contact_number": waGrp, "text": "quoting", "sender": "333@lid", "timestamp": at(300), "msg_id": "G3",
 			"quote_text": "hi all", "quote_timestamp": at(100), "quote_author": "111@lid"}),
+		// G4/G6 deliberately keep their @lid: for an unresolved @lid the row
+		// builder diverges from Python (see lidPlaceholderFields in
+		// parity_test.go), and dropping that here would lose the parity
+		// coverage of the divergence instead of pinning it.
 		in(row{"protocol": "whatsapp", "contact_number": waGrp, "text": "who", "sender": "Bob", "timestamp": at(400), "msg_id": "G4",
 			"quote_text": "hello", "quote_timestamp": at(500), "quote_author": "999@lid"}),
 		in(row{"protocol": "whatsapp", "contact_number": waGrp, "text": "pushname", "sender": "Zed", "timestamp": at(500), "msg_id": "G5"}),

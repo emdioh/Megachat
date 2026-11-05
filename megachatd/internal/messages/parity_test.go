@@ -7,9 +7,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/emdioh/megachat/megachatd/internal/api"
+	"github.com/emdioh/megachat/megachatd/internal/core"
 	"github.com/emdioh/megachat/megachatd/internal/proto"
 )
 
@@ -112,6 +114,182 @@ func diffJSON(want, got []byte) string {
 	return fmt.Sprintf("python: %s\ngo:     %s", want, got)
 }
 
+// lidPlaceholderFields are the only wire fields that may differ between the
+// Python row builder and the Go one. The divergence is deliberate and pinned
+// by mc-zao.3.5.3/5.7: for an unresolved "@lid" group sender the Go resolver
+// shows the annotated placeholder (core.UnresolvedLIDName) while Python shows
+// the bare LID digits, which would read like a phone number the LID is not.
+var lidPlaceholderFields = map[string]bool{"sender": true, "quote_author": true}
+
+// lidPlaceholderDiverges matches exactly the allowed pair: Python's bare LID
+// digits against the Go placeholder naming those same digits. Anything else
+// (a placeholder where Python resolved a name, a different number, a raw @lid)
+// is not on the allowlist and fails the byte comparison.
+func lidPlaceholderDiverges(py, goV any) bool {
+	digits, ok := py.(string)
+	if !ok || digits == "" || strings.ContainsAny(digits, "@+ ") {
+		return false
+	}
+	for _, r := range digits {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	g, ok := goV.(string)
+	return ok && g == core.UnresolvedLIDName(digits)
+}
+
+// jsonValue is a decoded JSON value that keeps object key order. The @lid
+// allowlist below rewrites the Python payload and re-encodes it, and
+// encoding/json would sort the keys of a map: that would quietly drop key order
+// (part of the wire bytes) from the comparison.
+type jsonValue struct {
+	kind   byte // '{', '[' or 0 for a scalar
+	fields []jsonField
+	elems  []*jsonValue
+	leaf   any // string, json.Number, bool, nil
+}
+
+type jsonField struct {
+	key string
+	val *jsonValue
+}
+
+func decodeJSONValue(t *testing.T, raw []byte) *jsonValue {
+	t.Helper()
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	v, err := decodeJSONToken(dec)
+	if err != nil {
+		t.Fatalf("decode %s: %v", raw, err)
+	}
+	return v
+}
+
+func decodeJSONToken(dec *json.Decoder) (*jsonValue, error) {
+	tok, err := dec.Token()
+	if err != nil {
+		return nil, err
+	}
+	delim, ok := tok.(json.Delim)
+	if !ok {
+		return &jsonValue{leaf: tok}, nil
+	}
+	v := &jsonValue{kind: byte(delim)}
+	for dec.More() {
+		if delim == '{' {
+			kt, err := dec.Token()
+			if err != nil {
+				return nil, err
+			}
+			val, err := decodeJSONToken(dec)
+			if err != nil {
+				return nil, err
+			}
+			v.fields = append(v.fields, jsonField{key: kt.(string), val: val})
+			continue
+		}
+		val, err := decodeJSONToken(dec)
+		if err != nil {
+			return nil, err
+		}
+		v.elems = append(v.elems, val)
+	}
+	if _, err := dec.Token(); err != nil { // closing delimiter
+		return nil, err
+	}
+	return v, nil
+}
+
+func (v *jsonValue) encode(dst *bytes.Buffer) {
+	switch v.kind {
+	case '{':
+		dst.WriteByte('{')
+		for i, f := range v.fields {
+			if i > 0 {
+				dst.WriteByte(',')
+			}
+			appendJSONString(dst, f.key)
+			dst.WriteByte(':')
+			f.val.encode(dst)
+		}
+		dst.WriteByte('}')
+	case '[':
+		dst.WriteByte('[')
+		for i, e := range v.elems {
+			if i > 0 {
+				dst.WriteByte(',')
+			}
+			e.encode(dst)
+		}
+		dst.WriteByte(']')
+	default:
+		if s, ok := v.leaf.(string); ok {
+			appendJSONString(dst, s)
+			return
+		}
+		b, _ := json.Marshal(v.leaf)
+		dst.Write(b)
+	}
+}
+
+func appendJSONString(dst *bytes.Buffer, s string) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	_ = enc.Encode(s)
+	dst.Write(bytes.TrimSuffix(buf.Bytes(), []byte("\n")))
+}
+
+func (v *jsonValue) bytes() []byte {
+	var buf bytes.Buffer
+	v.encode(&buf)
+	return buf.Bytes()
+}
+
+// rewriteLIDPlaceholders applies the allowlist to the decoded Python payload:
+// only the fields in lidPlaceholderFields are touched, and only where
+// lidPlaceholderDiverges holds. Every other field keeps Python's bytes.
+func rewriteLIDPlaceholders(py, goV *jsonValue) {
+	switch {
+	case py.kind == '{' && goV.kind == '{':
+		for i := range py.fields {
+			field := &py.fields[i]
+			for j := range goV.fields {
+				gf := &goV.fields[j]
+				if gf.key != field.key {
+					continue
+				}
+				if lidPlaceholderFields[field.key] && lidPlaceholderDiverges(field.val.leaf, gf.val.leaf) {
+					field.val = gf.val
+				} else {
+					rewriteLIDPlaceholders(field.val, gf.val)
+				}
+				break
+			}
+		}
+	case py.kind == '[' && goV.kind == '[' && len(py.elems) == len(goV.elems):
+		for i := range py.elems {
+			rewriteLIDPlaceholders(py.elems[i], goV.elems[i])
+		}
+	}
+}
+
+// allowLIDPlaceholder returns the Python payload with the mc-zao.3.5.3/5.7
+// divergence rewritten, ready for the byte-for-byte comparison. The Python
+// payload must round-trip through this test's encoder unchanged; otherwise the
+// rewrite could hide an encoding difference and the test refuses to guess.
+func allowLIDPlaceholder(t *testing.T, want, got []byte) []byte {
+	t.Helper()
+	w := decodeJSONValue(t, want)
+	g := decodeJSONValue(t, got)
+	if reencoded := w.bytes(); !bytes.Equal(reencoded, want) {
+		t.Fatalf("python payload does not round-trip byte for byte through this test's encoder; refusing to apply the @lid allowlist\npython:    %s\nre-encoded: %s", want, reencoded)
+	}
+	rewriteLIDPlaceholders(w, g)
+	return w.bytes()
+}
+
 func compareCalls(t *testing.T, e *env, calls []map[string]any) {
 	t.Helper()
 	py := runPython(t, e, calls)
@@ -138,7 +316,7 @@ func compareCalls(t *testing.T, e *env, calls []map[string]any) {
 			if !ok {
 				t.Fatalf("python returned no %q", name)
 			}
-			if !bytes.Equal(want, got) {
+			if want = allowLIDPlaceholder(t, want, got); !bytes.Equal(want, got) {
 				t.Errorf("wire mismatch %s\n%s", name, diffJSON(want, got))
 			}
 		})
