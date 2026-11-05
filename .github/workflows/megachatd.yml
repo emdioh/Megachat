@@ -5,7 +5,10 @@
 #           pull_request touching megachatd/, tag `megachatd-v*`, manual run.
 # Output  : artifacts megachatd-linux-amd64 and megachatd-linux-arm64 (fully
 #           static, run on glibc and musl/Alpine alike) + SHA256SUMS.
-#           A `megachatd-v*` tag also publishes them as a GitHub release.
+# Release : a `megachatd-v*` tag publishes them as a GitHub release; so does a
+#           push to master or claude/** whose megachatd/VERSION has no release
+#           yet (the job creates the tag `megachatd-v<VERSION>` on that commit;
+#           pre-release unless it is on master).
 # =============================================================================
 
 name: megachatd
@@ -72,9 +75,11 @@ jobs:
       - name: Build
         run: |
           ldflags="-s -w"
-          # Tagged builds report the tag's version; others keep main.Version.
+          # Tagged builds report the tag's version, others megachatd/VERSION.
           if [ "$GITHUB_REF_TYPE" = tag ]; then
             ldflags="$ldflags -X main.Version=${GITHUB_REF_NAME#megachatd-v}"
+          elif [ -s VERSION ]; then
+            ldflags="$ldflags -X main.Version=$(tr -d '[:space:]' < VERSION)"
           fi
           go build -trimpath -ldflags="$ldflags" \
             -o "bin/megachatd-linux-${GOARCH}" ./cmd/megachatd
@@ -95,7 +100,10 @@ jobs:
 
   release:
     name: Publish release
-    if: github.ref_type == 'tag'
+    if: >-
+      github.ref_type == 'tag' ||
+      (github.event_name == 'push' &&
+       (github.ref_name == 'master' || startsWith(github.ref_name, 'claude/')))
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -105,20 +113,49 @@ jobs:
       run:
         working-directory: .
     steps:
+      - uses: actions/checkout@v7
+
+      - name: Decide the release tag
+        id: tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            tag="$GITHUB_REF_NAME"
+          else
+            tag="megachatd-v$(tr -d '[:space:]' < megachatd/VERSION)"
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $tag already exists: nothing to publish."
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - uses: actions/download-artifact@v8
+        if: steps.tag.outputs.publish == 'true'
         with:
           path: dist
           pattern: megachatd-linux-*
           merge-multiple: true
 
       - name: Checksums
+        if: steps.tag.outputs.publish == 'true'
         run: cd dist && sha256sum megachatd-linux-* > SHA256SUMS && cat SHA256SUMS
 
       - name: Create GitHub release
+        if: steps.tag.outputs.publish == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.tag }}
         run: |
-          gh release create "$GITHUB_REF_NAME" dist/* \
+          extra=""
+          if [ "$GITHUB_REF_TYPE" != tag ] && [ "$GITHUB_REF_NAME" != master ]; then
+            extra="--prerelease"
+          fi
+          gh release create "$TAG" dist/* \
             --repo "$GITHUB_REPOSITORY" \
-            --title "$GITHUB_REF_NAME" \
-            --notes "Static Linux builds of megachatd (CGO_ENABLED=0, amd64 + arm64; run on Alpine/musl too)."
+            --target "$GITHUB_SHA" \
+            --title "$TAG" $extra \
+            --notes "Static Linux builds of megachatd (CGO_ENABLED=0, amd64 + arm64; also run on Alpine/musl). Built from ${GITHUB_SHA::12} on ${GITHUB_REF_NAME}. Verify with SHA256SUMS."
