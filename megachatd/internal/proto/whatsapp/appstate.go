@@ -102,6 +102,7 @@ func fileExists(path string) bool {
 // store. The live events only carry changes made while this process runs, so
 // without this the archived chats of a fresh process land in the main list.
 func (b *Backend) syncArchiveFlags(ctx context.Context) {
+	b.seedArchivedChats(ctx)
 	d := b.device()
 	if d == nil || d.ChatSettings == nil {
 		return
@@ -124,6 +125,71 @@ func (b *Backend) syncArchiveFlags(ctx context.Context) {
 		b.cmu.Lock()
 		if m := b.chats[id]; m != nil && m.Archived != ls.Archived {
 			m.Archived = ls.Archived
+		}
+		b.cmu.Unlock()
+	}
+}
+
+// seedArchivedChats registers the chats whatsmeow has archived but that have no
+// local history (no cached message, no contact). The registry is rebuilt from
+// the message cache and the contacts, so without this those chats disappear
+// from the chat list on every restart even though whatsmeow_chat_settings still
+// has them archived. whatsmeow's store interface only offers point lookups, so
+// the table is read straight from the device DB (like lidBulkImport does with
+// whatsmeow_lid_map). Names come from the contact table, then "+<phone>".
+// The table is keyed by (our_jid, chat_jid), so the read is scoped to the
+// current device: a whatsmeow.db reused across pairings (or holding several
+// accounts) would otherwise leak another account's archived chats into this
+// account's chat list. whatsmeow's own ChatSettings statements bind
+// client.Store.ID.String() as our_jid (the device JID, e.g.
+// "393331234567:12@s.whatsapp.net"), so the same value is used here. Unpaired
+// devices have no rows of their own and seed nothing.
+func (b *Backend) seedArchivedChats(ctx context.Context) {
+	b.lifeMu.Lock()
+	db := b.db
+	b.lifeMu.Unlock()
+	d := b.device()
+	if db == nil || d == nil || d.ID == nil {
+		return
+	}
+	rows, err := db.QueryContext(ctx, "SELECT chat_jid FROM whatsmeow_chat_settings WHERE our_jid = ? AND archived", d.ID.String())
+	if err != nil {
+		b.log.Debug("archived chat settings unavailable", "err", err)
+		return
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var raw string
+		if rows.Scan(&raw) != nil {
+			continue
+		}
+		j, err := JIDFromWAHA(raw)
+		if err != nil {
+			continue
+		}
+		id := WAHAFromJID(j)
+		if id == "" || isBroadcastJID(id) {
+			continue
+		}
+		ids = append(ids, id)
+	}
+	for _, id := range ids {
+		b.cmu.RLock()
+		known := b.chats[id] != nil
+		b.cmu.RUnlock()
+		if !known {
+			name := b.nameForChat(ctx, id)
+			if name == "" {
+				if phone := b.contactPhone(id); phone != "" {
+					name = "+" + phone
+				}
+			}
+			b.noteChat(id, 0, name)
+		}
+		b.cmu.Lock()
+		if m := b.chats[id]; m != nil {
+			m.Archived = true
 		}
 		b.cmu.Unlock()
 	}
