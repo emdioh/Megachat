@@ -74,6 +74,8 @@ type Store interface {
 	MarkAsRead(ctx context.Context, protocol, contact string, extraKeys ...string) error
 	// ReconcileChatUnread aligns a chat's read flags with the phone's unread count.
 	ReconcileChatUnread(ctx context.Context, protocol, contact string, keep int, cutoffMs int64, extraKeys ...string) (int64, error)
+	// UnreadCounts is the unread incoming message count of every contact.
+	UnreadCounts(ctx context.Context) (map[store.ContactKey]int, error)
 	UpdateMessageStatus(ctx context.Context, timestamp int64, status, protocol, contact string, text *string, expected []string) (bool, error)
 	UpdateMessageStatusByID(ctx context.Context, msgID, status, protocol string, contact *string) (bool, error)
 	UpdateMessageText(ctx context.Context, u store.TextUpdate) (bool, error)
@@ -141,6 +143,8 @@ type Backend struct {
 	handlerID   uint32
 	injected    bool
 	closed      chan struct{}
+	lifeCtx     context.Context // process lifecycle: cancelled by Disconnect
+	lifeCancel  context.CancelFunc
 	connectedAt time.Time
 	discMu      sync.Mutex
 	discAt      time.Time
@@ -201,6 +205,8 @@ type Backend struct {
 	histAsked      map[string]time.Time
 	historyTimeout time.Duration
 	lastUnread     time.Time
+	unreadAsked    map[string]bool // chats already asked for an unread snapshot (cmu)
+	unreadHealWG   sync.WaitGroup  // tracks the background snapshot requests (tests wait)
 
 	guard *Guard
 }
@@ -215,6 +221,13 @@ type chatMeta struct {
 	LastTS   int64
 	Unread   int
 	Archived bool
+	// UnreadTS and UnreadKnown carry the authoritative per-chat unread count of
+	// the last history sync: Unread messages newer than UnreadTS (ms) must stay
+	// unread, everything older the phone already read. The count is only usable
+	// with its boundary, so a conversation without a conversation timestamp
+	// records nothing (UnreadKnown stays false) and the chat is asked again.
+	UnreadTS    int64
+	UnreadKnown bool
 }
 
 // New builds a WhatsApp backend. Nothing connects until Connect.
@@ -237,7 +250,9 @@ func New(o Options) *Backend {
 		historyTimeout: historyWait,
 		prefetch:       make(chan struct{}, mediaPrefetchWorkers),
 		unfetchable:    map[string]bool{}, histWait: map[string]chan struct{}{}, histAsked: map[string]time.Time{},
+		unreadAsked: map[string]bool{},
 	}
+	b.lifeCtx, b.lifeCancel = context.WithCancel(context.Background())
 	if c := o.Config; c != nil {
 		if b.dataDir == "" {
 			b.dataDir = c.DataDir()
@@ -359,6 +374,18 @@ func (b *Backend) PollOnce() []proto.Event { return b.queue.drain() }
 
 // ---- client lifecycle --------------------------------------------------------------
 
+// lifecycleCtx is the backend's process context: it is cancelled by Disconnect
+// and recreated by Connect, so background work tied to the session (the web
+// socket being up) stops with it.
+func (b *Backend) lifecycleCtx() context.Context {
+	b.lifeMu.Lock()
+	defer b.lifeMu.Unlock()
+	if b.lifeCtx == nil {
+		return context.Background()
+	}
+	return b.lifeCtx
+}
+
 // ensureClient opens the device store and builds the whatsmeow client once.
 func (b *Backend) ensureClient(ctx context.Context) (waClient, error) {
 	b.lifeMu.Lock()
@@ -454,6 +481,7 @@ func (b *Backend) Connect(ctx context.Context) error {
 	select {
 	case <-b.closed:
 		b.closed = make(chan struct{}) // reconnect after a Disconnect
+		b.lifeCtx, b.lifeCancel = context.WithCancel(context.Background())
 	default:
 	}
 	b.lifeMu.Unlock()
@@ -562,6 +590,11 @@ func (b *Backend) Disconnect(ctx context.Context) error {
 	case <-b.closed:
 	default:
 		close(b.closed)
+	}
+	// Pending background phone requests (unread heal history asks) belong to
+	// the session: cancel them with it instead of letting them outlive it.
+	if b.lifeCancel != nil {
+		b.lifeCancel()
 	}
 	b.lifeMu.Unlock()
 	if cli != nil {

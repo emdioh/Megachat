@@ -183,3 +183,26 @@ heuristic would also match legitimate album photos. A DB that already contains W
 children must be cleaned with the Python script (it operates on the shared `messages.db`)
 while the WAHA API is still reachable; after the cutover the Go backend cannot tell those old
 rows apart. New traffic never stores the child.
+
+## WhatsApp: per-chat unread and the best-effort history heal (mc-zao.3.5.2)
+
+A chat's unread count is authoritative only when a history sync reports it:
+`Conversation.unreadCount` plus `Conversation.conversationTimestamp` is stored as
+`chatMeta.Unread`/`UnreadTS`/`UnreadKnown` (`internal/proto/whatsapp/history.go`),
+and every reconcile pass (app-state sync, `markChatAsRead`, `contacts.list`) re-applies it
+(`applyUnreadSnapshots`), marking read only what is older than the boundary and keeping the
+newest `Unread` incoming messages. A `markChatAsRead` entry only marks read too, so the
+snapshot cannot inflate a badge.
+
+A chat with local unread and no trusted count has one extra source: an on-demand history
+request to the primary device (`requestOlderHistory`), bounded to 10 chats per process
+(highest local unread first), paced at 5 s between requests, and subject to the per-chat
+10-minute `historyAskCooldown`. This heal is **best-effort**: whatsmeow's
+`BuildHistorySyncRequest` only documents that the `ON_DEMAND` answer carries the requested
+messages immediately before the anchor message, and its history-sync dispatch
+(`message.go` `handleHistorySyncNotificationLoop`: download → unmarshal → `events.HistorySync`)
+passes the blob through unchanged, so `Conversation.unreadCount` is present only if the
+primary put it there (nothing is synthesised). When it is absent the chat stays untrusted
+until the next history sync or process start; the snapshot re-apply, not this request, is
+the mechanism that keeps historical rows from inflating the badge. The requests run on the
+backend lifecycle context, so `Disconnect`/`Stop` cancels them.

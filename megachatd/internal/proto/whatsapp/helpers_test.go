@@ -315,7 +315,7 @@ func newEnv(t *testing.T) *env {
 	b.contactStoreForTest = e.book
 	// The background LID resolver writes the cache inside the temp dir: let it
 	// finish before TempDir's cleanup removes the directory.
-	t.Cleanup(func() { b.lidRunWG.Wait() })
+	t.Cleanup(func() { b.lidRunWG.Wait(); b.unreadHealWG.Wait() })
 	t.Cleanup(func() { _ = b.Disconnect(context.Background()) })
 	return e
 }

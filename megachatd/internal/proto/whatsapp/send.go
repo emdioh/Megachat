@@ -629,10 +629,23 @@ func (b *Backend) reconcileUnread(ctx context.Context, force bool) {
 	}
 	b.readOnPhone = map[string]int64{}
 	b.cmu.Unlock()
+	// The unread counts of the chats that still show a badge: the snapshots
+	// (and the history asks below) are driven by what the store holds now.
+	unread := b.unreadByChat(ctx)
+	// Re-apply the last authoritative count of every chat a history sync told
+	// us about. A chat whose read state never changes on the phone (no
+	// markChatAsRead entry survives in the app state) has no other heal: the
+	// count is what keeps the locally ingested history from inflating the
+	// badge forever.
+	b.applyUnreadSnapshots(ctx, unread)
 	for _, p := range chats {
 		// Timestamp-bounded: keep only the newest `keep` (0) incoming messages
 		// unread, and never touch a message newer than the phone's boundary
 		// (a zero cutoff means the whole chat was read).
 		b.reconcileChatUnread(ctx, p.chat, 0, p.cutoff)
 	}
+	// Chats with local unread but no trusted count: ask the phone for their
+	// history (best effort: the ON_DEMAND answer may carry the chat's count)
+	// instead of keeping the badge on a guess.
+	b.askUntrustedUnread(unread)
 }
