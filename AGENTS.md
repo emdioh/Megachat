@@ -169,19 +169,20 @@ python3 -m pip install -r requirements.txt -r requirements-web.txt -r requiremen
 
 Go per `megachatd/go.mod`.
 
-**Gates** (the controller re-runs them; the worker must pass them first):
+**Gates** (run once by the delegate that wrote the code; nobody re-runs them):
 
 ```bash
-cd megachatd && go vet ./... && go test -race ./... && cd ..
-make contract-test
-python3 -m pytest tests/ -q -m "not live and not live-manual and not integration" \
-  --deselect tests/test_web_multi_host.py::test_listens_on_every_host
+cd megachatd && go vet ./... && go test ./...      # while iterating
+go test -race ./...                                 # ONCE, at the end; report the result
+cd .. && make contract-test
 ```
 
-Run the Go gates and `make contract-test` for every change. Run pytest only
-when Python files changed (`server/`, `protocols/`, `web/*.py`, `tui/`,
-`launcher/`, root `*.py`, `tests/` outside `tests/contract/`).
-`test_socket_client::test_close_stops_the_threads_and_fails_later_calls` is
-flaky under load: if it fails, re-run it alone.
+Run pytest only when Python files changed (`server/`, `protocols/`, `web/*.py`,
+`tui/`, `launcher/`, root `*.py`, `tests/` outside `tests/contract/`) — for
+megachatd work that should be never.
+The hand-off note must carry the exact gate results, including the `-race` run
+(packages ok / failed, and any race report). The controller reviews the diff,
+the tests and those results; if the code or the tests are not good enough it
+sends the bead back with `rework` instead of re-running anything.
 Contract failures are never "pre-existing": the integration branch is green,
 so any red test must be explained in the hand-off note with its exact output.
