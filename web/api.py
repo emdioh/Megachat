@@ -404,6 +404,21 @@ def create_api_router() -> Any:
             },
         )
 
+    @router.get("/transcribe/status")
+    async def transcription_status_query(
+        request: Request,
+        protocol: Literal["signal", "whatsapp", "telegram"],
+        attachment_id: str,
+    ) -> dict[str, Any]:
+        # The id travels in the query string: WhatsApp ids are whole URLs
+        # ("http://localhost:3000/api/files/..."), and in the path their "//"
+        # gets merged by reverse proxies, so the exact-match lookup misses.
+        return await call_op(
+            request,
+            "transcribe.status",
+            {"protocol": protocol, "attachment_id": attachment_id},
+        )
+
     @router.get("/transcribe/{proto}/{attachment_id:path}")
     async def transcription_status(
         request: Request,

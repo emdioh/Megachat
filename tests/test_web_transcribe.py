@@ -154,3 +154,22 @@ def test_post_rejects_invalid_request(payload):
     assert response.status_code == 400
     assert response.json()["detail"] == "Invalid request"
     service.status.assert_not_called()
+
+
+def test_get_status_by_query_keeps_url_shaped_whatsapp_id():
+    # WhatsApp ids are whole URLs: in the path their "//" is merged by
+    # reverse proxies, so the SPA polls with the id in the query string.
+    attachment_id = "http://localhost:3000/api/files/default/true_1@g.us_AC@lid.oga"
+    service = MagicMock()
+    service.status.return_value = {"status": "ok", "text": "ciao"}
+
+    with TestClient(make_app(FakeManager(), service)) as client:
+        response = client.get(
+            "/api/transcribe/status",
+            params={"protocol": "whatsapp", "attachment_id": attachment_id},
+            headers=AUTH,
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok", "text": "ciao"}
+    service.status.assert_called_once_with("whatsapp", attachment_id)
