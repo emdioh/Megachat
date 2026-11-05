@@ -225,9 +225,15 @@ def copy_python_project(dest: Path) -> Path:
     ``protocols.config`` reads and WRITES ``<project>/config.json`` (and reads
     ``.env``) next to the sources, so the Python server must not run from the
     developer's checkout: settings writes would leak into it and between runs.
+
+    ``bin`` (where ``signal-cli`` is installed) is dropped on purpose: the Go
+    server runs with an empty ``--project-dir``, so copying the developer's
+    ``bin/signal-cli-*`` would give the two sides different link.* behaviour
+    (Python would run the installed CLI, Go would report it as missing) and
+    make the parity tests depend on the machine, not on the wire contract.
     """
     skip = shutil.ignore_patterns(
-        ".git", "tests", "docs", "documentation", "assets", "megachatd", "profiling",
+        ".git", "tests", "docs", "documentation", "assets", "megachatd", "profiling", "bin",
         "__pycache__", "*.png", "*.pyc", "config.json", ".env", ".venv*", "node_modules",
     )
     shutil.copytree(REPO, dest, ignore=skip)

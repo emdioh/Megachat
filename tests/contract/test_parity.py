@@ -168,6 +168,33 @@ def test_link_status_shape_matches(go_seeded, py_seeded):
     assert a["whatsapp"] == b["whatsapp"] and a["telegram"] == b["telegram"]
 
 
+def test_link_finalize_without_signal_cli(go_seeded, py_seeded):
+    """link.finalize with no signal-cli: Python's canonical missing-CLI error.
+
+    Neither contract server has ``bin/signal-cli-*/bin/signal-cli`` (Go runs
+    with an empty project dir and ``copy_python_project`` drops ``bin/``), so
+    this case is environment-independent: it needs no signal-cli on PATH and no
+    linked Signal account.  ``backend_error`` keeps the message Python's
+    ``find_signal_cli()`` raises, in the socket and HTTP shapes.
+    """
+    params = {"protocol": "signal", "phone": ""}
+    want = {
+        "__error__": "ApiError",
+        "code": "backend_error",
+        "message": "signal-cli not found in ./bin/",
+        "details": None,
+    }
+    assert outcome(go_seeded, "link.finalize", params) == want
+    assert outcome(py_seeded, "link.finalize", params) == want
+    assert_same(go_seeded, py_seeded, "link.finalize", params)
+
+    a = go_seeded.http("POST", "/api/link/finalize", json_body={"phone": ""})
+    b = py_seeded.http("POST", "/api/link/finalize", json_body={"phone": ""})
+    body = {"detail": "signal-cli not found in ./bin/"}
+    assert a.status == b.status == 502
+    assert a.json() == b.json() == body
+
+
 def test_hello_operations(go_seeded, py_seeded):
     a, b = go_seeded.client.server_info, py_seeded.client.server_info
     assert (a["api_version"], a["operations"]) == (b["api_version"], b["operations"])
