@@ -334,3 +334,180 @@ func TestHistorySyncKeepsRepeatedTextSentFromPhone(t *testing.T) {
 		}
 	}
 }
+
+// ---- authoritative unread count (mc-zao.3.5.2) -----------------------------------------------
+
+// unreadTimestamps is the timestamps of the chat's rows still flagged unread.
+func unreadTimestamps(t *testing.T, e *env, contact string) []int64 {
+	t.Helper()
+	var out []int64
+	for _, r := range dbRows(t, e, contact) {
+		if !r.Read {
+			out = append(out, r.Timestamp)
+		}
+	}
+	return out
+}
+
+// A conversation without messages (PUSH_NAME/RECENT syncs) still reports the
+// phone's unread count: dropping it left chats whose history was ingested
+// unread — and whose read state never changes on the phone, so no
+// markChatAsRead entry ever arrives — inflated forever.
+func TestHistorySyncMessageLessConversationAppliesUnreadCount(t *testing.T) {
+	e := newEnv(t)
+	chat := "391234567890@s.whatsapp.net"
+	seedIncoming(t, e, "391234567890@c.us",
+		1_700_000_001_000, 1_700_000_002_000, 1_700_000_003_000, 1_700_000_004_000)
+	e.b.onHistorySync(&events.HistorySync{Data: &waHistorySync.HistorySync{
+		Conversations: []*waHistorySync.Conversation{{
+			ID:                    gproto.String(chat),
+			UnreadCount:           gproto.Uint32(2),
+			ConversationTimestamp: gproto.Uint64(1_700_000_100),
+		}},
+	}})
+	got := unreadTimestamps(t, e, "391234567890@c.us")
+	want := []int64{1_700_000_003_000, 1_700_000_004_000}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("unread rows = %v, want %v", got, want)
+	}
+	// The count is remembered: the next pass applies it without asking the
+	// phone and without moving the badge.
+	e.b.ReconcileUnread(ctx)
+	e.b.unreadHealWG.Wait()
+	if len(e.fc.peerSent) != 0 {
+		t.Errorf("a chat with a trusted count must not be asked again: %d requests", len(e.fc.peerSent))
+	}
+	if got := unreadTimestamps(t, e, "391234567890@c.us"); len(got) != 2 {
+		t.Fatalf("unread rows after a second pass = %v", got)
+	}
+}
+
+// A chat whose local unread has no authoritative count is asked for its
+// history: FetchHistory only requests sparse caches, so a full one would never
+// hear the phone's count. Once per chat per process.
+func TestReconcileUnreadAsksThePhoneForChatsWithoutASnapshot(t *testing.T) {
+	e := newEnv(t)
+	seedIncoming(t, e, "391234567890@c.us", 1_000, 2_000)
+	e.b.ReconcileUnread(ctx)
+	e.b.unreadHealWG.Wait()
+	if len(e.fc.peerSent) != 1 {
+		t.Fatalf("the phone must be asked for the chat's count: %d requests", len(e.fc.peerSent))
+	}
+	req := e.fc.peerSent[0].GetProtocolMessage().GetPeerDataOperationRequestMessage().GetHistorySyncOnDemandRequest()
+	if req.GetChatJID() != "391234567890@s.whatsapp.net" {
+		t.Errorf("asked for %q", req.GetChatJID())
+	}
+	e.b.reconcileUnread(ctx, true)
+	e.b.unreadHealWG.Wait()
+	if len(e.fc.peerSent) != 1 {
+		t.Errorf("asked again: %d requests", len(e.fc.peerSent))
+	}
+}
+
+// An on-demand page is old history: what it delivered is read, but the chat's
+// newer unread messages must survive it (bounding the page by the conversation
+// timestamp marked them read too, and the count cannot be restored).
+func TestOnDemandHistoryKeepsTheNewerUnread(t *testing.T) {
+	e := newEnv(t)
+	chat := "391234567890@s.whatsapp.net"
+	seedIncoming(t, e, "391234567890@c.us", 1_700_000_200_000, 1_700_000_201_000, 1_700_000_202_000)
+	e.b.onHistorySync(&events.HistorySync{Data: &waHistorySync.HistorySync{
+		SyncType: waHistorySync.HistorySync_ON_DEMAND.Enum(),
+		Conversations: []*waHistorySync.Conversation{{
+			// The phone's count (and its boundary) covers the whole chat: the
+			// three unread messages are newer than the page it delivered.
+			ID: gproto.String(chat), UnreadCount: gproto.Uint32(3),
+			ConversationTimestamp: gproto.Uint64(1_700_000_300),
+			Messages: []*waHistorySync.HistorySyncMsg{
+				webMsg(chat, "C1", false, 1_700_000_001, "vecchio", waWeb.WebMessageInfo_READ),
+				webMsg(chat, "C2", false, 1_700_000_002, "vecchio", waWeb.WebMessageInfo_READ),
+			},
+		}},
+	}})
+	rows := dbRows(t, e, "391234567890@c.us")
+	if len(rows) != 5 {
+		t.Fatalf("rows = %d", len(rows))
+	}
+	got := unreadTimestamps(t, e, "391234567890@c.us")
+	want := []int64{1_700_000_200_000, 1_700_000_201_000, 1_700_000_202_000}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] || got[2] != want[2] {
+		t.Fatalf("unread rows = %v, want %v", got, want)
+	}
+	// The page's own messages are read, and the count it reported is trusted.
+	for _, r := range rows {
+		if r.Timestamp <= 1_700_000_002_000 && !r.Read {
+			t.Errorf("on-demand page message left unread: %+v", r)
+		}
+	}
+	e.b.ReconcileUnread(ctx)
+	e.b.unreadHealWG.Wait()
+	if len(e.fc.peerSent) != 0 {
+		t.Errorf("the sync already reported the count: %d requests", len(e.fc.peerSent))
+	}
+}
+
+// The authoritative count is not a one-shot: history that lands after the sync
+// (an older build's database, a folded @lid copy) is reconciled by the next
+// pass, or it re-inflates the badge.
+func TestUnreadSnapshotIsReappliedToLateHistory(t *testing.T) {
+	e := newEnv(t)
+	chat := "391234567890@s.whatsapp.net"
+	seedIncoming(t, e, "391234567890@c.us", 1_700_000_010_000, 1_700_000_011_000)
+	e.b.onHistorySync(&events.HistorySync{Data: &waHistorySync.HistorySync{
+		Conversations: []*waHistorySync.Conversation{conv(chat, 1,
+			webMsg(chat, "D2", false, 1_700_000_011, "unread", waWeb.WebMessageInfo_READ))},
+	}})
+	if _, err := e.b.IngestMessage(ctx, "391234567890@c.us",
+		map[string]any{"id": "false_391234567890@c.us_D1", "text": "vecchio", "is_mine": false}, 1_700_000_001_000); err != nil {
+		t.Fatal(err)
+	}
+	e.b.reconcileUnread(ctx, true)
+	e.b.unreadHealWG.Wait()
+	got := unreadTimestamps(t, e, "391234567890@c.us")
+	if len(got) != 1 || got[0] != 1_700_000_011_000 {
+		t.Fatalf("unread rows = %v, want the newest one", got)
+	}
+}
+
+// The reported case end to end: history ingested unread, no markChatAsRead
+// entry, full local cache. The pass asks the phone, the on-demand answer's
+// count becomes the badge, and the page it carried is read.
+func TestUnreadHealAsksAndAppliesThePhoneCount(t *testing.T) {
+	e := newEnv(t)
+	chat := "391234567890@s.whatsapp.net"
+	var times []int64
+	for i := int64(1); i <= 12; i++ {
+		times = append(times, 1_700_000_000_000+i*1_000)
+	}
+	seedIncoming(t, e, "391234567890@c.us", times...)
+	e.b.ReconcileUnread(ctx)
+	e.b.unreadHealWG.Wait()
+	if len(e.fc.peerSent) != 1 {
+		t.Fatalf("history request for the untrusted chat: %d", len(e.fc.peerSent))
+	}
+	e.b.onHistorySync(&events.HistorySync{Data: &waHistorySync.HistorySync{
+		SyncType: waHistorySync.HistorySync_ON_DEMAND.Enum(),
+		Conversations: []*waHistorySync.Conversation{{
+			ID: gproto.String(chat), UnreadCount: gproto.Uint32(2),
+			ConversationTimestamp: gproto.Uint64(1_700_000_100),
+			Messages: []*waHistorySync.HistorySyncMsg{
+				webMsg(chat, "E1", false, 1_699_999_990, "vecchio", waWeb.WebMessageInfo_READ),
+				webMsg(chat, "E2", false, 1_699_999_991, "vecchio", waWeb.WebMessageInfo_READ),
+			},
+		}},
+	}})
+	got := unreadTimestamps(t, e, "391234567890@c.us")
+	want := []int64{1_700_000_011_000, 1_700_000_012_000}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("unread rows = %v, want the phone's two %v", got, want)
+	}
+	// A second pass keeps the answer and asks nothing more.
+	e.b.reconcileUnread(ctx, true)
+	e.b.unreadHealWG.Wait()
+	if len(e.fc.peerSent) != 1 {
+		t.Errorf("asked again: %d", len(e.fc.peerSent))
+	}
+	if got := unreadTimestamps(t, e, "391234567890@c.us"); len(got) != 2 {
+		t.Errorf("unread rows after a second pass = %v", got)
+	}
+}

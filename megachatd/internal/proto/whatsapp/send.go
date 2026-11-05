@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -629,10 +630,114 @@ func (b *Backend) reconcileUnread(ctx context.Context, force bool) {
 	}
 	b.readOnPhone = map[string]int64{}
 	b.cmu.Unlock()
+	// The unread counts of the chats that still show a badge: the snapshots
+	// (and the history asks below) are driven by what the store holds now.
+	unread := b.unreadByChat(ctx)
+	// Re-apply the last authoritative count of every chat a history sync told
+	// us about. A chat whose read state never changes on the phone (no
+	// markChatAsRead entry survives in the app state) has no other heal: the
+	// count is what keeps the locally ingested history from inflating the
+	// badge forever.
+	b.applyUnreadSnapshots(ctx, unread)
 	for _, p := range chats {
 		// Timestamp-bounded: keep only the newest `keep` (0) incoming messages
 		// unread, and never touch a message newer than the phone's boundary
 		// (a zero cutoff means the whole chat was read).
 		b.reconcileChatUnread(ctx, p.chat, 0, p.cutoff)
 	}
+	// Chats with local unread but no trusted count: ask the phone for their
+	// history (it answers with the chat's unread count) instead of keeping the
+	// badge on a guess.
+	b.askUntrustedUnread(unread)
+}
+
+// unreadByChat is the store's per-key unread count folded on the contact that
+// owns each chat (@c.us <-> @lid), i.e. the number the badge shows.
+func (b *Backend) unreadByChat(ctx context.Context) map[string]int {
+	counts, err := b.st.UnreadCounts(ctx)
+	if err != nil {
+		b.log.Debug("WhatsApp unread counts unavailable", "err", err)
+		return nil
+	}
+	out := map[string]int{}
+	for k, n := range counts {
+		if k.Protocol != proto.ProtocolWhatsApp || n <= 0 {
+			continue
+		}
+		chat := k.Contact
+		if c := b.identify(chat); c != nil && c.ID != "" {
+			chat = c.ID
+		}
+		out[chat] += n
+	}
+	return out
+}
+
+// applyUnreadSnapshots re-applies the authoritative unread count of every chat
+// that a history sync reported, oldest boundary first, and only where the
+// store shows more unread than the phone does (the reconcile only marks read).
+func (b *Backend) applyUnreadSnapshots(ctx context.Context, unread map[string]int) {
+	b.cmu.RLock()
+	type snapshot struct {
+		chat string
+		keep int
+		ts   int64
+	}
+	var snaps []snapshot
+	for chat, m := range b.chats {
+		if !m.UnreadKnown || m.UnreadTS <= 0 || isBroadcastJID(chat) || !isFetchableJID(chat) {
+			continue
+		}
+		snaps = append(snaps, snapshot{chat, m.Unread, m.UnreadTS})
+	}
+	b.cmu.RUnlock()
+	sort.Slice(snaps, func(i, j int) bool {
+		if snaps[i].ts != snaps[j].ts {
+			return snaps[i].ts < snaps[j].ts
+		}
+		return snaps[i].chat < snaps[j].chat
+	})
+	for _, s := range snaps {
+		if unread[s.chat] <= s.keep {
+			continue
+		}
+		b.reconcileChatUnread(ctx, s.chat, s.keep, s.ts)
+	}
+}
+
+// askUntrustedUnread triggers the history resync that makes the badge
+// authoritative: FetchHistory only asks the phone for chats whose cache is
+// sparse, so a chat with a full local cache and no history-sync count would
+// never hear the phone's count. Once per chat per process, in the background.
+func (b *Backend) askUntrustedUnread(unread map[string]int) {
+	if len(unread) == 0 || b.currentClient() == nil {
+		return
+	}
+	var want []string
+	b.cmu.Lock()
+	for chat := range unread {
+		if isBroadcastJID(chat) || !isFetchableJID(chat) {
+			continue
+		}
+		if m := b.chats[chat]; m != nil && m.UnreadKnown {
+			continue
+		}
+		if b.unreadAsked[chat] {
+			continue
+		}
+		b.unreadAsked[chat] = true
+		want = append(want, chat)
+	}
+	b.cmu.Unlock()
+	if len(want) == 0 {
+		return
+	}
+	sort.Strings(want)
+	b.unreadHealWG.Add(1)
+	go func() {
+		defer b.unreadHealWG.Done()
+		for _, chat := range want {
+			b.requestOlderHistory(context.Background(), chat, b.resyncLimit)
+		}
+	}()
 }

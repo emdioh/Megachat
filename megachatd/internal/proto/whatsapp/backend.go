@@ -74,6 +74,8 @@ type Store interface {
 	MarkAsRead(ctx context.Context, protocol, contact string, extraKeys ...string) error
 	// ReconcileChatUnread aligns a chat's read flags with the phone's unread count.
 	ReconcileChatUnread(ctx context.Context, protocol, contact string, keep int, cutoffMs int64, extraKeys ...string) (int64, error)
+	// UnreadCounts is the unread incoming message count of every contact.
+	UnreadCounts(ctx context.Context) (map[store.ContactKey]int, error)
 	UpdateMessageStatus(ctx context.Context, timestamp int64, status, protocol, contact string, text *string, expected []string) (bool, error)
 	UpdateMessageStatusByID(ctx context.Context, msgID, status, protocol string, contact *string) (bool, error)
 	UpdateMessageText(ctx context.Context, u store.TextUpdate) (bool, error)
@@ -201,6 +203,8 @@ type Backend struct {
 	histAsked      map[string]time.Time
 	historyTimeout time.Duration
 	lastUnread     time.Time
+	unreadAsked    map[string]bool // chats already asked for an unread snapshot (cmu)
+	unreadHealWG   sync.WaitGroup  // tracks the background snapshot requests (tests wait)
 
 	guard *Guard
 }
@@ -215,6 +219,13 @@ type chatMeta struct {
 	LastTS   int64
 	Unread   int
 	Archived bool
+	// UnreadTS and UnreadKnown carry the authoritative per-chat unread count of
+	// the last history sync: Unread messages newer than UnreadTS (ms) must stay
+	// unread, everything older the phone already read. The count is only usable
+	// with its boundary, so a conversation without a conversation timestamp
+	// records nothing (UnreadKnown stays false) and the chat is asked again.
+	UnreadTS    int64
+	UnreadKnown bool
 }
 
 // New builds a WhatsApp backend. Nothing connects until Connect.
@@ -237,6 +248,7 @@ func New(o Options) *Backend {
 		historyTimeout: historyWait,
 		prefetch:       make(chan struct{}, mediaPrefetchWorkers),
 		unfetchable:    map[string]bool{}, histWait: map[string]chan struct{}{}, histAsked: map[string]time.Time{},
+		unreadAsked: map[string]bool{},
 	}
 	if c := o.Config; c != nil {
 		if b.dataDir == "" {

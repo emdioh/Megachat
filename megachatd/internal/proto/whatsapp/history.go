@@ -241,17 +241,32 @@ func (b *Backend) ingestConversation(ctx context.Context, cli waClient, conv *wa
 	// Registry metadata of the chat.
 	name := firstNonEmpty(conv.GetName(), conv.GetDisplayName())
 	b.noteChat(chat, int64(conv.GetConversationTimestamp())*1000, name)
+	// The phone's unread count for the chat, with the boundary it refers to:
+	// the count alone is unusable because it cannot be bounded to the history
+	// we hold, so a conversation without a timestamp teaches us nothing.
+	unreadTS := int64(conv.GetConversationTimestamp()) * 1000
+	keep := int(conv.GetUnreadCount())
+	unreadKnown := conv.UnreadCount != nil && unreadTS > 0
 	b.cmu.Lock()
 	if m := b.chats[chat]; m != nil {
-		m.Unread = int(conv.GetUnreadCount())
+		m.Unread = keep
 		if conv.Archived != nil {
 			m.Archived = conv.GetArchived()
 		}
 	}
 	b.cmu.Unlock()
+	if unreadKnown {
+		b.noteUnreadSnapshot(chat, key, keep, unreadTS)
+	}
 
 	msgs := conv.GetMessages()
 	if len(msgs) == 0 {
+		// A conversation without messages still carries the authoritative
+		// count (PUSH_NAME/RECENT syncs): dropping it left the badge stuck on
+		// the historical rows the phone had already read.
+		if unreadKnown {
+			b.reconcileChatUnread(ctx, key, keep, unreadTS)
+		}
 		b.signalHistory(chat)
 		return
 	}
@@ -278,6 +293,9 @@ func (b *Backend) ingestConversation(ctx context.Context, cli waClient, conv *wa
 
 	readIDs, deliveredIDs := map[string]bool{}, map[string]bool{}
 	added := 0
+	// Newest timestamp of the messages the page actually delivered (the
+	// boundary of what an on-demand sync proves the phone has read).
+	var pageTS int64
 	for _, w := range web {
 		pm, err := cli.ParseWebMessage(cj, w)
 		if err != nil || pm == nil {
@@ -289,6 +307,9 @@ func (b *Backend) ingestConversation(ctx context.Context, cli waClient, conv *wa
 			}
 			d := parseInMsg(ev.Payload)
 			ts, _ := toInt64(ev.Payload["timestamp"])
+			if ts > pageTS {
+				pageTS = ts
+			}
 			b.ingestMu.Lock()
 			if hit := b.detectEditLocked(key, d.ID, d.Text, d.IsMine, pre); hit != nil {
 				b.applyEditLocked(ctx, key, hit.ID, d.Text, &d.IsMine, true)
@@ -336,17 +357,47 @@ func (b *Backend) ingestConversation(ctx context.Context, cli waClient, conv *wa
 		b.ensureChatContact(key, name, conv)
 	}
 	// Align the read flags with the phone: only the newest UnreadCount incoming
-	// messages stay unread (an on-demand sync brings old, already read history,
-	// so everything it delivered is read). Without this every message ever
-	// ingested counted as unread and the badge showed thousands.
-	keep := int(conv.GetUnreadCount())
-	if onDemand {
-		keep = 0
-	}
-	if cutoff := int64(conv.GetConversationTimestamp()) * 1000; cutoff > 0 {
-		b.reconcileChatUnread(ctx, key, keep, cutoff)
+	// messages stay unread. Without this every message ever ingested counted as
+	// unread and the badge showed thousands. An on-demand page is old, already
+	// read history, so what it delivered is marked read — bounded by the page
+	// itself, never by the conversation timestamp: the chat's unread messages
+	// are newer than the page and must survive it.
+	switch {
+	case onDemand:
+		if unreadKnown {
+			b.reconcileChatUnread(ctx, key, keep, unreadTS)
+		}
+		if pageTS > 0 {
+			b.reconcileChatUnread(ctx, key, 0, pageTS)
+		}
+	case unreadTS > 0:
+		b.reconcileChatUnread(ctx, key, keep, unreadTS)
 	}
 	b.signalHistory(chat)
+}
+
+// noteUnreadSnapshot records the phone's authoritative unread count for the
+// chat under every id it is known by (chat and its folded storage key).
+func (b *Backend) noteUnreadSnapshot(chat, key string, keep int, ts int64) {
+	if ts <= 0 {
+		return
+	}
+	ids := []string{chat}
+	if key != "" && key != chat {
+		ids = append(ids, key)
+	}
+	b.cmu.Lock()
+	for _, id := range ids {
+		m := b.chats[id]
+		if m == nil {
+			m = &chatMeta{}
+			b.chats[id] = m
+		}
+		m.Unread = keep
+		m.UnreadTS = ts
+		m.UnreadKnown = true
+	}
+	b.cmu.Unlock()
 }
 
 // reconcileChatUnread applies the phone's unread count to a chat: incoming
