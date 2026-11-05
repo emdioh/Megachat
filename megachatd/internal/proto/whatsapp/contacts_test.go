@@ -573,6 +573,85 @@ func TestLoadContactsLIDWithoutPhone(t *testing.T) {
 	}
 }
 
+func TestChatDisplayFallbackOnlyRewritesLID(t *testing.T) {
+	for id, want := range map[string]string{
+		"99326135144475@lid":      "99326135144475",
+		"@lid":                    "@lid", // no local part: nothing readable to show
+		"393331234567@c.us":       "393331234567@c.us",
+		"120363000000000000@g.us": "120363000000000000@g.us",
+		"":                        "",
+	} {
+		if got := chatDisplayFallback(id); got != want {
+			t.Errorf("chatDisplayFallback(%q) = %q, want %q", id, got, want)
+		}
+	}
+}
+
+// An unresolved @lid nobody can name (no LID map entry, no phone-keyed contact,
+// no device contact for the LID JID) must not reach the wire as the raw
+// "<n>@lid" identifier: it renders as the readable local part, the same rule
+// Python's sender resolver follows ("mai il JID grezzo").
+func TestLoadContactsUnresolvedLIDShowsReadableFallback(t *testing.T) {
+	e := newEnv(t)
+	e.b.IngestMessage(ctx, "99326135144475@lid", map[string]any{"id": "false_99326135144475@lid_A1", "text": "x", "is_mine": false}, 1)
+	e.b.loadProtocolCache(ctx)
+	e.b.loadContacts(ctx)
+	c, ok := e.b.FindContact("99326135144475@lid")
+	if !ok || c.Extras["lid"] != "99326135144475@lid" {
+		t.Fatalf("lid contact: %+v", c)
+	}
+	if c.DisplayName != "99326135144475" {
+		t.Errorf("an unresolved lid renders as its digits, got %q", c.DisplayName)
+	}
+	// The address book keeps the same readable name and flags it as unresolved.
+	book, _ := e.b.ListAddressBook(ctx, true)
+	for _, b := range book {
+		if b.ID == "99326135144475@lid" && (b.DisplayName != "99326135144475" || b.Extras["lid_unresolved"] != true) {
+			t.Errorf("address book entry: %+v", b)
+		}
+	}
+	// The digits are a placeholder, not a name: once the mapping and the
+	// rubrica name arrive the very next load replaces them.
+	e.lids.put("99326135144475", "393331234567")
+	e.book.put(types.NewJID("393331234567", types.DefaultUserServer), types.ContactInfo{Found: true, FullName: "Praful Shankar"})
+	e.b.loadContacts(ctx)
+	if c, ok := e.b.FindContact("99326135144475@lid"); !ok || c.DisplayName != "Praful Shankar" || c.Extras["phone"] != "393331234567" {
+		t.Fatalf("the readable fallback must stay replaceable: %+v ok=%v", c, ok)
+	}
+}
+
+// The device contact for the LID JID carries the push/full name even when
+// nothing maps the LID to a phone: that name beats the readable fallback. A row
+// that only carries a push name is usable too, the same rule rawAddressBook
+// applies to the address book rows.
+func TestLoadContactsLIDTakesDeviceContactName(t *testing.T) {
+	e := newEnv(t)
+	e.book.put(types.NewJID("99326135144475", types.HiddenUserServer), types.ContactInfo{PushName: "Praful"})
+	if got := e.b.nameForChat(ctx, "99326135144475@lid"); got != "Praful" {
+		t.Fatalf("nameForChat = %q, want the device push name", got)
+	}
+	e.b.IngestMessage(ctx, "99326135144475@lid", map[string]any{"id": "false_99326135144475@lid_A1", "text": "x", "is_mine": false}, 1)
+	e.b.loadProtocolCache(ctx)
+	e.b.loadContacts(ctx)
+	if c, ok := e.b.FindContact("99326135144475@lid"); !ok || c.DisplayName != "Praful" {
+		t.Fatalf("the device contact name must win over the readable fallback: %+v ok=%v", c, ok)
+	}
+}
+
+// A registry name that is just the raw id (seeded before the contact row
+// existed) is retried on the next refresh instead of sticking forever.
+func TestRefreshChatRegistryNamesChatsStuckOnTheirRawID(t *testing.T) {
+	e := newEnv(t)
+	e.book.put(types.NewJID("99326135144475", types.HiddenUserServer), types.ContactInfo{Found: true, FullName: "Praful Shankar"})
+	e.b.noteChat("99326135144475@lid", 1, "99326135144475@lid")
+	if err := e.b.refreshChatRegistry(ctx, false); err != nil {
+		t.Fatalf("refresh: %v", err)
+	}
+	if rows := e.b.chatRows(); len(rows) != 1 || rows[0].Name != "Praful Shankar" {
+		t.Fatalf("chat rows: %+v", rows)
+	}
+}
+
 func TestRefreshContactsReportsNewAndRenamed(t *testing.T) {
 	e := newEnv(t)
 	e.b.IngestMessage(ctx, "393331234567@c.us", map[string]any{"id": "false_393331234567@c.us_A1", "text": "x", "is_mine": false}, 1)

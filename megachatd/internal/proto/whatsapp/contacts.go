@@ -176,6 +176,24 @@ func contactBestName(ci types.ContactInfo) string {
 	return ""
 }
 
+// chatDisplayFallback is the deliberate name of a chat nobody knows a name for:
+// a "@lid" chat renders as its local part instead of the raw "<n>@lid"
+// identifier, the readable-number fallback the Python group-sender resolver and
+// the "@<digits>" mention resolver already use (they never emit a raw JID).
+// Python's own chat builder keeps "name or jid" here; this is the deliberate
+// divergence of mc-zao.3.5.3, limited to @lid: every other id stays itself, so
+// the "name or jid" fallback of @c.us chats and groups is unchanged (wire
+// parity). The digits are still a placeholder (isPlaceholderDisplayName), so a
+// device/rubrica name replaces them as soon as one is known.
+func chatDisplayFallback(id string) string {
+	if strings.HasSuffix(id, "@lid") {
+		if head, _, _ := strings.Cut(id, "@"); head != "" {
+			return head
+		}
+	}
+	return id
+}
+
 // nameForChat looks a chat name up in the contact table (zero network).
 func (b *Backend) nameForChat(ctx context.Context, wahaID string) string {
 	cs := b.deviceContacts()
@@ -183,8 +201,14 @@ func (b *Backend) nameForChat(ctx context.Context, wahaID string) string {
 		return ""
 	}
 	try := func(j types.JID) string {
-		if ci, err := cs.GetContact(ctx, j); err == nil && ci.Found {
-			return contactBestName(ci)
+		ci, err := cs.GetContact(ctx, j)
+		if err != nil {
+			return ""
+		}
+		// A row that only carries a push name is still usable, the same rule
+		// rawAddressBook applies to the address book rows.
+		if name := contactBestName(ci); ci.Found || name != "" {
+			return name
 		}
 		return ""
 	}
@@ -269,11 +293,13 @@ func (b *Backend) refreshChatRegistry(ctx context.Context, online bool) error {
 			}
 		}
 	}
-	// Names from the contact table for chats that have none yet.
+	// Names from the contact table for chats that have none yet (a registry
+	// name that is just the raw id counts as none: it may have been seeded
+	// before the contact row existed).
 	b.cmu.RLock()
 	var need []string
 	for id, m := range b.chats {
-		if m.Name == "" {
+		if m.Name == "" || m.Name == id {
 			need = append(need, id)
 		}
 	}
@@ -281,7 +307,7 @@ func (b *Backend) refreshChatRegistry(ctx context.Context, online bool) error {
 	for _, id := range need {
 		if n := b.nameForChat(ctx, id); n != "" {
 			b.cmu.Lock()
-			if m := b.chats[id]; m != nil && m.Name == "" {
+			if m := b.chats[id]; m != nil && (m.Name == "" || m.Name == id) {
 				m.Name = n
 			}
 			b.cmu.Unlock()
@@ -305,8 +331,8 @@ func (b *Backend) chatRows() []chatRow {
 	rows := make([]chatRow, 0, len(b.chats))
 	for id, m := range b.chats {
 		name := m.Name
-		if name == "" {
-			name = id
+		if name == "" || name == id {
+			name = chatDisplayFallback(id)
 		}
 		rows = append(rows, chatRow{ID: id, Name: name, LastTS: m.LastTS, Archived: m.Archived, Unread: m.Unread})
 	}
@@ -345,8 +371,8 @@ func (b *Backend) buildContactsFromChats(rows []chatRow) []*proto.Contact {
 			extras["lid"] = r.ID
 		}
 		name := r.Name
-		if name == "" {
-			name = r.ID
+		if name == "" || name == r.ID {
+			name = chatDisplayFallback(r.ID)
 			if p := exStr(&proto.Contact{Extras: extras}, "phone"); p != "" {
 				name = "+" + p
 			}
