@@ -1,6 +1,11 @@
 package whatsapp
 
 import (
+	"context"
+	"fmt"
+	"slices"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -509,5 +514,121 @@ func TestUnreadHealAsksAndAppliesThePhoneCount(t *testing.T) {
 	}
 	if got := unreadTimestamps(t, e, "391234567890@c.us"); len(got) != 2 {
 		t.Errorf("unread rows after a second pass = %v", got)
+	}
+}
+
+// askChats maps the on-demand history requests the fake phone received to the
+// chat JIDs asked, in send order.
+func askChats(fc *fakeClient) []string {
+	fc.mu.Lock()
+	defer fc.mu.Unlock()
+	out := make([]string, 0, len(fc.peerSent))
+	for _, m := range fc.peerSent {
+		out = append(out, m.GetProtocolMessage().GetPeerDataOperationRequestMessage().
+			GetHistorySyncOnDemandRequest().GetChatJID())
+	}
+	return out
+}
+
+// Every chat with local unread and no trusted count would otherwise get its
+// own history request back to back: a burst of peer requests the phone may
+// rate limit. The heal is capped per process, asks the worst chats first and
+// spaces the requests.
+func TestUnreadHealCapsAndPacesPhoneRequests(t *testing.T) {
+	e := newEnv(t)
+	seed := func(i int) string {
+		chat := fmt.Sprintf("39333123%04d@c.us", i)
+		times := make([]int64, i)
+		for j := range times {
+			times[j] = 1_700_000_000_000 + int64(j)*1_000
+		}
+		seedIncoming(t, e, chat, times...)
+		return chat
+	}
+	chats := make([]string, 12)
+	for i := 1; i <= 12; i++ {
+		chats[i-1] = seed(i)
+	}
+	// Fake clock and no real sleeping: each wait advances the clock by the
+	// interval it was asked for, and is recorded.
+	fakeNow := time.Unix(1_700_000_000, 0)
+	restoreNow := nowFunc
+	nowFunc = func() time.Time { return fakeNow }
+	defer func() { nowFunc = restoreNow }()
+	var waits []time.Duration
+	restoreWait := unreadAskWait
+	unreadAskWait = func(_ context.Context, d time.Duration) bool {
+		waits = append(waits, d)
+		fakeNow = fakeNow.Add(d)
+		return true
+	}
+	defer func() { unreadAskWait = restoreWait }()
+
+	e.b.reconcileUnread(ctx, true)
+	e.b.unreadHealWG.Wait()
+
+	if len(e.fc.peerSent) != unreadAskMaxChats {
+		t.Fatalf("history requests = %d, want the cap %d", len(e.fc.peerSent), unreadAskMaxChats)
+	}
+	// Highest local unread first: 12 down to 3 unread rows.
+	want := make([]string, 0, unreadAskMaxChats)
+	for i := 12; i > 12-unreadAskMaxChats; i-- {
+		id := strings.TrimSuffix(chats[i-1], "@c.us")
+		want = append(want, id+"@s.whatsapp.net")
+	}
+	if got := askChats(e.fc); !slices.Equal(got, want) {
+		t.Fatalf("asked chats = %v, want the highest unread first %v", got, want)
+	}
+	if len(waits) != unreadAskMaxChats-1 {
+		t.Fatalf("waits = %v, want one between every pair of requests", waits)
+	}
+	for i, d := range waits {
+		if d != unreadAskSpacing {
+			t.Errorf("wait %d = %v, want %v", i, d, unreadAskSpacing)
+		}
+	}
+	// The cap is per process: the next pass must not spend it again.
+	e.b.reconcileUnread(ctx, true)
+	e.b.unreadHealWG.Wait()
+	if len(e.fc.peerSent) != unreadAskMaxChats {
+		t.Errorf("requests after a second pass = %d, want the cap %d", len(e.fc.peerSent), unreadAskMaxChats)
+	}
+}
+
+// The heal runs in the background: Disconnect must cancel a pending ask instead
+// of leaving the goroutine alive for the whole spacing/history timeout.
+func TestDisconnectCancelsPendingUnreadAsks(t *testing.T) {
+	e := newEnv(t)
+	for i := 1; i <= 3; i++ {
+		seedIncoming(t, e, fmt.Sprintf("39333124%04d@c.us", i), 1_700_000_000_000+int64(i))
+	}
+	waiting := make(chan struct{})
+	var once sync.Once
+	restoreWait := unreadAskWait
+	unreadAskWait = func(ctx context.Context, _ time.Duration) bool {
+		once.Do(func() { close(waiting) })
+		<-ctx.Done()
+		return false
+	}
+	defer func() { unreadAskWait = restoreWait }()
+
+	e.b.reconcileUnread(ctx, true)
+	select {
+	case <-waiting:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the heal never reached the pacing wait")
+	}
+	if err := e.b.Disconnect(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() { e.b.unreadHealWG.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Disconnect did not end the pending unread asks")
+	}
+	if got := len(e.fc.peerSent); got != 1 {
+		t.Errorf("requests = %d, want only the one in flight", got)
 	}
 }

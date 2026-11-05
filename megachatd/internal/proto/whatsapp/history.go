@@ -439,6 +439,156 @@ func (b *Backend) reconcileChatUnread(ctx context.Context, contactID string, kee
 	b.ingestMu.Unlock()
 }
 
+// ---- authoritative unread heal ------------------------------------------------------------
+
+const (
+	// unreadAskMaxChats caps how many chats a single process ever asks the
+	// phone about: every answer is a whole history sync the primary device
+	// pushes, and asking for every chat with local unread at once is a burst
+	// of peer requests WhatsApp may rate limit (Python never sent any).
+	unreadAskMaxChats = 10
+	// unreadAskSpacing is the minimum interval between two such requests.
+	unreadAskSpacing = 5 * time.Second
+)
+
+// unreadAskWait sleeps before the next ask and reports whether it may run.
+// It gives up when the backend lifecycle is cancelled (tests replace it).
+var unreadAskWait = func(ctx context.Context, d time.Duration) bool {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-t.C:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+// unreadByChat is the store's per-key unread count folded on the contact that
+// owns each chat (@c.us <-> @lid), i.e. the number the badge shows.
+func (b *Backend) unreadByChat(ctx context.Context) map[string]int {
+	counts, err := b.st.UnreadCounts(ctx)
+	if err != nil {
+		b.log.Debug("WhatsApp unread counts unavailable", "err", err)
+		return nil
+	}
+	out := map[string]int{}
+	for k, n := range counts {
+		if k.Protocol != proto.ProtocolWhatsApp || n <= 0 {
+			continue
+		}
+		chat := k.Contact
+		if c := b.identify(chat); c != nil && c.ID != "" {
+			chat = c.ID
+		}
+		out[chat] += n
+	}
+	return out
+}
+
+// applyUnreadSnapshots re-applies the authoritative unread count of every chat
+// that a history sync reported, oldest boundary first, and only where the
+// store shows more unread than the phone does (the reconcile only marks read).
+func (b *Backend) applyUnreadSnapshots(ctx context.Context, unread map[string]int) {
+	b.cmu.RLock()
+	type snapshot struct {
+		chat string
+		keep int
+		ts   int64
+	}
+	var snaps []snapshot
+	for chat, m := range b.chats {
+		if !m.UnreadKnown || m.UnreadTS <= 0 || isBroadcastJID(chat) || !isFetchableJID(chat) {
+			continue
+		}
+		snaps = append(snaps, snapshot{chat, m.Unread, m.UnreadTS})
+	}
+	b.cmu.RUnlock()
+	sort.Slice(snaps, func(i, j int) bool {
+		if snaps[i].ts != snaps[j].ts {
+			return snaps[i].ts < snaps[j].ts
+		}
+		return snaps[i].chat < snaps[j].chat
+	})
+	for _, s := range snaps {
+		if unread[s.chat] <= s.keep {
+			continue
+		}
+		b.reconcileChatUnread(ctx, s.chat, s.keep, s.ts)
+	}
+}
+
+// askUntrustedUnread triggers the history resync that makes the badge
+// authoritative: FetchHistory only asks the phone for chats whose cache is
+// sparse, so a chat with a full local cache and no history-sync count would
+// never hear the phone's count. The asks are bounded (unreadAskMaxChats per
+// process, highest local unread first) and paced (unreadAskSpacing between
+// requests), run in the background on the backend lifecycle context so
+// Disconnect/Stop cancels them, and requestOlderHistory still applies its
+// per-chat historyAskCooldown. Best-effort: the ON_DEMAND answer only carries
+// the count if the primary puts it there, and the snapshot re-apply is what
+// heals the badge.
+func (b *Backend) askUntrustedUnread(unread map[string]int) {
+	if len(unread) == 0 || b.currentClient() == nil {
+		return
+	}
+	ctx := b.lifecycleCtx()
+	type candidate struct {
+		chat  string
+		count int
+	}
+	var want []candidate
+	b.cmu.Lock()
+	if budget := unreadAskMaxChats - len(b.unreadAsked); budget > 0 {
+		for chat, n := range unread {
+			if isBroadcastJID(chat) || !isFetchableJID(chat) {
+				continue
+			}
+			if m := b.chats[chat]; m != nil && m.UnreadKnown {
+				continue
+			}
+			if b.unreadAsked[chat] {
+				continue
+			}
+			want = append(want, candidate{chat: chat, count: n})
+		}
+		// Highest local unread first, deterministic tie-break.
+		sort.Slice(want, func(i, j int) bool {
+			if want[i].count != want[j].count {
+				return want[i].count > want[j].count
+			}
+			return want[i].chat < want[j].chat
+		})
+		if len(want) > budget {
+			want = want[:budget]
+		}
+		for _, c := range want {
+			b.unreadAsked[c.chat] = true
+		}
+	}
+	b.cmu.Unlock()
+	if len(want) == 0 {
+		return
+	}
+	b.unreadHealWG.Add(1)
+	go func() {
+		defer b.unreadHealWG.Done()
+		var last time.Time
+		for _, c := range want {
+			if !last.IsZero() {
+				if wait := unreadAskSpacing - nowFunc().Sub(last); wait > 0 && !unreadAskWait(ctx, wait) {
+					return
+				}
+			}
+			if ctx.Err() != nil {
+				return
+			}
+			last = nowFunc()
+			b.requestOlderHistory(ctx, c.chat, b.resyncLimit)
+		}
+	}()
+}
+
 // ensureChatContact makes a chat known to the contact list after a history
 // sync brought it in (and tells the core with a contact_update).
 func (b *Backend) ensureChatContact(id, name string, conv *waHistorySync.Conversation) {
