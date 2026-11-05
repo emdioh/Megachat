@@ -457,6 +457,42 @@ func TestFailedFinalizeKeepsSession(t *testing.T) {
 	}
 }
 
+// The two signal-cli failures Python distinguishes: find_signal_cli() absent
+// (FileNotFoundError "signal-cli not found in ./bin/") and a failed
+// listAccounts (RuntimeError "signal-cli could not list the linked accounts").
+// link.* maps both to backend_error keeping the message as is; the contract
+// parity suite pins the same pair (tests/contract/test_parity.py).
+func TestSignalCLIErrorMessages(t *testing.T) {
+	if _, err := NewExecCLI(t.TempDir()).ListAccounts(context.Background()); err == nil ||
+		err.Error() != "signal-cli not found in ./bin/" {
+		t.Fatalf("no bin dir: %v", err)
+	}
+
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "signal-cli-0.13.9", "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	exe := filepath.Join(bin, "signal-cli")
+	if err := os.WriteFile(exe, []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewExecCLI(dir).ListAccounts(context.Background()); err == nil ||
+		err.Error() != "signal-cli could not list the linked accounts" {
+		t.Fatalf("failing listAccounts: %v", err)
+	}
+
+	// link.finalize without a CLI: Python's message, code backend_error.
+	_, err := New(Deps{}).FinalizeSignal(context.Background(), "")
+	if err == nil || err.Error() != "signal-cli not found in ./bin/" {
+		t.Fatalf("finalize without cli: %v", err)
+	}
+	var oe *ops.Error
+	if !errors.As(mapError(err), &oe) || oe.Code != api.CodeBackendError || oe.Message != err.Error() {
+		t.Fatalf("finalize wire error: %#v", mapError(err))
+	}
+}
+
 // ---- whatsapp ----------------------------------------------------------------
 
 type waLinker struct {
