@@ -120,15 +120,23 @@ func diffJSON(want, got []byte) string {
 // shows the annotated placeholder (core.UnresolvedLIDName) while Python shows
 // the bare LID digits (messages.page's resolver fallback) or the raw
 // "<n>@lid" JID (messages.window/messages.snapshot, verbatim cache rows). Either
-// way the LID digits would read like a phone number the LID is not.
+// way the LID digits would read like a phone number the LID is not. A legacy
+// raw "<n>@lid" cache row may also carry the name window/snapshot resolve at
+// display time (mc-zao.5.8): Python never resolves those rows, so that name is
+// accepted only where Python itself kept the raw JID.
 var lidPlaceholderFields = map[string]bool{"sender": true, "quote_author": true}
 
-// lidHead is the LID head of a Python value that names an unresolved "@lid"
-// sender: the bare digits of messages.page's fallback, or the raw
+// unresolvedLIDPrefix is what every core.UnresolvedLIDName value starts with: a
+// value prefixed by it is a placeholder, never a resolved name. Derived from
+// core so the allowlist cannot drift from the placeholder format.
+var unresolvedLIDPrefix = strings.TrimSuffix(core.UnresolvedLIDName(""), ")")
+
+// lidHead is the LID user named by a Python value that spells an unresolved
+// "@lid" sender: the bare digits of messages.page's fallback, or the raw
 // "<digits>@lid" JID that messages.window/snapshot return verbatim (mc-zao.5.8).
-// A "<digits>:<device>@lid" head is spelled with its device suffix, exactly as
-// the placeholder does. A resolved name, another JID shape or another value is
-// not on the allowlist.
+// A "<digits>:<device>@lid" head yields the bare user part, exactly as the Go
+// placeholder does. A resolved name, another JID shape or another value is not
+// on the allowlist.
 func lidHead(v any) (string, bool) {
 	s, ok := v.(string)
 	if !ok || s == "" {
@@ -155,27 +163,41 @@ func lidHead(v any) (string, bool) {
 			}
 		}
 	}
-	return head, true
+	return parts[0], true
 }
 
-// lidPlaceholderDiverges matches exactly the allowed pair: Python naming an
-// unresolved LID (bare digits or the raw "<n>@lid" JID) against the Go
-// placeholder naming those same digits. Anything else (a placeholder where
-// Python resolved a name, a different number, any other raw JID) is not on the
-// allowlist and fails the byte comparison.
+// lidPlaceholderDiverges matches exactly the allowed pairs: Python naming an
+// unresolved LID (bare digits, or the raw "<n>[@<device>]@lid" JID) against the
+// Go placeholder naming that same user, and — only for the raw JID, which
+// Python never resolves — against the name the display-time resolver found in
+// window/snapshot (mc-zao.5.8). Anything else (a placeholder where Python
+// resolved a name, a name over Python's bare digits, a different number, any
+// other raw JID) is not on the allowlist and fails the byte comparison.
 func lidPlaceholderDiverges(py, goV any) bool {
 	head, ok := lidHead(py)
 	if !ok {
 		return false
 	}
 	g, ok := goV.(string)
-	return ok && g == core.UnresolvedLIDName(head)
+	if !ok || g == "" {
+		return false
+	}
+	if g == core.UnresolvedLIDName(head) {
+		return true
+	}
+	s, _ := py.(string)
+	if !strings.HasSuffix(s, "@lid") {
+		return false
+	}
+	// Python kept the raw JID: Go may have resolved it to a name (never to a
+	// JID, never to a placeholder for other digits).
+	return !strings.Contains(g, "@") && !strings.HasPrefix(g, unresolvedLIDPrefix)
 }
 
-// TestLIDPlaceholderAllowlist pins the shape of the allowlist: the two Python
+// TestLIDPlaceholderAllowlist pins the shape of the allowlist: the Python
 // spellings of an unresolved LID (messages.page's bare digits, and the raw
-// "<n>@lid" cache row of window/snapshot, mc-zao.5.8) may differ, anything else
-// may not.
+// "<n>@lid" cache row of window/snapshot) may differ only as described above,
+// and only a raw JID may be replaced by a resolved name (mc-zao.5.8).
 func TestLIDPlaceholderAllowlist(t *testing.T) {
 	for _, c := range []struct {
 		name string
@@ -185,11 +207,19 @@ func TestLIDPlaceholderAllowlist(t *testing.T) {
 	}{
 		{"page bare digits", "111", "Contatto WhatsApp (ID 111)", true},
 		{"window raw lid", "111@lid", "Contatto WhatsApp (ID 111)", true},
-		{"device suffix", "111:2@lid", "Contatto WhatsApp (ID 111:2)", true},
+		{"device suffix", "111:2@lid", "Contatto WhatsApp (ID 111)", true},
+		{"bare digits with device", "111:2", "Contatto WhatsApp (ID 111)", true},
+		{"window raw lid resolved", "111@lid", "Ann", true},
+		{"device suffix resolved", "111:2@lid", "Ann", true},
 		{"different digits", "112@lid", "Contatto WhatsApp (ID 111)", false},
 		{"different digits bare", "112", "Contatto WhatsApp (ID 111)", false},
 		{"resolved name", "Ann", "Contatto WhatsApp (ID 111)", false},
+		{"name over bare digits", "111", "Ann", false},
+		{"name over device digits", "111:2", "Ann", false},
+		{"raw lid, other placeholder", "111@lid", "Contatto WhatsApp (ID 112)", false},
+		{"raw lid vs raw lid", "111@lid", "222@lid", false},
 		{"c.us jid", "111@c.us", "Contatto WhatsApp (ID 111)", false},
+		{"c.us jid resolved", "111@c.us", "Ann", false},
 		{"nested suffix", "111@lid@lid", "Contatto WhatsApp (ID 111)", false},
 		{"empty head", "@lid", "Contatto WhatsApp (ID )", false},
 		{"not a string", 111, "Contatto WhatsApp (ID 111)", false},

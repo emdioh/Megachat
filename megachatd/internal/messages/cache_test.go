@@ -21,14 +21,16 @@ func cacheRows(*config.Config) []row {
 		{"protocol": "whatsapp", "contact_number": waLid, "text": "lid only", "timestamp": at(3), "msg_id": "W3", "quote_text": "q", "quote_timestamp": at(1), "quote_author": "x", "reply_to_message_id": "W1"},
 		{"protocol": "whatsapp", "contact_number": "orphan@lid", "text": "orphan", "timestamp": at(4), "msg_id": "W4"},
 		// Legacy group rows stored before mc-zao.5.7 still carry the raw
-		// "<n>@lid" sender/quote_author. window/snapshot return cache rows
-		// verbatim (Python parity) and show the annotated placeholder at
-		// display time (mc-zao.5.8, see lidPlaceholderFields in
-		// parity_test.go).
+		// "<n>@lid" sender/quote_author. window/snapshot resolve them at display
+		// time through the group sender resolver of messages.page: the known LID
+		// becomes its name, the unknown one the annotated placeholder, the
+		// device-suffixed head names its bare user part (mc-zao.5.8, see
+		// lidPlaceholderFields in parity_test.go).
 		{"protocol": "whatsapp", "contact_number": waGrp, "text": "legacy lid", "is_mine": 0, "sender": "111@lid", "timestamp": at(7), "msg_id": "G1",
 			"quote_text": "q", "quote_timestamp": at(1), "quote_author": "112@lid"},
 		{"protocol": "whatsapp", "contact_number": waGrp, "text": "named sender", "is_mine": 0, "sender": "Ann", "timestamp": at(8), "msg_id": "G2"},
 		{"protocol": "whatsapp", "contact_number": waGrp, "text": "phone sender", "is_mine": 0, "sender": "222@c.us", "timestamp": at(9), "msg_id": "G3"},
+		{"protocol": "whatsapp", "contact_number": waGrp, "text": "device head", "is_mine": 0, "sender": "123:5@lid", "timestamp": at(10), "msg_id": "G4"},
 		{"protocol": "telegram", "contact_number": "t1", "text": "tg", "timestamp": at(6), "msg_id": "7", "batch_id": "b", "batch_index": 2},
 	}
 }
@@ -37,6 +39,11 @@ func newCacheEnv(t *testing.T) *env {
 	e := newEnv(t, envOpts{rows: cacheRows})
 	e.contacts = map[string][]proto.Contact{"whatsapp": {
 		{ID: waLid, DisplayName: "Mario", Protocol: "whatsapp", Extras: map[string]any{"phone": "391", "lid": waLid}},
+	}}
+	// "111@lid" is known: window/snapshot must resolve the legacy cache row to
+	// its name, like messages.page, where Python keeps the raw JID (mc-zao.5.8).
+	e.addressBook = map[string][]proto.Contact{"whatsapp": {
+		{ID: "111@lid", DisplayName: "Ann", Protocol: "whatsapp", Extras: map[string]any{"phone": "39111"}},
 	}}
 	return e
 }

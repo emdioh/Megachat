@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"github.com/emdioh/megachat/megachatd/internal/api"
-	"github.com/emdioh/megachat/megachatd/internal/core"
 	"github.com/emdioh/megachat/megachatd/internal/media"
 	"github.com/emdioh/megachat/megachatd/internal/ops"
 	"github.com/emdioh/megachat/megachatd/internal/proto"
@@ -250,36 +249,70 @@ func isGroupCacheRow(m msg) bool {
 	return m.Protocol == api.ProtocolWhatsApp && strings.HasSuffix(m.ContactNumber, "@g.us")
 }
 
-// unresolvedLIDPlaceholder is the display-time rescue of a group row stored
-// before mc-zao.5.7: such a row still carries the raw "<n>@lid" sender or
-// quote_author, and messages.window/messages.snapshot return cache rows
-// verbatim (Python parity), so the TUI and the web showed the JID. Substituting
-// the annotated placeholder here is the deliberate, narrow fix of mc-zao.5.8:
-// it writes nothing to the shared Python-owned messages.db, it leaves the raw
-// JID in the store so messages.page can still resolve a real name, and it
-// diverges from Python only on the two fields already pinned by the parity
-// allowlist (lidPlaceholderFields in parity_test.go). The value stays a
-// placeholder (isPlaceholderDisplayName), so a later name still replaces it.
-func unresolvedLIDPlaceholder(v *string) *string {
+// legacyRawLID reports whether v is a raw "<n>@lid" value (one "@" at most),
+// the shape group rows stored before mc-zao.5.7 still carry in sender/
+// quote_author. A "<n>:<device>@lid" head is one too: it names the same user.
+func legacyRawLID(v *string) bool {
 	if v == nil {
-		return nil
+		return false
 	}
-	if head, ok := strings.CutSuffix(*v, "@lid"); ok && head != "" {
-		s := core.UnresolvedLIDName(head)
-		return &s
-	}
-	return v
+	head, ok := strings.CutSuffix(*v, "@lid")
+	return ok && head != "" && !strings.Contains(head, "@")
 }
 
-func toCacheRow(m msg) cacheRow {
+// lidDisplay is the display-time rescue of a group row stored before
+// mc-zao.5.7: such a row still carries the raw "<n>@lid" sender or
+// quote_author, and messages.window/messages.snapshot return cache rows
+// verbatim (Python parity), so the TUI and the web showed the JID. Resolving it
+// here through the same group sender resolver messages.page uses (mc-zao.5.8)
+// makes the two operations name a sender alike: a resolvable LID shows its
+// name, and only an unresolvable one keeps the annotated placeholder the
+// resolver itself falls back to. Nothing is written to the shared
+// Python-owned messages.db, the raw JID stays in the store so messages.page can
+// still resolve a real name, and every other value keeps Python's bytes.
+func lidDisplay(resolve func(string) string) func(*string) *string {
+	return func(v *string) *string {
+		if resolve == nil || !legacyRawLID(v) {
+			return v
+		}
+		s := resolve(*v)
+		return &s
+	}
+}
+
+// cacheRowLIDResolver is the group sender resolver of messages.page, built only
+// when a cache-row batch still carries a legacy raw "@lid" in a group row (no
+// address-book read in the common case, and none at all for other protocols).
+func (s *service) cacheRowLIDResolver(ctx context.Context, protocol string, rows []msg) func(string) string {
+	if protocol != api.ProtocolWhatsApp {
+		return nil
+	}
+	stale := false
+	for _, m := range rows {
+		if isGroupCacheRow(m) && (legacyRawLID(m.Sender) || legacyRawLID(m.QuoteAuthor)) {
+			stale = true
+			break
+		}
+	}
+	if !stale {
+		return nil
+	}
+	backend, ok := s.deps.Manager().Get(protocol)
+	if !ok || backend == nil {
+		return nil
+	}
+	return groupSenderResolver(ctx, s.deps.Manager(), backend, protocol)
+}
+
+func toCacheRow(m msg, fix func(*string) *string) cacheRow {
 	text := m.Text
 	if strOf(m.MsgType) == api.MsgTypeImage {
 		text = api.Ptr("")
 	}
 	sender, quoteAuthor := m.Sender, m.QuoteAuthor
 	if isGroupCacheRow(m) {
-		sender = unresolvedLIDPlaceholder(sender)
-		quoteAuthor = unresolvedLIDPlaceholder(quoteAuthor)
+		sender = fix(sender)
+		quoteAuthor = fix(quoteAuthor)
 	}
 	return cacheRow{
 		ID: m.MsgID, Text: text, IsMine: m.IsMine, Sender: sender, Timestamp: m.Timestamp,
@@ -293,10 +326,10 @@ func toCacheRow(m msg) cacheRow {
 	}
 }
 
-func toCacheRows(msgs []msg) []cacheRow {
+func toCacheRows(msgs []msg, fix func(*string) *string) []cacheRow {
 	out := make([]cacheRow, len(msgs))
 	for i, m := range msgs {
-		out[i] = toCacheRow(m)
+		out[i] = toCacheRow(m, fix)
 	}
 	return out
 }
@@ -366,7 +399,7 @@ func (s *service) window(ctx context.Context, req api.MessagesWindowRequest) (an
 		}
 		rows = unionCacheRows(byKey, *contact)
 	}
-	return windowOut{Messages: toCacheRows(rows), Refreshed: refreshed}, nil
+	return windowOut{Messages: toCacheRows(rows, lidDisplay(s.cacheRowLIDResolver(ctx, protocol, rows))), Refreshed: refreshed}, nil
 }
 
 // orderedCache is a JSON object that keeps the Python dict insertion order.
@@ -430,11 +463,22 @@ func (s *service) snapshot(ctx context.Context, req api.MessagesSnapshotRequest)
 		return a.RowID < b.RowID
 	})
 
+	// One resolver for the whole snapshot: it is needed only if some group row
+	// still carries a legacy raw "@lid".
+	var fix func(*string) *string
+	if protocol == api.ProtocolWhatsApp {
+		var all []msg
+		for _, rows := range cache {
+			all = append(all, rows...)
+		}
+		fix = lidDisplay(s.cacheRowLIDResolver(ctx, protocol, all))
+	}
+
 	add := func(key string, rows []msg) {
 		if _, dup := out.rows[key]; !dup {
 			out.keys = append(out.keys, key)
 		}
-		out.rows[key] = toCacheRows(rows)
+		out.rows[key] = toCacheRows(rows, fix)
 	}
 	if protocol != api.ProtocolWhatsApp {
 		for _, cid := range cids {

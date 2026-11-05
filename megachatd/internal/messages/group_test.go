@@ -26,6 +26,7 @@ func groupFallbackRows(*config.Config) []row {
 			"quote_text": "q", "quote_timestamp": at(1), "quote_author": "999@lid"},
 		{"protocol": "whatsapp", "contact_number": waGrp, "is_mine": 0, "text": "phone quote", "sender": "Bea", "timestamp": at(6), "msg_id": "L6",
 			"quote_text": "q", "quote_timestamp": at(1), "quote_author": "777@c.us"},
+		{"protocol": "whatsapp", "contact_number": waGrp, "is_mine": 0, "text": "device lid", "sender": "123:5@lid", "timestamp": at(7), "msg_id": "L7"},
 	}
 }
 
@@ -91,10 +92,13 @@ func TestPageGroupSenderFallback(t *testing.T) {
 
 // TestWindowSnapshotGroupLIDsPlaceholder is mc-zao.5.8. A group row ingested
 // before mc-zao.5.7 keeps the raw "<n>@lid" in sender/quote_author, and
-// messages.window / messages.snapshot return cache rows verbatim, so the
-// placeholder is substituted at display time only: the stored row is left
-// untouched (messages.page still resolves "111@lid" to Ann), a "@c.us" sender
-// keeps Python's shape, and a stored placeholder passes through unchanged.
+// messages.window / messages.snapshot return cache rows verbatim, so the value
+// is resolved at display time through the same group sender resolver
+// messages.page uses: a known LID shows its name in all three operations, an
+// unknown one the annotated placeholder, and a "<user>:<device>@lid" head names
+// the bare user part. The stored row is left untouched (the raw JID stays), a
+// "@c.us" sender keeps Python's shape, and a stored placeholder passes through
+// unchanged.
 func TestWindowSnapshotGroupLIDsPlaceholder(t *testing.T) {
 	e := newGroupFallbackEnv(t)
 	byID := func(rows []map[string]any) map[string]map[string]any {
@@ -105,11 +109,12 @@ func TestWindowSnapshotGroupLIDsPlaceholder(t *testing.T) {
 		return out
 	}
 	wantSenders := map[string]string{
-		"L1": "Contatto WhatsApp (ID 20508603076702)", // legacy raw @lid
-		"L2": "Contatto WhatsApp (ID 111)",            // legacy raw @lid, known name
+		"L1": "Contatto WhatsApp (ID 20508603076702)", // legacy raw @lid, unknown
+		"L2": "Ann",                                   // legacy raw @lid, known name
 		"L3": "222@c.us",                              // a JID is not a placeholder
 		"L4": "Contatto WhatsApp (ID 20508603076702)", // already stored placeholder
 		"L5": "Bea",
+		"L7": "Contatto WhatsApp (ID 123)", // "123:5@lid" names the user 123
 	}
 	wantQuote := map[string]string{
 		"L5": "Contatto WhatsApp (ID 999)", // legacy raw @lid quote author
@@ -117,8 +122,8 @@ func TestWindowSnapshotGroupLIDsPlaceholder(t *testing.T) {
 	}
 	check := func(where string, rows map[string]map[string]any) {
 		t.Helper()
-		if len(rows) != 6 { // L1..L6
-			t.Fatalf("%s rows = %d, want 6", where, len(rows))
+		if len(rows) != 7 { // L1..L7
+			t.Fatalf("%s rows = %d, want 7", where, len(rows))
 		}
 		for id, want := range wantSenders {
 			if got := rows[id]["sender"]; got != want {
@@ -158,10 +163,24 @@ func TestWindowSnapshotGroupLIDsPlaceholder(t *testing.T) {
 	for _, m := range stored {
 		raw[store.Deref(m.MsgID)] = store.Deref(m.Sender)
 	}
-	if raw["L1"] != "20508603076702@lid" || raw["L2"] != "111@lid" {
+	if raw["L1"] != "20508603076702@lid" || raw["L2"] != "111@lid" || raw["L7"] != "123:5@lid" {
 		t.Fatalf("stored senders were rewritten: %v", raw)
 	}
-	if got := byID(e.page(map[string]any{"protocol": "whatsapp", "contact_id": waGrp}))["L2"]["sender"]; got != "Ann" {
-		t.Errorf("page L2 sender = %v, want Ann", got)
+
+	// page and window/snapshot must name a sender alike: Ann for the known LID,
+	// the placeholder for the unknown one (with its bare user part), and the
+	// same placeholder for an unresolved quote author. L3 ("@c.us") is left out:
+	// page shows the bare number there while window keeps the JID, a divergence
+	// Python has too and mc-zao.5.8 does not touch.
+	page := byID(e.page(map[string]any{"protocol": "whatsapp", "contact_id": waGrp}))
+	for _, id := range []string{"L1", "L2", "L4", "L5", "L7"} {
+		if got, want := page[id]["sender"], wantSenders[id]; got != want {
+			t.Errorf("page %s sender = %v, want %q (window/snapshot agree)", id, got, want)
+		}
+	}
+	for id, want := range map[string]string{"L5": "Contatto WhatsApp (ID 999)", "L6": "Carl"} {
+		if got := page[id]["quote_author"]; got != want {
+			t.Errorf("page %s quote_author = %v, want %q", id, got, want)
+		}
 	}
 }
