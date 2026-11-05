@@ -573,6 +573,99 @@ func TestLoadContactsLIDWithoutPhone(t *testing.T) {
 	}
 }
 
+func TestChatDisplayFallbackOnlyRewritesLID(t *testing.T) {
+	for id, want := range map[string]string{
+		"99326135144475@lid":      "Contatto WhatsApp (ID 99326135144475)",
+		"@lid":                    "@lid", // no local part: nothing readable to show
+		"393331234567@c.us":       "393331234567@c.us",
+		"120363000000000000@g.us": "120363000000000000@g.us",
+		"":                        "",
+	} {
+		if got := chatDisplayFallback(id); got != want {
+			t.Errorf("chatDisplayFallback(%q) = %q, want %q", id, got, want)
+		}
+	}
+}
+
+// An unresolved @lid nobody can name (no LID map entry, no phone-keyed contact,
+// no device contact for the LID JID) must not reach the wire as the raw
+// "<n>@lid" identifier nor as bare LID digits, which read like a phone number
+// the LID is not: it renders as a clearly marked unresolved name.
+func TestLoadContactsUnresolvedLIDShowsAnnotatedFallback(t *testing.T) {
+	e := newEnv(t)
+	e.b.IngestMessage(ctx, "99326135144475@lid", map[string]any{"id": "false_99326135144475@lid_A1", "text": "x", "is_mine": false}, 1)
+	e.b.loadProtocolCache(ctx)
+	e.b.loadContacts(ctx)
+	c, ok := e.b.FindContact("99326135144475@lid")
+	if !ok || c.Extras["lid"] != "99326135144475@lid" {
+		t.Fatalf("lid contact: %+v", c)
+	}
+	want := "Contatto WhatsApp (ID 99326135144475)"
+	if c.DisplayName != want {
+		t.Errorf("an unresolved lid renders as %q, want %q", c.DisplayName, want)
+	}
+	// The address book keeps the same annotated name and flags it as unresolved.
+	book, _ := e.b.ListAddressBook(ctx, true)
+	for _, b := range book {
+		if b.ID == "99326135144475@lid" && (b.DisplayName != want || b.Extras["lid_unresolved"] != true) {
+			t.Errorf("address book entry: %+v", b)
+		}
+	}
+	// The annotated name is a placeholder, not a name: once the mapping and the
+	// rubrica name arrive the very next load replaces it.
+	e.lids.put("99326135144475", "393331234567")
+	e.book.put(types.NewJID("393331234567", types.DefaultUserServer), types.ContactInfo{Found: true, FullName: "Praful Shankar"})
+	e.b.loadContacts(ctx)
+	if c, ok := e.b.FindContact("99326135144475@lid"); !ok || c.DisplayName != "Praful Shankar" || c.Extras["phone"] != "393331234567" {
+		t.Fatalf("the annotated fallback must stay replaceable: %+v ok=%v", c, ok)
+	}
+}
+
+// A LID whose phone mapping is known but that has no name still shows the
+// phone: the annotated fallback never hides a usable number.
+func TestLoadContactsMappedLIDWithoutNameShowsPhone(t *testing.T) {
+	e := newEnv(t)
+	e.lids.put("99326135144475", "393331234567")
+	e.b.IngestMessage(ctx, "99326135144475@lid", map[string]any{"id": "false_99326135144475@lid_A1", "text": "x", "is_mine": false}, 1)
+	e.b.loadProtocolCache(ctx)
+	e.b.loadContacts(ctx)
+	if c, ok := e.b.FindContact("99326135144475@lid"); !ok || c.DisplayName != "+393331234567" {
+		t.Fatalf("a mapped lid without a name shows the phone: %+v ok=%v", c, ok)
+	}
+}
+
+// The device contact for the LID JID carries the push/full name even when
+// nothing maps the LID to a phone: that name beats the annotated fallback. A row
+// that only carries a push name is usable too, the same rule rawAddressBook
+// applies to the address book rows.
+func TestLoadContactsLIDTakesDeviceContactName(t *testing.T) {
+	e := newEnv(t)
+	e.book.put(types.NewJID("99326135144475", types.HiddenUserServer), types.ContactInfo{PushName: "Praful"})
+	if got := e.b.nameForChat(ctx, "99326135144475@lid"); got != "Praful" {
+		t.Fatalf("nameForChat = %q, want the device push name", got)
+	}
+	e.b.IngestMessage(ctx, "99326135144475@lid", map[string]any{"id": "false_99326135144475@lid_A1", "text": "x", "is_mine": false}, 1)
+	e.b.loadProtocolCache(ctx)
+	e.b.loadContacts(ctx)
+	if c, ok := e.b.FindContact("99326135144475@lid"); !ok || c.DisplayName != "Praful" {
+		t.Fatalf("the device contact name must win over the annotated fallback: %+v ok=%v", c, ok)
+	}
+}
+
+// A registry name that is just the raw id (seeded before the contact row
+// existed) is retried on the next refresh instead of sticking forever.
+func TestRefreshChatRegistryNamesChatsStuckOnTheirRawID(t *testing.T) {
+	e := newEnv(t)
+	e.book.put(types.NewJID("99326135144475", types.HiddenUserServer), types.ContactInfo{Found: true, FullName: "Praful Shankar"})
+	e.b.noteChat("99326135144475@lid", 1, "99326135144475@lid")
+	if err := e.b.refreshChatRegistry(ctx, false); err != nil {
+		t.Fatalf("refresh: %v", err)
+	}
+	if rows := e.b.chatRows(); len(rows) != 1 || rows[0].Name != "Praful Shankar" {
+		t.Fatalf("chat rows: %+v", rows)
+	}
+}
+
 func TestRefreshContactsReportsNewAndRenamed(t *testing.T) {
 	e := newEnv(t)
 	e.b.IngestMessage(ctx, "393331234567@c.us", map[string]any{"id": "false_393331234567@c.us_A1", "text": "x", "is_mine": false}, 1)
@@ -697,5 +790,31 @@ func TestLIDResolverNamesAlreadyPhonedContacts(t *testing.T) {
 	e.b.lidResolveCandidates()
 	if again, _ := e.b.FindContact("902@lid"); again.DisplayName != c.DisplayName || again.Extras["phone"] != "393331110000" {
 		t.Errorf("second pass changed the contact: %+v -> %+v", c, again)
+	}
+}
+
+// The same for the register path: a contact carrying the annotated fallback
+// whose mapping is already known gets the phone applied immediately.
+func TestScheduleContactLIDResolveReplacesAnnotatedFallback(t *testing.T) {
+	e := newEnv(t)
+	e.lids.put("905", "393331110003")
+	setContacts(e.b,
+		newContact("905@lid", "Contatto WhatsApp (ID 905)", map[string]any{"lid": "905@lid", "source": "wa_chats"}))
+	e.b.scheduleContactLIDResolve("905@lid")
+	if c, _ := e.b.FindContact("905@lid"); c.DisplayName != "+393331110003" {
+		t.Errorf("the annotated fallback must not block the resolution, got %q", c.DisplayName)
+	}
+}
+
+// The annotated unresolved name is a placeholder too: it must not freeze a
+// contact that later gains its phone mapping.
+func TestLIDResolverReplacesAnnotatedFallback(t *testing.T) {
+	e := newEnv(t)
+	e.lids.put("904", "393331110002")
+	setContacts(e.b,
+		newContact("904@lid", "Contatto WhatsApp (ID 904)", map[string]any{"phone": "393331110002", "lid": "904@lid", "source": "wa_chats"}))
+	e.b.lidResolveCandidates()
+	if c, _ := e.b.FindContact("904@lid"); c.DisplayName != "+393331110002" {
+		t.Errorf("the annotated fallback must stay replaceable, got %q", c.DisplayName)
 	}
 }

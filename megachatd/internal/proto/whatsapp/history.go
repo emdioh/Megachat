@@ -612,7 +612,7 @@ func (b *Backend) ensureChatContact(id, name string, conv *waHistorySync.Convers
 		if p := exStr(&proto.Contact{Extras: extras}, "phone"); p != "" {
 			name = "+" + p
 		} else {
-			name = id
+			name = chatDisplayFallback(id)
 		}
 	}
 	c := newContact(id, name, extras)

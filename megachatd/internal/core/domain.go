@@ -135,12 +135,21 @@ func looksLikePhone(name, phone string) bool {
 	return nd != "" && pd != "" && nd == pd
 }
 
+// UnresolvedLIDName is the deliberate, clearly marked display name of a
+// WhatsApp "@lid" contact nobody can name yet. A LID is not a phone number, so
+// the bare digits must never be shown: they look exactly like the contact's
+// number. The text is still a placeholder (isPlaceholderDisplayName), so a
+// device/address-book name replaces it as soon as one is known.
+func UnresolvedLIDName(head string) string {
+	return "Contatto WhatsApp (ID " + head + ")"
+}
+
 func isPlaceholderDisplayName(name, contactID, phone string) bool {
 	if name == "" || name == contactID {
 		return true
 	}
 	if strings.HasSuffix(contactID, "@lid") {
-		if head, _, _ := strings.Cut(contactID, "@"); name == head {
+		if head, _, _ := strings.Cut(contactID, "@"); name == head || name == UnresolvedLIDName(head) {
 			return true
 		}
 	}

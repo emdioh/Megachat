@@ -165,6 +165,25 @@ func TestHistorySyncOnDemandIngestsAsRead(t *testing.T) {
 	}
 }
 
+// A history-synced @lid chat with no name and no phone mapping is registered
+// under its clearly marked unresolved name, never as the raw "<n>@lid"
+// identifier nor as bare digits that read like a phone number.
+func TestHistorySyncNamesUnresolvedLIDWithAnnotatedFallback(t *testing.T) {
+	e := newEnv(t)
+	chat := "99326135144475@lid"
+	e.b.onHistorySync(&events.HistorySync{Data: &waHistorySync.HistorySync{
+		Conversations: []*waHistorySync.Conversation{conv(chat, 0,
+			webMsg(chat, "3EB0L1", false, 1_700_000_001, "ciao", waWeb.WebMessageInfo_READ))},
+	}})
+	c, ok := e.b.FindContact(chat)
+	if !ok || c.Extras["lid"] != chat {
+		t.Fatalf("lid contact: %+v ok=%v", c, ok)
+	}
+	if want := "Contatto WhatsApp (ID 99326135144475)"; c.DisplayName != want {
+		t.Errorf("history contact renders as %q, want %q", c.DisplayName, want)
+	}
+}
+
 func TestHistorySyncSkipsBroadcastsAndGroupsKeepSenders(t *testing.T) {
 	e := newEnv(t)
 	e.b.onHistorySync(&events.HistorySync{Data: &waHistorySync.HistorySync{
