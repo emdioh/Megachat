@@ -197,13 +197,50 @@ def test_old_messages_ignored():
 def test_not_added_or_other_protocol_ignored():
     enable()
     tr, api = make()
-    p = voice()
+    p = voice(att=None)  # repeated event, still without its file
+    p["added"] = False
+    tr.handle_message(p)
+    p = text_msg("!transcription")  # commands: newly stored messages only
     p["added"] = False
     tr.handle_message(p)
     p = voice()
     p["protocol"] = "gmail"
     tr.handle_message(p)
     assert api.transcription.service.submitted == []
+    assert api.sent == []
+
+
+@pytest.mark.parametrize("changed", [True, False])
+def test_voice_file_arriving_with_a_later_event(changed):
+    # WhatsApp: the voice note is stored first without its file, the
+    # attachment_id comes with a later event of the same message.
+    enable()
+    tr, api = make()
+    first = voice(att=None, is_mine=True)
+    tr.handle_message(first)
+    assert api.transcription.service.submitted == []
+    later = voice(att="http://localhost:3000/api/files/x.oga", is_mine=True)
+    later["added"] = False
+    later["changed"] = changed
+    tr.handle_message(later)
+    tr.handle_message(later)  # same event again: no second job
+    assert [s[1] for s in api.transcription.service.submitted] == [
+        "http://localhost:3000/api/files/x.oga"
+    ]
+    finish(tr, "whatsapp", "http://localhost:3000/api/files/x.oga")
+    assert [m["text"] for m in api.sent] == [TRANSCRIPTION_PREFIX + "ciao"]
+
+
+def test_repeated_voice_event_after_post_is_not_posted_again():
+    enable()
+    tr, api = make()
+    tr.handle_message(voice())
+    finish(tr, "whatsapp", "a1.ogg")
+    again = voice(text="x")  # different identity, same attachment
+    again["added"] = False
+    tr.handle_message(again)
+    assert len(api.transcription.service.submitted) == 1
+    assert len(api.sent) == 1
 
 
 @pytest.mark.parametrize("is_mine", [False, True])

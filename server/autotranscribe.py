@@ -202,9 +202,17 @@ class AutoTranscriber:
         return started is None or ts >= started - START_MARGIN_S
 
     def handle_message(self, payload: dict[str, Any]) -> None:
-        """React to one ``message`` bus payload (cheap checks, jobs off-thread)."""
-        if payload.get("added") is not True:
-            return
+        """React to one ``message`` bus payload (cheap checks, jobs off-thread).
+
+        Commands are taken from newly stored messages only.  Voice notes are
+        also taken from repeated events: WhatsApp often stores a voice note
+        first without its file (WAHA still downloading it) and fills
+        ``attachment_id`` in with a later event of the same message, which is
+        ``changed`` or a plain duplicate, never ``added``.  The identity
+        dedup below (which includes ``attachment_id``) and the per-attachment
+        ``_pending``/``_posted`` sets keep it to one transcription.
+        """
+        added = payload.get("added") is True
         protocol = payload.get("protocol")
         contact_id = payload.get("contact_id")
         message = payload.get("message")
@@ -214,27 +222,49 @@ class AutoTranscriber:
             or not isinstance(message, dict)
         ):
             return
+        voice = _is_voice(message)
+        if not added and not voice:
+            return
+        attachment_id = message.get("attachment_id")
+        if voice and not added and not attachment_id:
+            return
         ts = message.get("timestamp", payload.get("timestamp"))
-        media_kind = message.get("media_kind")
-        if media_kind:
+        if message.get("media_kind"):
             logger.info(
                 "Auto-trascrizione: messaggio %s %s media_kind=%s mio=%s "
-                "attachment_id=%s recente=%s",
+                "attachment_id=%s recente=%s nuovo=%s",
                 protocol,
                 contact_id,
-                media_kind,
+                message.get("media_kind"),
                 message.get("is_mine"),
-                message.get("attachment_id"),
+                attachment_id,
                 self._is_recent(ts),
+                added,
             )
         if not self._is_recent(ts):
             return
-        identity = (protocol, contact_id, message.get("id"), ts, message.get("text"))
+        if voice and not attachment_id:
+            # The file arrives with a later event of the same message.
+            logger.info(
+                "Auto-trascrizione: nota vocale %s %s id=%s senza file, in attesa",
+                protocol,
+                contact_id,
+                message.get("id"),
+            )
+            return
+        identity = (
+            protocol,
+            contact_id,
+            message.get("id"),
+            ts,
+            message.get("text"),
+            attachment_id,
+        )
         if identity in self._seen:
             return
         self._seen.append(identity)
 
-        if _is_voice(message):
+        if voice:
             self._run(self._on_voice, protocol, contact_id, message)
             return
         text = message.get("text")

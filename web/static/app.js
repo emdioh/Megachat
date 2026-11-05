@@ -1654,11 +1654,22 @@ function fileAttachment(attachment, protocol, direction) {
     transcriptBox.className = "transcript-box";
     transcriptBox.hidden = true;
     transcriptBox.addEventListener("click", (event) => event.stopPropagation());
+    const transcriptKey = `${protocol}:${attachmentId}`;
+    transcriptBox.setAttribute("data-transcript-key", transcriptKey);
 
+    // The bubble may be re-rendered while the transcription runs (receipts,
+    // media upgrades): fill every box of this voice note still in the page,
+    // not only the one that was clicked.
     const showTranscript = (text) => {
-      transcriptBox.textContent = text || "Nessun testo rilevato.";
-      transcriptBox.hidden = false;
-      transcribeButton.hidden = true;
+      const boxes = [...document.querySelectorAll(".transcript-box")]
+        .filter((box) => box.getAttribute("data-transcript-key") === transcriptKey);
+      if (!boxes.includes(transcriptBox)) boxes.push(transcriptBox);
+      for (const box of boxes) {
+        box.textContent = text || "Nessun testo rilevato.";
+        box.hidden = false;
+        const button = box.previousElementSibling;
+        if (button && button.classList.contains("transcribe-button")) button.hidden = true;
+      }
     };
     const showTranscriptionError = (message) => {
       transcriptBox.textContent = message;
@@ -1737,6 +1748,11 @@ function fileAttachment(attachment, protocol, direction) {
         showTranscriptionError(message);
       }
     };
+    if (state.transcriptions?.has(transcriptKey)) {
+      transcriptBox.textContent = state.transcriptions.get(transcriptKey) || "Nessun testo rilevato.";
+      transcriptBox.hidden = false;
+      transcribeButton.hidden = true;
+    }
     transcribeButton.addEventListener("click", transcribe);
     transcribeButton.addEventListener("keydown", (event) => {
       if (event.key === "Enter" || event.key === " ") {
