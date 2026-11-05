@@ -285,13 +285,13 @@ func (b *Backend) lidCandidates() []string {
 		if !strings.HasSuffix(c.ID, "@lid") {
 			continue
 		}
-		// A raw "<n>@lid" display name is the symptom of a contact whose
-		// mapping was applied without a name (RefreshContacts fills the phone
-		// extra from the device table). It always gets a resolver pass, so the
-		// name/book fallback can be applied; contacts already carrying a real
-		// or "+phone" name are left alone to keep the pass idempotent.
-		head, _, _ := strings.Cut(c.ID, "@")
-		bareName := c.DisplayName == "" || c.DisplayName == c.ID || c.DisplayName == head
+		// A raw "<n>@lid" display name, its bare digits or the annotated
+		// unresolved name are the symptom of a contact whose mapping was applied
+		// without a name (RefreshContacts fills the phone extra from the device
+		// table). They always get a resolver pass, so the name/book fallback can
+		// be applied; contacts already carrying a real or "+phone" name are left
+		// alone to keep the pass idempotent.
+		bareName := c.DisplayName == "" || c.DisplayName == c.ID || unresolvedLIDDisplay(c.DisplayName, c.ID)
 		if exStr(c, "phone") != "" && !bareName {
 			continue // already resolved with a usable name
 		}

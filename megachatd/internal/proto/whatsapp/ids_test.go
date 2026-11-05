@@ -192,7 +192,12 @@ func TestPhoneHelpers(t *testing.T) {
 		t.Error("looksLikePhone")
 	}
 	if !isPlaceholderDisplayName("", "1@c.us", "") || !isPlaceholderDisplayName("1@c.us", "1@c.us", "") ||
-		!isPlaceholderDisplayName("205086", "205086@lid", "") || isPlaceholderDisplayName("Mario", "1@c.us", "") ||
+		!isPlaceholderDisplayName("205086", "205086@lid", "") ||
+		!isPlaceholderDisplayName("Contatto WhatsApp (ID 205086)", "205086@lid", "") ||
+		!isPlaceholderDisplayName("Contatto WhatsApp (ID 205086)", "205086@lid", "393331112222") ||
+		isPlaceholderDisplayName("Mario", "1@c.us", "") ||
+		isPlaceholderDisplayName("Contatto WhatsApp (ID 205087)", "205086@lid", "") ||
+		isPlaceholderDisplayName("Contatto WhatsApp (ID 205086)", "1@c.us", "") ||
 		!isPlaceholderDisplayName("+393331112222", "393331112222@c.us", "") {
 		t.Error("isPlaceholderDisplayName")
 	}

@@ -219,7 +219,10 @@ func TestSearchAndUnresolved(t *testing.T) {
 		t.Fatal("LooksUnresolved (signal)")
 	}
 	if !LooksUnresolved(contact("whatsapp", "39@c.us", "+39", map[string]any{"phone": "39"})) ||
-		LooksUnresolved(contact("whatsapp", "39@c.us", "Mario", map[string]any{"phone": "39"})) {
+		LooksUnresolved(contact("whatsapp", "39@c.us", "Mario", map[string]any{"phone": "39"})) ||
+		!LooksUnresolved(contact("whatsapp", "205086@lid", UnresolvedLIDName("205086"), map[string]any{"lid": "205086@lid"})) ||
+		!LooksUnresolved(contact("whatsapp", "205086@lid", UnresolvedLIDName("205086"), map[string]any{"lid": "205086@lid", "phone": "393331112222"})) ||
+		LooksUnresolved(contact("whatsapp", "205086@lid", UnresolvedLIDName("205087"), map[string]any{"lid": "205086@lid"})) {
 		t.Fatal("LooksUnresolved (whatsapp)")
 	}
 }
