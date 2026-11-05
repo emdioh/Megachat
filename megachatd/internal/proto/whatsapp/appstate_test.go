@@ -15,6 +15,7 @@ import (
 	"go.mau.fi/whatsmeow/appstate"
 	"go.mau.fi/whatsmeow/proto/waAdv"
 	"go.mau.fi/whatsmeow/proto/waSyncAction"
+	"go.mau.fi/whatsmeow/store/sqlstore"
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
 	gproto "google.golang.org/protobuf/proto"
@@ -89,7 +90,9 @@ func archivedDeviceStore(t *testing.T, chats ...string) *sql.DB {
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	dev := container.NewDevice()
-	own := types.NewJID("390000000000", types.DefaultUserServer)
+	// whatsmeow stores the device JID as our_jid (with the AD suffix), so the
+	// rows carry the same form as newFakeClient's Store.ID.
+	own := types.NewADJID("390000000000", 0, 7)
 	dev.ID = &own
 	dev.Account = &waAdv.ADVSignedDeviceIdentity{
 		Details: []byte{}, AccountSignature: make([]byte, 64),
@@ -267,6 +270,64 @@ func TestSyncArchiveFlagsSeedKeepsExistingChat(t *testing.T) {
 	}
 	if n != 1 {
 		t.Errorf("contacts for the chat = %d, want 1", n)
+	}
+}
+
+// putTestDevice registers another paired device in the same whatsmeow.db, so
+// chat-settings rows for its account satisfy the our_jid foreign key.
+func putTestDevice(t *testing.T, db *sql.DB, own types.JID) {
+	t.Helper()
+	c := sqlstore.NewWithDB(db, "sqlite3", slogAdapter{l: quietLogger(), mod: "store"})
+	dev := c.NewDevice()
+	dev.ID = &own
+	dev.Account = &waAdv.ADVSignedDeviceIdentity{
+		Details: []byte{}, AccountSignature: make([]byte, 64),
+		AccountSignatureKey: make([]byte, 32), DeviceSignature: make([]byte, 64),
+	}
+	if err := c.PutDevice(context.Background(), dev); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestSyncArchiveFlagsScopesToCurrentDevice covers a whatsmeow.db reused across
+// pairings (or holding several accounts): chat-settings rows keyed by another
+// own JID must not be seeded into this account's registry.
+func TestSyncArchiveFlagsScopesToCurrentDevice(t *testing.T) {
+	e := newEnv(t)
+	db := archivedDeviceStore(t, "393331234567@s.whatsapp.net")
+	other := types.NewADJID("391111111111", 0, 9)
+	putTestDevice(t, db, other)
+	if _, err := db.Exec(`INSERT INTO whatsmeow_chat_settings (our_jid, chat_jid, archived) VALUES (?, ?, true)`,
+		other.String(), "393339999999@s.whatsapp.net"); err != nil {
+		t.Fatal(err)
+	}
+	e.b.db = db
+	e.b.syncArchiveFlags(context.Background())
+
+	e.b.cmu.RLock()
+	mine, mineOK := e.b.chats["393331234567@c.us"]
+	_, theirs := e.b.chats["393339999999@c.us"]
+	e.b.cmu.RUnlock()
+	if !mineOK || !mine.Archived {
+		t.Error("the current account's archived chat must be seeded")
+	}
+	if theirs {
+		t.Error("an archived chat of another account must not be seeded")
+	}
+}
+
+// TestSyncArchiveFlagsSkipsUnpairedDevice asserts the seed is a no-op before
+// pairing: there is no our_jid to scope the rows by yet.
+func TestSyncArchiveFlagsSkipsUnpairedDevice(t *testing.T) {
+	e := newEnv(t)
+	e.b.db = archivedDeviceStore(t, "393331234567@s.whatsapp.net")
+	e.fc.dev.ID = nil
+	e.b.syncArchiveFlags(context.Background())
+	e.b.cmu.RLock()
+	_, ok := e.b.chats["393331234567@c.us"]
+	e.b.cmu.RUnlock()
+	if ok {
+		t.Error("an unpaired device must not seed archived chats")
 	}
 }
 
