@@ -116,27 +116,89 @@ func diffJSON(want, got []byte) string {
 
 // lidPlaceholderFields are the only wire fields that may differ between the
 // Python row builder and the Go one. The divergence is deliberate and pinned
-// by mc-zao.3.5.3/5.7: for an unresolved "@lid" group sender the Go resolver
+// by mc-zao.3.5.3/5.7/5.8: for an unresolved "@lid" group sender the Go side
 // shows the annotated placeholder (core.UnresolvedLIDName) while Python shows
-// the bare LID digits, which would read like a phone number the LID is not.
+// the bare LID digits (messages.page's resolver fallback) or the raw
+// "<n>@lid" JID (messages.window/messages.snapshot, verbatim cache rows). Either
+// way the LID digits would read like a phone number the LID is not.
 var lidPlaceholderFields = map[string]bool{"sender": true, "quote_author": true}
 
-// lidPlaceholderDiverges matches exactly the allowed pair: Python's bare LID
-// digits against the Go placeholder naming those same digits. Anything else
-// (a placeholder where Python resolved a name, a different number, a raw @lid)
-// is not on the allowlist and fails the byte comparison.
-func lidPlaceholderDiverges(py, goV any) bool {
-	digits, ok := py.(string)
-	if !ok || digits == "" || strings.ContainsAny(digits, "@+ ") {
-		return false
+// lidHead is the LID head of a Python value that names an unresolved "@lid"
+// sender: the bare digits of messages.page's fallback, or the raw
+// "<digits>@lid" JID that messages.window/snapshot return verbatim (mc-zao.5.8).
+// A "<digits>:<device>@lid" head is spelled with its device suffix, exactly as
+// the placeholder does. A resolved name, another JID shape or another value is
+// not on the allowlist.
+func lidHead(v any) (string, bool) {
+	s, ok := v.(string)
+	if !ok || s == "" {
+		return "", false
 	}
-	for _, r := range digits {
-		if r < '0' || r > '9' {
-			return false
+	head, cut := strings.CutSuffix(s, "@lid")
+	if !cut {
+		head = s
+	}
+	if head == "" {
+		return "", false
+	}
+	parts := strings.Split(head, ":")
+	if len(parts) > 2 {
+		return "", false
+	}
+	for _, part := range parts {
+		if part == "" {
+			return "", false
+		}
+		for _, r := range part {
+			if r < '0' || r > '9' {
+				return "", false
+			}
 		}
 	}
+	return head, true
+}
+
+// lidPlaceholderDiverges matches exactly the allowed pair: Python naming an
+// unresolved LID (bare digits or the raw "<n>@lid" JID) against the Go
+// placeholder naming those same digits. Anything else (a placeholder where
+// Python resolved a name, a different number, any other raw JID) is not on the
+// allowlist and fails the byte comparison.
+func lidPlaceholderDiverges(py, goV any) bool {
+	head, ok := lidHead(py)
+	if !ok {
+		return false
+	}
 	g, ok := goV.(string)
-	return ok && g == core.UnresolvedLIDName(digits)
+	return ok && g == core.UnresolvedLIDName(head)
+}
+
+// TestLIDPlaceholderAllowlist pins the shape of the allowlist: the two Python
+// spellings of an unresolved LID (messages.page's bare digits, and the raw
+// "<n>@lid" cache row of window/snapshot, mc-zao.5.8) may differ, anything else
+// may not.
+func TestLIDPlaceholderAllowlist(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		py   any
+		goV  any
+		want bool
+	}{
+		{"page bare digits", "111", "Contatto WhatsApp (ID 111)", true},
+		{"window raw lid", "111@lid", "Contatto WhatsApp (ID 111)", true},
+		{"device suffix", "111:2@lid", "Contatto WhatsApp (ID 111:2)", true},
+		{"different digits", "112@lid", "Contatto WhatsApp (ID 111)", false},
+		{"different digits bare", "112", "Contatto WhatsApp (ID 111)", false},
+		{"resolved name", "Ann", "Contatto WhatsApp (ID 111)", false},
+		{"c.us jid", "111@c.us", "Contatto WhatsApp (ID 111)", false},
+		{"nested suffix", "111@lid@lid", "Contatto WhatsApp (ID 111)", false},
+		{"empty head", "@lid", "Contatto WhatsApp (ID )", false},
+		{"not a string", 111, "Contatto WhatsApp (ID 111)", false},
+		{"both names", "Ann", "Ann", false},
+	} {
+		if got := lidPlaceholderDiverges(c.py, c.goV); got != c.want {
+			t.Errorf("%s: lidPlaceholderDiverges(%v, %v) = %v, want %v", c.name, c.py, c.goV, got, c.want)
+		}
+	}
 }
 
 // jsonValue is a decoded JSON value that keeps object key order. The @lid

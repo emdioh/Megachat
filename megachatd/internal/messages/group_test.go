@@ -1,11 +1,15 @@
 package messages
 
 import (
+	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
+	"github.com/emdioh/megachat/megachatd/internal/api"
 	"github.com/emdioh/megachat/megachatd/internal/config"
 	"github.com/emdioh/megachat/megachatd/internal/proto"
+	"github.com/emdioh/megachat/megachatd/internal/store"
 )
 
 // groupFallbackRows are group rows whose sender or quote author nobody knows,
@@ -82,5 +86,82 @@ func TestPageGroupSenderFallback(t *testing.T) {
 				t.Errorf("%v.%s leaks the lid: %q", m["text"], field, s)
 			}
 		}
+	}
+}
+
+// TestWindowSnapshotGroupLIDsPlaceholder is mc-zao.5.8. A group row ingested
+// before mc-zao.5.7 keeps the raw "<n>@lid" in sender/quote_author, and
+// messages.window / messages.snapshot return cache rows verbatim, so the
+// placeholder is substituted at display time only: the stored row is left
+// untouched (messages.page still resolves "111@lid" to Ann), a "@c.us" sender
+// keeps Python's shape, and a stored placeholder passes through unchanged.
+func TestWindowSnapshotGroupLIDsPlaceholder(t *testing.T) {
+	e := newGroupFallbackEnv(t)
+	byID := func(rows []map[string]any) map[string]map[string]any {
+		out := map[string]map[string]any{}
+		for _, r := range rows {
+			out[r["id"].(string)] = r
+		}
+		return out
+	}
+	wantSenders := map[string]string{
+		"L1": "Contatto WhatsApp (ID 20508603076702)", // legacy raw @lid
+		"L2": "Contatto WhatsApp (ID 111)",            // legacy raw @lid, known name
+		"L3": "222@c.us",                              // a JID is not a placeholder
+		"L4": "Contatto WhatsApp (ID 20508603076702)", // already stored placeholder
+		"L5": "Bea",
+	}
+	wantQuote := map[string]string{
+		"L5": "Contatto WhatsApp (ID 999)", // legacy raw @lid quote author
+		"L6": "777@c.us",
+	}
+	check := func(where string, rows map[string]map[string]any) {
+		t.Helper()
+		if len(rows) != 6 { // L1..L6
+			t.Fatalf("%s rows = %d, want 6", where, len(rows))
+		}
+		for id, want := range wantSenders {
+			if got := rows[id]["sender"]; got != want {
+				t.Errorf("%s %s sender = %v, want %q", where, id, got, want)
+			}
+		}
+		for id, want := range wantQuote {
+			if got := rows[id]["quote_author"]; got != want {
+				t.Errorf("%s %s quote_author = %v, want %q", where, id, got, want)
+			}
+		}
+	}
+
+	var win struct {
+		Messages []map[string]any `json:"messages"`
+	}
+	if err := json.Unmarshal(e.mustCall(api.OpMessagesWindow, map[string]any{
+		"protocol": "whatsapp", "contact_id": waGrp,
+	}), &win); err != nil {
+		t.Fatal(err)
+	}
+	check("window", byID(win.Messages))
+
+	var snap map[string][]map[string]any
+	if err := json.Unmarshal(e.mustCall(api.OpMessagesSnapshot, map[string]any{"protocol": "whatsapp"}), &snap); err != nil {
+		t.Fatal(err)
+	}
+	check("snapshot", byID(snap[waGrp]))
+
+	// Display-time only: nothing rewrote the shared database, so messages.page
+	// still resolves the known LID through the address book.
+	stored, err := e.st.ListMessages(context.Background(), store.MessageQuery{Protocol: "whatsapp", Keys: []string{waGrp}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := map[string]string{}
+	for _, m := range stored {
+		raw[store.Deref(m.MsgID)] = store.Deref(m.Sender)
+	}
+	if raw["L1"] != "20508603076702@lid" || raw["L2"] != "111@lid" {
+		t.Fatalf("stored senders were rewritten: %v", raw)
+	}
+	if got := byID(e.page(map[string]any{"protocol": "whatsapp", "contact_id": waGrp}))["L2"]["sender"]; got != "Ann" {
+		t.Errorf("page L2 sender = %v, want Ann", got)
 	}
 }

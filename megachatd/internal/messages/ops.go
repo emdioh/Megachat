@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/emdioh/megachat/megachatd/internal/api"
+	"github.com/emdioh/megachat/megachatd/internal/core"
 	"github.com/emdioh/megachat/megachatd/internal/media"
 	"github.com/emdioh/megachat/megachatd/internal/ops"
 	"github.com/emdioh/megachat/megachatd/internal/proto"
@@ -243,18 +244,50 @@ type cacheRow struct {
 	BatchIndex          *int64  `json:"batch_index"`
 }
 
+// isGroupCacheRow reports whether a cache row belongs to a WhatsApp group: the
+// only chat kind where a raw "@lid" used to leak into sender/quote_author.
+func isGroupCacheRow(m msg) bool {
+	return m.Protocol == api.ProtocolWhatsApp && strings.HasSuffix(m.ContactNumber, "@g.us")
+}
+
+// unresolvedLIDPlaceholder is the display-time rescue of a group row stored
+// before mc-zao.5.7: such a row still carries the raw "<n>@lid" sender or
+// quote_author, and messages.window/messages.snapshot return cache rows
+// verbatim (Python parity), so the TUI and the web showed the JID. Substituting
+// the annotated placeholder here is the deliberate, narrow fix of mc-zao.5.8:
+// it writes nothing to the shared Python-owned messages.db, it leaves the raw
+// JID in the store so messages.page can still resolve a real name, and it
+// diverges from Python only on the two fields already pinned by the parity
+// allowlist (lidPlaceholderFields in parity_test.go). The value stays a
+// placeholder (isPlaceholderDisplayName), so a later name still replaces it.
+func unresolvedLIDPlaceholder(v *string) *string {
+	if v == nil {
+		return nil
+	}
+	if head, ok := strings.CutSuffix(*v, "@lid"); ok && head != "" {
+		s := core.UnresolvedLIDName(head)
+		return &s
+	}
+	return v
+}
+
 func toCacheRow(m msg) cacheRow {
 	text := m.Text
 	if strOf(m.MsgType) == api.MsgTypeImage {
 		text = api.Ptr("")
 	}
+	sender, quoteAuthor := m.Sender, m.QuoteAuthor
+	if isGroupCacheRow(m) {
+		sender = unresolvedLIDPlaceholder(sender)
+		quoteAuthor = unresolvedLIDPlaceholder(quoteAuthor)
+	}
 	return cacheRow{
-		ID: m.MsgID, Text: text, IsMine: m.IsMine, Sender: m.Sender, Timestamp: m.Timestamp,
+		ID: m.MsgID, Text: text, IsMine: m.IsMine, Sender: sender, Timestamp: m.Timestamp,
 		QuoteText: m.QuoteText, MsgType: m.MsgType, AttachmentInfo: m.AttachmentInfo,
 		AttachmentID: m.AttachmentID, ContentType: m.ContentType,
 		QuoteAttachmentID: m.QuoteAttachmentID, QuoteAttachmentPath: m.QuoteAttachmentPath,
 		QuoteContentType: m.QuoteContentType, QuoteTimestamp: m.QuoteTimestamp,
-		QuoteAuthor: m.QuoteAuthor, ReplyToMessageID: m.ReplyToMessageID,
+		QuoteAuthor: quoteAuthor, ReplyToMessageID: m.ReplyToMessageID,
 		Edited: m.Edited, Read: m.Read, Status: m.Status, Protocol: m.Protocol,
 		BatchID: m.BatchID, BatchIndex: m.BatchIndex,
 	}
