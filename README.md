@@ -451,8 +451,9 @@ export TELEGRAM_API_HASH=your_hash_here
 
 `TELEGRAM_ENABLED=1` (or `telegram.enabled` in `config.json`) is
 required: the backend is not started when the flag is off. When it is on but
-the API id/hash are missing, startup logs one warning naming the missing
-settings and the backend stays off.
+the API id/hash are missing, `megachatd serve` refuses to start with an error
+naming the missing settings (see [Startup
+validation](#startup-validation)); set `telegram.enabled=false` to turn it off.
 
 #### Pair the device (QR login)
 
@@ -512,6 +513,28 @@ WAHA Docker container and the Python-server fallback (`MEGACHAT_SERVER=python`).
 These variables are runtime/bootstrap options, not settings:
 `MEGACHAT_PROJECT_DIR`, `MEGACHAT_SOCKET`, `MEGACHAT_LOCK_FILE`,
 `MEGACHAT_LOG_FILE`, `MEGACHAT_FAKE_BACKEND`, `HOME`, `XDG_*`, `SSH_CONNECTION`.
+
+### Startup validation
+
+A backend that is enabled but incomplete stops the server instead of running
+half-configured. Before opening anything, `megachatd serve` checks every
+enabled integration and exits with code 1, listing all the problems at once:
+
+```text
+❌ telegram is enabled but missing: telegram.api_id (TELEGRAM_API_ID), telegram.api_hash (TELEGRAM_API_HASH)
+gmail is enabled but missing: gmail.address (GMAIL_ADDRESS), one of gmail.app_password / gmail.app_password_file / gmail.app_password_cmd
+Fill in the missing settings in config.json (or set their environment overrides), or set telegram.enabled=false / gmail.enabled=false in config.json to disable them.
+```
+
+| Integration | Required settings |
+|---|---|
+| `telegram` | `telegram.api_id` (non-zero) and `telegram.api_hash` |
+| `gmail` | `gmail.address` and an App Password from `gmail.app_password`, `gmail.app_password_file` (existing, non-empty) or `gmail.app_password_cmd` |
+| `whatsapp` | none: pair by QR (`link.*`) |
+| `signal` | none: it can start unlinked and `link.*` then writes `signal.user_number` |
+
+Disabled integrations are not validated. `launcher.py server start` and the
+TUI's find-or-spawn print the server's error instead of a generic failure.
 
 ### Upgrading to the nested config.json
 
@@ -1042,8 +1065,9 @@ python3 scripts/gmail_setup.py
 
 Gmail is off until `GMAIL_ENABLED=1` (or `"gmail": {"enabled": true}` in `config.json`) is set; the
 script writes `gmail.enabled: true` into `config.json` when no explicit false is configured. The
-address and App Password are still required: with the flag on and either missing, the tab reports
-"not configured", the unread watcher does not run, and startup logs one warning. Restart
+address and App Password are still required: with the flag on and either missing, `megachatd serve`
+refuses to start with an error naming the missing settings (see [Startup
+validation](#startup-validation)); set `gmail.enabled=false` to turn it off. Restart
 `megachatd` after adding the flag.
 
 The script asks for the Gmail address and a Google **App Password** (hidden input), verifies IMAP and

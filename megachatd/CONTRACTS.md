@@ -753,6 +753,30 @@ The project `.env` is never a settings source (it is inspected only for the star
 `MEGACHAT_SOCKET`, `MEGACHAT_LOCK_FILE`, `MEGACHAT_LOG_FILE`, `MEGACHAT_FAKE_BACKEND`, `HOME`, `XDG_*`,
 `SSH_CONNECTION`.
 
+**Startup validation.** Before it opens the store or registers a backend, `Build` validates every
+*enabled* integration (`<domain>.enabled`, env override wins). If any is incomplete, `megachatd
+serve` releases the instance lock, never listens, exits 1 and prints one `❌ ...` error on stderr
+that lists every problem at once (all integrations, all missing settings), as the `config.json`
+path and its environment override, plus how to proceed:
+
+| Integration | Required settings |
+|---|---|
+| `telegram` | `telegram.api_id` (non-zero) and `telegram.api_hash` |
+| `gmail` | `gmail.address` and an App Password from `gmail.app_password` (non-empty), `gmail.app_password_file` (file exists and is non-empty) or `gmail.app_password_cmd` (resolves to a non-empty password) |
+| `whatsapp` | none (paired by QR through `link.*`) |
+| `signal` | none (may start unlinked; `link.finalize` writes `signal.user_number`) |
+
+A disabled integration is never validated. Example:
+
+```text
+telegram is enabled but missing: telegram.api_id (TELEGRAM_API_ID), telegram.api_hash (TELEGRAM_API_HASH)
+gmail is enabled but missing: gmail.address (GMAIL_ADDRESS), one of gmail.app_password / gmail.app_password_file / gmail.app_password_cmd
+Fill in the missing settings in config.json (or set their environment overrides), or set telegram.enabled=false / gmail.enabled=false in config.json to disable them.
+```
+
+The table lives next to the schema in `internal/config/requirements.go`. `launcher.py server start`
+and the TUI's find-or-spawn surface this `❌` block instead of a generic spawn failure.
+
 #### `signal`
 
 | Setting | Env override | Type | Default | Legacy config.json key / env |

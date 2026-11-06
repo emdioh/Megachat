@@ -131,6 +131,27 @@ def test_spawn_failure_shows_the_log_tail_and_does_not_hide_the_exit(env):
     assert "old run" not in msg  # only this run's output
 
 
+def test_spawn_failure_surfaces_the_server_validation_error(env):
+    env.proc = FakeProc(exits_after=2, rc=1)
+
+    def spawn(serve_args, path, log_path):
+        offset = env.log.stat().st_size
+        with open(env.log, "ab") as f:
+            f.write(
+                b"startup noise\n"
+                b"\xe2\x9d\x8c telegram is enabled but missing: telegram.api_id "
+                b"(TELEGRAM_API_ID)\n"
+                b"Fill in the missing settings in config.json\n"
+            )
+        return env.proc, offset
+
+    with pytest.raises(attach.AttachError) as exc:
+        attach.attach_or_spawn(log_path=env.log, spawn=spawn, spawn_timeout=5.0)
+    msg = str(exc.value)
+    assert "telegram is enabled but missing" in msg
+    assert "Fill in the missing settings" in msg
+
+
 def test_incompatible_server_is_an_error_not_a_reason_to_spawn(env):
     env.error = IncompatibleServer("version 9")
     with pytest.raises(attach.AttachError, match="incompatible"):

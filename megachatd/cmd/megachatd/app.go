@@ -187,6 +187,14 @@ func Build(o BuildOptions) (*App, error) {
 	if log == nil {
 		log = slog.Default()
 	}
+	if !o.OnlyExtraBackends {
+		// Refuse to start a half-configured server: every enabled integration
+		// must have what it needs before the store is opened or a backend is
+		// registered. The error names all the problems at once.
+		if err := cfg.ValidateIntegrations(); err != nil {
+			return nil, err
+		}
+	}
 	a := &App{Cfg: cfg, Log: log}
 	a.reportLegacySettings()
 
@@ -224,25 +232,21 @@ func Build(o BuildOptions) (*App, error) {
 			log.Info("WhatsApp backend disabled (enable with whatsapp.enabled=true in config.json or WHATSAPP_ENABLED=1)")
 			a.migrationNotice(cfg.WhatsAppPreviouslyConfigured(), WhatsAppDisabledNotice)
 		}
-		switch {
-		case cfg.TelegramEnabled() && cfg.TelegramCredentials():
+		// An enabled Telegram always has its credentials here: Build rejects an
+		// incomplete one above.
+		if cfg.TelegramEnabled() {
 			telegram.RunMarkedIDsMigration(context.Background(), cfg, st, log)
 			a.Telegram = telegram.New(telegram.Options{Config: cfg, Store: st, Logger: log})
 			if err := register(a.Telegram); err != nil {
 				return nil, err
 			}
-		case cfg.TelegramEnabled():
-			log.Warn("Telegram backend not started: TELEGRAM_ENABLED=1 but telegram.api_id / telegram.api_hash (or TELEGRAM_API_ID / TELEGRAM_API_HASH) are missing")
-		default:
+		} else {
 			log.Info("Telegram backend disabled (enable with telegram.enabled=true in config.json or TELEGRAM_ENABLED=1)")
 			a.migrationNotice(cfg.TelegramPreviouslyConfigured(), TelegramDisabledNotice)
 		}
-		switch {
-		case cfg.GmailEnabled():
-			// explicit flag + credentials: the service and its watcher start.
-		case cfg.GmailFlagEnabled():
-			log.Warn("Gmail not started: GMAIL_ENABLED=1 but gmail.address / gmail.app_password (or GMAIL_ADDRESS / GMAIL_APP_PASSWORD) are missing")
-		default:
+		// Likewise an enabled Gmail has an address and an App Password: the
+		// service and its unread watcher start. Off means neither runs.
+		if !cfg.GmailFlagEnabled() {
 			log.Info("Gmail disabled (enable with gmail.enabled=true in config.json or GMAIL_ENABLED=1)")
 			a.migrationNotice(cfg.GmailPreviouslyConfigured(), GmailDisabledNotice)
 		}

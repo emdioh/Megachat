@@ -34,6 +34,14 @@ READY_TIMEOUT_S = 30
 STOP_TIMEOUT_S = 30
 
 
+class ServerStartError(RuntimeError):
+    """The server exited before becoming ready; the message is user facing.
+
+    Carries the server's own startup error (e.g. an enabled integration with
+    missing settings), not a generic "went away" message.
+    """
+
+
 @dataclass(frozen=True)
 class ServeOptions:
     """Options of ``megachat serve`` that the launcher passes through.
@@ -208,18 +216,17 @@ def spawn_and_wait(opts: ServeOptions | None = None) -> bool:
     """Spawn the detached server and wait until it is up.
 
     "Up" is the web adapter listening, or (with ``no_web``) the server
-    holding the lock.  ``False`` when it exited early or never came up.
-    ``OSError`` from the spawn itself propagates.
+    holding the lock.  ``False`` when it never came up.  ``ServerStartError``
+    when it exited before becoming ready (carrying its own error, e.g. an
+    enabled integration missing its settings).  ``OSError`` from the spawn
+    itself and ``serverbin.ServerBinaryNotFound`` propagate.
     """
     opts = opts or ServeOptions()
-    try:
-        offset = SERVER_LOG.stat().st_size
-    except OSError:
-        offset = 0
+    offset = _log_offset()
     proc = _spawn_server(opts)
     for _ in range(READY_TIMEOUT_S):
         if proc.poll() is not None:
-            return False
+            raise ServerStartError(_startup_error(offset))
         if _ready(proc, opts):
             _write_state(proc.pid, opts)
             _show_notices(offset)
@@ -228,16 +235,43 @@ def spawn_and_wait(opts: ServeOptions | None = None) -> bool:
     return False
 
 
-def _show_notices(offset: int) -> None:
-    """Print the one-time notices (lines starting with ``ℹ️``, e.g. the WhatsApp
-    re-link notice) that megachatd wrote to its output during this start."""
+def _log_offset() -> int:
+    try:
+        return SERVER_LOG.stat().st_size
+    except OSError:
+        return 0
+
+
+def _log_since(offset: int) -> str:
     try:
         with open(SERVER_LOG, "rb") as handle:
             handle.seek(offset)
-            text = handle.read().decode("utf-8", "replace")
+            return handle.read().decode("utf-8", "replace")
     except OSError:
-        return
-    for line in text.splitlines():
+        return ""
+
+
+def _startup_error(offset: int) -> str:
+    """The server's own reason for not starting, from its output after *offset*.
+
+    megachatd prefixes the startup validation error with ``❌``; when there is
+    no marker, the tail of this run's output is used instead.
+    """
+    text = _log_since(offset)
+    marker = text.find("❌")
+    if marker >= 0:
+        detail = text[marker:].strip()
+    else:
+        detail = "\n".join(text.strip().splitlines()[-10:])
+    if not detail:
+        return "Il server non è partito prima di mettersi in ascolto."
+    return "Il server non è partito:\n" + detail
+
+
+def _show_notices(offset: int) -> None:
+    """Print the one-time notices (lines starting with ``ℹ️``, e.g. the WhatsApp
+    re-link notice) that megachatd wrote to its output during this start."""
+    for line in _log_since(offset).splitlines():
         if line.startswith("ℹ️"):
             print(line)
 
@@ -356,6 +390,9 @@ def start_all(
     try:
         up = spawn_and_wait(opts)
     except serverbin.ServerBinaryNotFound as exc:
+        die(str(exc))
+        return 1
+    except ServerStartError as exc:
         die(str(exc))
         return 1
     except OSError as exc:

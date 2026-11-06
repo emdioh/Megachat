@@ -188,19 +188,24 @@ def test_link_start_disabled_names_the_flag(go_server: Server):
 
 
 def test_flags_start_exactly_their_integration(go_binary):
-    # SIGNAL_ENABLED registers Signal; TELEGRAM_ENABLED without credentials and
-    # GMAIL_ENABLED without credentials must not start anything.
+    # SIGNAL_ENABLED registers Signal; Telegram and Gmail start only with their
+    # credentials (an enabled incomplete one refuses to start, see
+    # test_startup_validation.py).
     srv = start_server("go", binary=go_binary, extra_env={
         "SIGNAL_ENABLED": "1",
         "TELEGRAM_ENABLED": "1",
+        "TELEGRAM_API_ID": "123",
+        "TELEGRAM_API_HASH": "abc",
         "GMAIL_ENABLED": "1",
+        "GMAIL_ADDRESS": "contract@example.com",
+        "GMAIL_APP_PASSWORD": "pw",
     })
     try:
         st = srv.call("link.status")["protocols"]
         assert st["signal"]["available"] is True
         assert st["whatsapp"]["available"] is False
-        assert st["telegram"]["available"] is False
-        assert srv.call("gmail.status")["configured"] is False
+        assert st["telegram"]["available"] is True
+        assert srv.call("gmail.status")["configured"] is True
     finally:
         srv.stop()
 

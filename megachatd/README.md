@@ -70,7 +70,8 @@ Environment: `MEGACHAT_SOCKET`, `MEGACHAT_LOCK_FILE` (default `/tmp/signal-tui.l
 [Configuration](#configuration). Settings come from `config.json` and their
 `<DOMAIN>_<SETTING>` environment overrides, not from `.env`. The log goes to
 `/tmp/signal-tui.log` (Go-only override: `MEGACHAT_LOG_FILE`). Exit code 1 when another instance
-holds the lock or an adapter cannot start. SIGINT/SIGTERM and the `server.shutdown` operation stop
+holds the lock, an enabled integration lacks required settings, or an adapter cannot start.
+SIGINT/SIGTERM and the `server.shutdown` operation stop
 the server gracefully.
 
 Backends are **opt-in**. The flag is read from the process environment (`SIGNAL_ENABLED`, ...),
@@ -82,8 +83,8 @@ to the next source.
 |---|---|---|---|
 | Signal | `SIGNAL_ENABLED=1` | —; a user number enables auto-connect, without one the backend still starts so it can be linked | not registered |
 | WhatsApp (native, whatsmeow, no WAHA) | `WHATSAPP_ENABLED=1` | — | not registered |
-| Telegram | `TELEGRAM_ENABLED=1` | `TELEGRAM_API_ID` + `TELEGRAM_API_HASH` (the existing Telethon session is reused) | not registered; enabled without credentials logs one warning naming them |
-| Gmail | `GMAIL_ENABLED=1` | `GMAIL_ADDRESS`/`gmail.address` + an App Password (`gmail.app_password_file` / `gmail.app_password_cmd`) | reports "not configured"; the unread watcher does not run |
+| Telegram | `TELEGRAM_ENABLED=1` | `TELEGRAM_API_ID` + `TELEGRAM_API_HASH` (the existing Telethon session is reused) | not registered; enabled without credentials refuses to start, naming them |
+| Gmail | `GMAIL_ENABLED=1` | `GMAIL_ADDRESS`/`gmail.address` + an App Password (`gmail.app_password` / `gmail.app_password_file` / `gmail.app_password_cmd`) | not registered, no unread watcher; enabled without them refuses to start |
 
 `link_whatsapp.py` and the TUI's `Ctrl+L` reach a backend only when it is registered, so the
 linking flow requires its flag. Link Signal with a QR through `link_account.py` or `Ctrl+L`;
@@ -138,6 +139,29 @@ override. `.env` is **not** read.
 Runtime/bootstrap variables that are not settings: `MEGACHAT_PROJECT_DIR`, `MEGACHAT_SOCKET`,
 `MEGACHAT_LOCK_FILE`, `MEGACHAT_LOG_FILE`, `MEGACHAT_FAKE_BACKEND`, `HOME`, `XDG_*`,
 `SSH_CONNECTION`.
+
+### Startup validation
+
+Every enabled integration is validated before the store is opened or any backend registered. An
+incomplete one makes `serve` exit 1 (after releasing the lock, without listening) and print one
+error that lists all the problems at once, with the `config.json` path and environment override:
+
+```text
+❌ telegram is enabled but missing: telegram.api_id (TELEGRAM_API_ID), telegram.api_hash (TELEGRAM_API_HASH)
+gmail is enabled but missing: gmail.address (GMAIL_ADDRESS), one of gmail.app_password / gmail.app_password_file / gmail.app_password_cmd
+Fill in the missing settings in config.json (or set their environment overrides), or set telegram.enabled=false / gmail.enabled=false in config.json to disable them.
+```
+
+| Integration | Required settings |
+|---|---|
+| `telegram` | `telegram.api_id` (non-zero) and `telegram.api_hash` |
+| `gmail` | `gmail.address` and an App Password from `gmail.app_password`, `gmail.app_password_file` (existing, non-empty) or `gmail.app_password_cmd` |
+| `whatsapp` | none: pair by QR (`link.*`) |
+| `signal` | none: it can start unlinked and `link.*` writes `signal.user_number` |
+
+Disabled integrations are not validated. The table is next to the schema
+(`internal/config/requirements.go`); `CONTRACTS.md` 9.1 documents it. `launcher.py server start`
+and the TUI's find-or-spawn print this error instead of a generic spawn failure.
 
 ### Migrating from the flat config.json
 

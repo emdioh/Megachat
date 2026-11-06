@@ -95,30 +95,6 @@ func TestExplicitFlagStartsOnlyItsIntegration(t *testing.T) {
 	})
 }
 
-func TestEnabledWithoutCredentialsDoesNotStart(t *testing.T) {
-	t.Run("telegram", func(t *testing.T) {
-		app, logs := buildIntegrationApp(t, map[string]string{"TELEGRAM_ENABLED": "1"}, "")
-		if app.Telegram != nil {
-			t.Fatal("Telegram without api id/hash must not start")
-		}
-		if !strings.Contains(logs, "TELEGRAM_API_ID") {
-			t.Fatalf("the warning must name the missing settings:\n%s", logs)
-		}
-	})
-	t.Run("gmail", func(t *testing.T) {
-		app, logs := buildIntegrationApp(t, map[string]string{"GMAIL_ENABLED": "1"}, "")
-		if app.Core.Gmail() != nil {
-			t.Fatal("Gmail without credentials must not run the watcher")
-		}
-		if configured, _, _ := app.Gmail.StatusSnapshot(); configured {
-			t.Fatal("Gmail without credentials must not be configured")
-		}
-		if !strings.Contains(logs, "GMAIL_ADDRESS") {
-			t.Fatalf("the warning must name the missing settings:\n%s", logs)
-		}
-	})
-}
-
 func TestOffWithEvidenceAddsOneNoticePerIntegration(t *testing.T) {
 	root := t.TempDir()
 	home, project := filepath.Join(root, "home"), filepath.Join(root, "project")
