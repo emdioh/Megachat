@@ -855,10 +855,11 @@ echo
 echo "${C_GREEN}${C_BOLD}=== Installazione completata! ===${C_RESET}"
 echo
 echo "Prossimi passi:"
-echo "  1. Configura il tuo numero di telefono:"
+echo "  1. Abilita Signal (megachatd) e configura il tuo numero di telefono:"
 echo "       export SIGNAL_USER_NUMBER=\"+1234567890\""
+echo "       echo 'SIGNAL_ENABLED=1' >> .env"
 echo "     oppure crea config.json:"
-echo "       echo '{\"user_number\": \"+1234567890\"}' > config.json"
+echo "       echo '{\"signal_enabled\": true, \"user_number\": \"+1234567890\"}' > config.json"
 echo "  2. Collega il tuo account Signal (QR code):"
 if [ "$DO_VENV" -eq 1 ]; then
     echo "       source .venv/bin/activate"
@@ -869,7 +870,10 @@ fi
 echo "  3. (Opzionale) Abilita e collega WhatsApp (QR code, nessun Docker):"
 echo "       echo 'WHATSAPP_ENABLED=1' >> .env"
 echo "       python3 link_whatsapp.py"
-echo "  4. Avvia il client:"
+echo "  4. (Opzionale) Abilita Telegram:"
+echo "       echo 'TELEGRAM_ENABLED=1' >> .env"
+echo "       # aggiungi TELEGRAM_API_ID e TELEGRAM_API_HASH a .env, poi Ctrl+L nella TUI"
+echo "  5. Avvia il client:"
 if [ "$DO_VENV" -eq 1 ]; then
     echo "       source .venv/bin/activate"
 fi
@@ -877,7 +881,7 @@ echo "       python3 signal_tui.py"
 if [ "$DO_WEB" -eq 1 ]; then
     echo "       Web UI: http://127.0.0.1:4242"
     echo "       Token:  config.json → web.token"
-    echo "       Gmail (opzionale): ./install.sh --gmail  (oppure python3 scripts/gmail_setup.py)"
+    echo "       Gmail (opzionale): ./install.sh --gmail  (scrive GMAIL_ENABLED=1 in .env)"
 fi
 echo
 if [ -f "$PROJECT_DIR/.env" ] && grep -q '^MEGACHAT_SERVER=python' "$PROJECT_DIR/.env"; then

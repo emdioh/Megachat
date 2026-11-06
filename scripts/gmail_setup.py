@@ -97,7 +97,11 @@ def write_secret(path: Path, password: str) -> None:
 
 
 def update_env(env_path: Path, address: str, secret_path: Path) -> None:
-    """Replace Gmail secret settings, preserving every other .env line."""
+    """Replace Gmail secret settings, preserving every other .env line.
+
+    ``GMAIL_ENABLED=1`` is appended only when the .env has no explicit
+    ``GMAIL_ENABLED=`` line, so a deliberate ``GMAIL_ENABLED=0`` survives.
+    """
     lines = (
         env_path.read_text(encoding="utf-8").splitlines() if env_path.exists() else []
     )
@@ -108,6 +112,8 @@ def update_env(env_path: Path, address: str, secret_path: Path) -> None:
         "GMAIL_APP_PASSWORD_CMD=",
     )
     out = [line for line in lines if not line.startswith(prefixes)]
+    if not any(line.startswith("GMAIL_ENABLED=") for line in lines):
+        out.append("GMAIL_ENABLED=1")
     out.append(f"GMAIL_ADDRESS={address}")
     out.append(f"GMAIL_APP_PASSWORD_FILE={secret_path}")
     # Only the secret file *path* is written to .env, not the App Password.
@@ -274,9 +280,14 @@ def main(argv: list[str] | None = None) -> int:
     print("Gmail configurato.")
     print("  Segreto salvato in un file con permessi 600.")
     print(f"  Config:  {ENV_FILE} (600)")
+    print("  GMAIL_ENABLED=1 scritto in .env (se mancava).")
     print()
     print(
         "Ricarica la tab Gmail nella Web UI: il server rilegge .env a ogni richiesta."
+    )
+    print(
+        "Con megachatd riavvia il server, perché i flag sono letti all'avvio: "
+        "python3 launcher.py server stop && python3 launcher.py server start"
     )
     for line in encryption_hint():
         print(line)

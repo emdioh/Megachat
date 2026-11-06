@@ -2,6 +2,9 @@
 Script to link a new Signal device as a secondary client.
 Generates a QR code to scan with the Signal app on your smartphone.
 The signal-cli process stays running waiting for the scan.
+
+megachatd starts Signal only with ``SIGNAL_ENABLED=1``; the script prints
+that hint so a linked account is actually used by the server.
 """
 
 import re
@@ -38,6 +41,11 @@ def main():
     print("  🔗 Link new Signal device")
     print("  📱 Scan the QR code with the Signal app on your phone")
     print("=" * 60)
+    print()
+    print(
+        "ℹ️  megachatd: set SIGNAL_ENABLED=1 (in .env or config.json) and "
+        "restart the server to use the linked account."
+    )
     print()
     print(f"✅ signal-cli found: {signal_cli_path}")
     print("⏳ Starting link command...")

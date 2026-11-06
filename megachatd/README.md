@@ -64,19 +64,28 @@ megachat.py serve` and the TUI's find-or-spawn all start `megachatd serve <flags
 Project directory: `--project-dir`, else `$MEGACHAT_PROJECT_DIR`, else the nearest ancestor of the
 executable holding `megachat.py` or `pyproject.toml`, else the working directory.
 
-Environment (same as Python): `MEGACHAT_SOCKET`, `MEGACHAT_LOCK_FILE` (default
-`/tmp/signal-tui.lock`), `SIGNAL_TUI_WEB_TOKEN`, `SIGNAL_ENABLED`, `TELEGRAM_API_ID/HASH`, ... The
-log goes to `/tmp/signal-tui.log` (Go-only override: `MEGACHAT_LOG_FILE`). Exit code 1 when another
-instance holds the lock or an adapter cannot start. SIGINT/SIGTERM and the `server.shutdown`
-operation stop the server gracefully.
+Environment: `MEGACHAT_SOCKET`, `MEGACHAT_LOCK_FILE` (default `/tmp/signal-tui.lock`),
+`SIGNAL_TUI_WEB_TOKEN`, `SIGNAL_ENABLED`, `WHATSAPP_ENABLED`, `TELEGRAM_ENABLED`,
+`GMAIL_ENABLED`, `TELEGRAM_API_ID/HASH`, ... The log goes to `/tmp/signal-tui.log` (Go-only
+override: `MEGACHAT_LOG_FILE`). Exit code 1 when another instance holds the lock or an adapter
+cannot start. SIGINT/SIGTERM and the `server.shutdown` operation stop the server gracefully.
 
-Backends: Signal is always registered (it auto-connects only when `signal_enabled`); Telegram when
-API credentials are configured (the existing Telethon session file is reused as is); WhatsApp
-(native, whatsmeow, no WAHA) when `WHATSAPP_ENABLED=1` / `"whatsapp_enabled": true`, when
-`<data>/whatsmeow.db` exists, or when a legacy `WHATSAPP_API_URL` is set.
+Backends are **opt-in**. The flag is read from the process environment, else the `config.json`
+key (`signal_enabled`, `whatsapp_enabled`, `telegram_enabled`, `gmail_enabled`), else the project
+`.env`; a blank or unparseable value falls through, and with no flag the integration is off.
 
-Link WhatsApp with a QR: `python3 link_whatsapp.py` or the TUI's `Ctrl+L` (both use the `link.*`
-operations). **Migration from WAHA:** a WAHA session cannot be carried over. The first start with
+| Integration | Flag | Also required | When off |
+|---|---|---|---|
+| Signal | `SIGNAL_ENABLED=1` | —; a user number enables auto-connect, without one the backend still starts so it can be linked | not registered |
+| WhatsApp (native, whatsmeow, no WAHA) | `WHATSAPP_ENABLED=1` | — | not registered |
+| Telegram | `TELEGRAM_ENABLED=1` | `TELEGRAM_API_ID` + `TELEGRAM_API_HASH` (the existing Telethon session is reused) | not registered; enabled without credentials logs one warning naming them |
+| Gmail | `GMAIL_ENABLED=1` | `GMAIL_ADDRESS` + an App Password | reports "not configured"; the unread watcher does not run |
+
+`link_whatsapp.py` and the TUI's `Ctrl+L` reach a backend only when it is registered, so the
+linking flow requires its flag. Link Signal with a QR through `link_account.py` or `Ctrl+L`;
+WhatsApp through `link_whatsapp.py` or `Ctrl+L`.
+
+**Migration from WAHA:** a WAHA session cannot be carried over. The first start with
 WhatsApp enabled and no `<data>/whatsmeow.db` prints one Italian notice ("ℹ️ WhatsApp: la sessione
 WAHA non è migrabile ...", also logged; marker file `<data>/.whatsapp-relink-notice`) and
 `launcher.py server start` shows it.
@@ -93,6 +102,15 @@ Files shared with the Python server, so the launcher's `status`/`stop`/`start` a
 work unchanged: the instance lock (`$MEGACHAT_LOCK_FILE`, default `/tmp/signal-tui.lock`, holds the
 pid; SIGINT = clean stop), the Unix socket and the runtime file `server.json` next to it (pid), and the
 log `/tmp/signal-tui.log`.
+
+## Upgrading from an implicit-enable build
+
+Existing installs must add the flags for the backends they use: `SIGNAL_ENABLED=1`,
+`WHATSAPP_ENABLED=1`, `TELEGRAM_ENABLED=1`, `GMAIL_ENABLED=1`. When an integration is off but
+still has evidence of earlier use (a Signal user number, `<data>/whatsmeow.db` or a legacy
+`WHATSAPP_API_URL`, Telegram credentials, Gmail credentials), startup logs one warning and appends
+one Italian notice to `App.Notices` (shown by `launcher.py server start`) naming the flag to set.
+The disabled log line for each integration names its flag too.
 
 ## Smoke tests
 

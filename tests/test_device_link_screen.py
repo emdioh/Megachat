@@ -51,6 +51,7 @@ class TestDeviceLinkPickerScreen:
         assert screen._phase == "picker"
         assert screen._selected_protocol == ""
         assert screen._signal_number == ""
+        assert screen._has_signal is True
         assert screen._has_whatsapp is False
         assert screen._force_phone_input is False
 
@@ -122,21 +123,36 @@ class TestDeviceLinkPickerScreen:
         assert screen._selected_protocol == ""
 
     def test_unavailable_protocols_explain_required_setup(self):
-        screen = DeviceLinkPickerScreen()
+        screen = DeviceLinkPickerScreen(
+            has_signal=False, has_whatsapp=False, has_telegram=False
+        )
 
+        assert screen._protocol_unavailable_reason("signal") == (
+            "set SIGNAL_ENABLED=1 and restart the server"
+        )
         assert screen._protocol_unavailable_reason("whatsapp") == (
             "set WHATSAPP_ENABLED=1 and restart the server"
         )
         assert screen._protocol_unavailable_reason("telegram") == (
-            "set TELEGRAM_API_ID and TELEGRAM_API_HASH"
+            "set TELEGRAM_ENABLED=1, TELEGRAM_API_ID and TELEGRAM_API_HASH "
+            "and restart the server"
         )
-        assert screen._protocol_unavailable_reason("signal") == ""
+
+        enabled = DeviceLinkPickerScreen(
+            signal_number="+39123",
+            has_signal=True,
+            has_whatsapp=True,
+            has_telegram=True,
+        )
+        for protocol in ("signal", "whatsapp", "telegram"):
+            assert enabled._protocol_unavailable_reason(protocol) == ""
 
     def test_select_unavailable_protocol_is_noop(self):
-        screen = DeviceLinkPickerScreen()
+        screen = DeviceLinkPickerScreen(has_signal=False)
         screen._transition_to_phone = MagicMock()
         screen._transition_to_qr = MagicMock()
 
+        screen._select_protocol(0)
         screen._select_protocol(1)
         screen._select_protocol(2)
 
@@ -970,6 +986,7 @@ class TestDeviceLinkOpening:
             app._open_device_link()
         screen_cls.assert_called_once_with(
             signal_number="+39123",
+            has_signal=True,
             has_whatsapp=True,
             has_telegram=False,
             client=app.client,

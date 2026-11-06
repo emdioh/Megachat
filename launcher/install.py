@@ -473,10 +473,13 @@ def run(args) -> int:
     print(f"{C_GREEN}{C_BOLD}=== Installazione completata! ==={C_RESET}")
     print()
     print("Prossimi passi:")
-    print("  1. Configura il tuo numero di telefono:")
+    print("  1. Abilita Signal (megachatd) e configura il tuo numero di telefono:")
     print('       export SIGNAL_USER_NUMBER="+1234567890"')
+    print("       echo 'SIGNAL_ENABLED=1' >> .env")
     print("     oppure crea config.json:")
-    print("""       echo '{"user_number": "+1234567890"}' > config.json""")
+    print(
+        """       echo '{"signal_enabled": true, "user_number": "+1234567890"}' > config.json"""
+    )
     print("  2. Collega il tuo account Signal (QR code):")
     if do_venv:
         print("       source .venv/bin/activate")
@@ -484,13 +487,22 @@ def run(args) -> int:
     print("  3. (Opzionale) Abilita e collega WhatsApp (QR code, nessun Docker):")
     print("       echo 'WHATSAPP_ENABLED=1' >> .env")
     print("       python3 link_whatsapp.py")
-    print("  4. Avvia il client:")
+    print("  4. (Opzionale) Abilita Telegram:")
+    print("       echo 'TELEGRAM_ENABLED=1' >> .env")
+    print(
+        "       # aggiungi TELEGRAM_API_ID e TELEGRAM_API_HASH a .env, poi Ctrl+L nella TUI"
+    )
+    print("  5. Avvia il client:")
     if do_venv:
         print("       source .venv/bin/activate")
     print("       python3 signal_tui.py")
     if do_web:
         print("       Web UI: http://127.0.0.1:4242")
         print("       Token:  config.json → web.token")
+        print(
+            "       Gmail (opzionale): python3 scripts/gmail_setup.py "
+            "(scrive GMAIL_ENABLED=1 in .env)"
+        )
     print()
     env_file = PROJECT_DIR / ".env"
     try:

@@ -217,6 +217,7 @@ class DeviceLinkPickerScreen(ModalScreen[None]):
     def __init__(
         self,
         signal_number: str = "",
+        has_signal: bool = True,
         has_whatsapp: bool = False,
         has_telegram: bool = False,
         force_phone_input: bool = False,
@@ -228,6 +229,8 @@ class DeviceLinkPickerScreen(ModalScreen[None]):
         #: Thread of the last background ``link.cancel`` (see ``dismiss``).
         self.cancel_thread: threading.Thread | None = None
         self._signal_number = signal_number
+        #: ``True`` when the server registered the backend (link.* available).
+        self._has_signal = has_signal
         self._has_whatsapp = has_whatsapp
         self._has_telegram = has_telegram
         self._force_phone_input = force_phone_input
@@ -748,10 +751,15 @@ class DeviceLinkPickerScreen(ModalScreen[None]):
 
     def _protocol_unavailable_reason(self, protocol: str) -> str:
         """Explain why an optional protocol cannot start its linking flow."""
+        if protocol == "signal" and not self._has_signal:
+            return "set SIGNAL_ENABLED=1 and restart the server"
         if protocol == "whatsapp" and not self._has_whatsapp:
             return "set WHATSAPP_ENABLED=1 and restart the server"
         if protocol == "telegram" and not self._has_telegram:
-            return "set TELEGRAM_API_ID and TELEGRAM_API_HASH"
+            return (
+                "set TELEGRAM_ENABLED=1, TELEGRAM_API_ID and TELEGRAM_API_HASH "
+                "and restart the server"
+            )
         return ""
 
     def _select_protocol(self, index: int) -> None:

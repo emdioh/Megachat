@@ -151,10 +151,17 @@ class TestFinalBanner:
         assert wired["megachatd"] is True
         assert "whatsapp_setup" not in wired
 
-    def test_always_explains_native_whatsapp_pairing(self, wired, capsys):
+    def test_always_explains_how_to_enable_each_integration(self, wired, capsys):
         install.run(_args())
         out = capsys.readouterr().out
-        assert "WHATSAPP_ENABLED=1" in out
+        for flag in (
+            "SIGNAL_ENABLED=1",
+            "WHATSAPP_ENABLED=1",
+            "TELEGRAM_ENABLED=1",
+            "GMAIL_ENABLED=1",
+        ):
+            assert flag in out
+        assert "link_account.py" in out
         assert "link_whatsapp.py" in out
 
     def test_python_fallback_note_points_to_waha_flag(self, wired, tmp_path, capsys):

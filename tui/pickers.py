@@ -160,6 +160,7 @@ class PickerMixin:
         """UI thread: open the device link modal for the server's link *status*."""
         screen = DeviceLinkPickerScreen(
             signal_number=status["signal"]["account"],
+            has_signal=status["signal"]["available"],
             has_whatsapp=status["whatsapp"]["available"],
             has_telegram=status["telegram"]["available"],
             client=self.client,
