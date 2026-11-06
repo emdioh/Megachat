@@ -278,6 +278,39 @@ func TestLifecycle(t *testing.T) {
 	}
 }
 
+func TestRestartBackendForcesReconnect(t *testing.T) {
+	m := proto.New()
+	f := fake.New("signal")
+	m.Register(f)
+	if err := m.Start(ctx5(t)); err != nil {
+		t.Fatal(err)
+	}
+	defer m.Stop(ctx5(t))
+	// StartBackend is the idempotent start: a connected slot is skipped.
+	if err := m.StartBackend(ctx5(t), "signal"); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(f.CallsTo("Connect")); n != 1 {
+		t.Fatalf("StartBackend reconnected a connected backend: %d connects", n)
+	}
+	// RestartBackend tears the session down first, so it cannot be skipped.
+	if err := m.RestartBackend(ctx5(t), "signal"); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(f.CallsTo("Connect")); n != 2 {
+		t.Fatalf("RestartBackend did not reconnect: %d connects", n)
+	}
+	if n := len(f.CallsTo("Disconnect")); n != 1 {
+		t.Fatalf("RestartBackend did not disconnect first: %d disconnects", n)
+	}
+	if st := m.Status()[0]; st.State != proto.StateConnected || !st.Connected {
+		t.Fatalf("%+v", st)
+	}
+	if err := m.RestartBackend(ctx5(t), "zzz"); !errors.Is(err, proto.ErrNoBackend) {
+		t.Fatal(err)
+	}
+}
+
 func TestStopDisconnectErrorsAreIsolated(t *testing.T) {
 	m := proto.New()
 	a, b := fake.New("signal"), fake.New("whatsapp")

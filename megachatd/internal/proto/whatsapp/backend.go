@@ -479,14 +479,23 @@ func (b *Backend) NeedsPairing() bool {
 // waits for the QR flow (NeedsPairing is true).
 func (b *Backend) Connect(ctx context.Context) error {
 	b.stopped.Store(false)
+	reconnect := false
 	b.lifeMu.Lock()
 	select {
 	case <-b.closed:
 		b.closed = make(chan struct{}) // reconnect after a Disconnect
 		b.lifeCtx, b.lifeCancel = context.WithCancel(context.Background())
+		reconnect = true
 	default:
 	}
 	b.lifeMu.Unlock()
+	if reconnect {
+		// Disconnect stopped the session guard together with the websocket.
+		// The guard belongs to the session (lifecycleCtx is cancelled by the
+		// next Disconnect), so a reconnect must start it again; on a cold
+		// start the app does that itself.
+		b.guard.Start(b.lifecycleCtx())
+	}
 	b.loadProtocolCache(ctx)
 	cli, err := b.ensureClient(ctx)
 	if err != nil {
