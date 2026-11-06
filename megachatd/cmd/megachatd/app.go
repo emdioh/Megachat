@@ -59,9 +59,9 @@ type App struct {
 	Core     *core.Core
 	Registry *ops.Registry
 
-	Signal   *signal.Backend
+	Signal   *signal.Backend   // nil unless enabled
 	WhatsApp *whatsapp.Backend // nil unless enabled
-	Telegram *telegram.Backend // nil unless configured
+	Telegram *telegram.Backend // nil unless enabled with credentials
 
 	Linking    *linking.Service
 	Transcribe *transcribe.Service
@@ -86,6 +86,30 @@ const whatsappRelinkMarker = ".whatsapp-relink-notice"
 const WhatsAppRelinkNotice = "ℹ️  WhatsApp: la sessione WAHA non è migrabile. " +
 	"Collega di nuovo WhatsApp con un QR (python3 link_whatsapp.py, oppure dalla TUI: " +
 	"Collega dispositivo). Telegram riusa la sessione esistente."
+
+// The *DisabledNotice messages are the one-per-start migration notices of the
+// default-off integrations: an install that already has credentials / a session
+// would otherwise silently lose the backend after the upgrade.
+const (
+	SignalDisabledNotice = "ℹ️  Signal: un account Signal è già configurato ma l'integrazione è " +
+		"disattivata. Aggiungi SIGNAL_ENABLED=1 al file .env e riavvia per riattivarla."
+	WhatsAppDisabledNotice = "ℹ️  WhatsApp: una sessione WhatsApp è già presente ma l'integrazione è " +
+		"disattivata. Aggiungi WHATSAPP_ENABLED=1 al file .env e riavvia per riattivarla."
+	TelegramDisabledNotice = "ℹ️  Telegram: le credenziali Telegram sono già configurate ma l'integrazione è " +
+		"disattivata. Aggiungi TELEGRAM_ENABLED=1 al file .env e riavvia per riattivarla."
+	GmailDisabledNotice = "ℹ️  Gmail: le credenziali Gmail sono già configurate ma l'integrazione è " +
+		"disattivata. Aggiungi GMAIL_ENABLED=1 al file .env e riavvia per riattivarla."
+)
+
+// migrationNotice logs the one Warn and appends the one user-facing notice that
+// tells an existing install which flag re-enables the integration.
+func (a *App) migrationNotice(previouslyConfigured bool, notice string) {
+	if !previouslyConfigured {
+		return
+	}
+	a.Notices = append(a.Notices, notice)
+	a.Log.Warn(notice)
+}
 
 // whatsappRelinkNeeded reports whether the notice is due: WhatsApp is enabled,
 // no whatsmeow.db exists yet and the notice was not shown before. It records
@@ -123,11 +147,16 @@ func Build(o BuildOptions) (*App, error) {
 
 	register := func(b proto.Backend) error { return a.Manager.Register(b) }
 	if !o.OnlyExtraBackends {
-		// Signal is always registered (ChatCore.__init__); it only auto-connects
-		// when signal_enabled(). WhatsApp / Telegram only when configured.
-		a.Signal = signal.New(signal.Options{Config: cfg, Store: st, Logger: log})
-		if err := register(a.Signal); err != nil {
-			return nil, err
+		// Every backend is registered only when its explicit flag is on, so a
+		// disabled integration is never started (no connect worker, no daemon).
+		if cfg.SignalEnabled() {
+			a.Signal = signal.New(signal.Options{Config: cfg, Store: st, Logger: log})
+			if err := register(a.Signal); err != nil {
+				return nil, err
+			}
+		} else {
+			log.Info("Signal backend disabled (enable with SIGNAL_ENABLED=1 in .env or \"signal_enabled\": true in config.json)")
+			a.migrationNotice(cfg.SignalPreviouslyConfigured(), SignalDisabledNotice)
 		}
 		if cfg.WhatsAppEnabled() {
 			if whatsappRelinkNeeded(cfg) {
@@ -140,13 +169,29 @@ func Build(o BuildOptions) (*App, error) {
 			}
 		} else {
 			log.Info("WhatsApp backend disabled (enable with WHATSAPP_ENABLED=1 in .env or \"whatsapp_enabled\": true in config.json)")
+			a.migrationNotice(cfg.WhatsAppPreviouslyConfigured(), WhatsAppDisabledNotice)
 		}
-		if cfg.TelegramEnabled() && cfg.TelegramCredentials() {
+		switch {
+		case cfg.TelegramEnabled() && cfg.TelegramCredentials():
 			telegram.RunMarkedIDsMigration(context.Background(), cfg, st, log)
 			a.Telegram = telegram.New(telegram.Options{Config: cfg, Store: st, Logger: log})
 			if err := register(a.Telegram); err != nil {
 				return nil, err
 			}
+		case cfg.TelegramEnabled():
+			log.Warn("Telegram backend not started: TELEGRAM_ENABLED=1 but TELEGRAM_API_ID and/or TELEGRAM_API_HASH are missing")
+		default:
+			log.Info("Telegram backend disabled (enable with TELEGRAM_ENABLED=1 in .env or \"telegram_enabled\": true in config.json)")
+			a.migrationNotice(cfg.TelegramPreviouslyConfigured(), TelegramDisabledNotice)
+		}
+		switch {
+		case cfg.GmailEnabled():
+			// explicit flag + credentials: the service and its watcher start.
+		case cfg.GmailFlagEnabled():
+			log.Warn("Gmail not started: GMAIL_ENABLED=1 but GMAIL_ADDRESS and/or GMAIL_APP_PASSWORD are missing")
+		default:
+			log.Info("Gmail disabled (enable with GMAIL_ENABLED=1 in .env or \"gmail_enabled\": true in config.json)")
+			a.migrationNotice(cfg.GmailPreviouslyConfigured(), GmailDisabledNotice)
 		}
 	}
 	for _, b := range o.ExtraBackends {
@@ -166,16 +211,14 @@ func Build(o BuildOptions) (*App, error) {
 	copts := []core.Option{
 		core.WithLogger(log),
 		core.WithUploadValidator(uploadValidator),
-		core.WithGmailFetch(func(ctx context.Context) (core.GmailStatus, error) {
+	}
+	if cfg.GmailEnabled() {
+		// Off means no unread watcher at all; the service then answers every
+		// gmail.* operation like an unconfigured Gmail.
+		copts = append(copts, core.WithGmailFetch(func(ctx context.Context) (core.GmailStatus, error) {
 			s, err := a.Gmail.FetchUnreadStatus(ctx, nil)
 			return core.GmailStatus{Unread: s.Unread, UIDNext: s.UIDNext}, err
-		}),
-		core.WithAutoConnect(func(protocol string) bool {
-			if protocol == api.ProtocolSignal && !o.OnlyExtraBackends {
-				return cfg.SignalEnabled()
-			}
-			return true
-		}),
+		}))
 	}
 	if o.LogBuffer != nil {
 		copts = append(copts, core.WithLogBuffer(o.LogBuffer))

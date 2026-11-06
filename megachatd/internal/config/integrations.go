@@ -122,8 +122,15 @@ func (c *Config) GmailCredentials() bool {
 // address and App Password), for the migration notice.
 func (c *Config) GmailPreviouslyConfigured() bool { return c.GmailCredentials() }
 
+// GmailFlagEnabled is the explicit GMAIL_ENABLED flag alone, without the
+// credential requirement; wiring uses it to tell "off" from "on but not
+// startable".
+func (c *Config) GmailFlagEnabled() bool {
+	return c.ExplicitFlag("gmail_enabled", "GMAIL_ENABLED")
+}
+
 // GmailEnabled is ON only with the explicit GMAIL_ENABLED flag AND the
 // credentials to start the service.
 func (c *Config) GmailEnabled() bool {
-	return c.ExplicitFlag("gmail_enabled", "GMAIL_ENABLED") && c.GmailCredentials()
+	return c.GmailFlagEnabled() && c.GmailCredentials()
 }

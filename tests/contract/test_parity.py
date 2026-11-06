@@ -69,8 +69,8 @@ def test_messages_page_since_cuts(go_seeded, py_seeded):
 
 @pytest.mark.parametrize("proto,cid", [c for c in CHATS if c[0] == "signal"])
 def test_messages_window(go_seeded, py_seeded, proto, cid):
-    # Only the Signal backend (always registered, cache loaded from the DB)
-    # exists on both servers without credentials.
+    # Only the Signal backend (registered by the fixture, cache loaded from the
+    # DB) exists on both servers without credentials.
     assert_same(go_seeded, py_seeded, "messages.window", {"protocol": proto, "contact_id": cid})
     assert len(go_seeded.call("messages.window", {"protocol": proto, "contact_id": cid})["messages"]) == 7
 
@@ -226,8 +226,11 @@ def test_unknown_operation_error_code(go_seeded, py_seeded):
 
 # -- HTTP ------------------------------------------------------------------------------
 
-#: Skipped from the body diff: volatile (log lines carry ports and times).
-HTTP_VOLATILE = {"/api/logs?limit=5", "/api/link/status"}  # link/status: SIGNAL_ENABLED differs, see test_link_status_shape_matches
+#: Skipped from the body diff: volatile (log lines carry ports and times) or
+#: flag-dependent. /api/link/status differs because SIGNAL_ENABLED differs (see
+#: test_link_status_shape_matches); /api/link/submit_2fa names the
+#: TELEGRAM_ENABLED flag in Go while the Python server has no flags.
+HTTP_VOLATILE = {"/api/logs?limit=5", "/api/link/status", "/api/link/submit_2fa"}
 
 
 def _hdrs(resp, keys=("content-type", "cache-control", "www-authenticate", "accept-ranges", "content-range")):

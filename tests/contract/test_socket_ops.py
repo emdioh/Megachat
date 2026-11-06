@@ -9,7 +9,7 @@ import socket
 import time
 
 import pytest
-from harness import Server
+from harness import Server, start_server
 
 from server.api import ApiError
 from server.socket_client import SocketClient
@@ -160,7 +160,49 @@ def test_link_status_and_required(go_server: Server):
     assert set(st) == {"signal", "telegram", "whatsapp"}
     for body in st.values():
         assert set(body) == {"available", "account", "linked"}
+        assert body["available"] is False  # no <X>_ENABLED flags in the fixture
     assert go_server.call("link.required") == {"protocols": {"whatsapp": False}}
+
+
+def test_no_flags_exposes_no_backends(go_server: Server):
+    """Default-off: no flag means no chat backend registered and Gmail off."""
+    assert go_server.call("server.status") == {"signal": False, "whatsapp": False, "telegram": False}
+    st = go_server.call("link.status")["protocols"]
+    assert {p: body["available"] for p, body in st.items()} == {
+        "signal": False, "whatsapp": False, "telegram": False,
+    }
+    assert go_server.call("gmail.status")["configured"] is False
+    assert go_server.call("gmail.unread")["unread"] == 0
+    # A disabled protocol has no backend, so its contact snapshot is unavailable.
+    e = err_of(go_server, "contacts.for_protocol", {"protocol": "signal"})
+    assert (e.code, e.message) == ("backend_down", "Backend unavailable")
+
+
+def test_link_start_disabled_names_the_flag(go_server: Server):
+    for proto, flag in (("signal", "SIGNAL_ENABLED"), ("whatsapp", "WHATSAPP_ENABLED"),
+                        ("telegram", "TELEGRAM_ENABLED")):
+        e = err_of(go_server, "link.start", {"protocol": proto})
+        assert e.code == "backend_down" and f"{flag}=1" in e.message, (proto, e.message)
+    e = err_of(go_server, "link.submit_2fa", {"password": "x"})
+    assert e.code == "backend_down" and "TELEGRAM_ENABLED=1" in e.message
+
+
+def test_flags_start_exactly_their_integration(go_binary):
+    # SIGNAL_ENABLED registers Signal; TELEGRAM_ENABLED without credentials and
+    # GMAIL_ENABLED without credentials must not start anything.
+    srv = start_server("go", binary=go_binary, extra_env={
+        "SIGNAL_ENABLED": "1",
+        "TELEGRAM_ENABLED": "1",
+        "GMAIL_ENABLED": "1",
+    })
+    try:
+        st = srv.call("link.status")["protocols"]
+        assert st["signal"]["available"] is True
+        assert st["whatsapp"]["available"] is False
+        assert st["telegram"]["available"] is False
+        assert srv.call("gmail.status")["configured"] is False
+    finally:
+        srv.stop()
 
 
 def test_gmail_status_unconfigured(go_server: Server):
@@ -201,13 +243,16 @@ def test_gmail_image_unknown_token(go_server: Server):
 def test_contacts_empty(go_server: Server):
     assert go_server.call("contacts.list") == []
     assert go_server.call("contacts.book", {"q": ""}) == []
-    assert go_server.call("contacts.for_protocol", {"protocol": "signal"}) == []
     assert go_server.call("contacts.address_book") == {"contacts": [], "errors": {}}
     assert go_server.call("contacts.check_number", {"phone": "+390000"}) == {"exists": None}
 
 
-def test_contacts_register_then_list(go_fresh: Server):
-    srv = go_fresh
+def test_contacts_for_protocol_with_registered_backend(go_signal: Server):
+    assert go_signal.call("contacts.for_protocol", {"protocol": "signal"}) == []
+
+
+def test_contacts_register_then_list(go_signal: Server):
+    srv = go_signal
     reg = srv.call("contacts.register", {"id": " x1 ", "display_name": "X One", "protocol": "signal"})
     assert reg["id"] == "x1" and reg["cache_key"] == "signal:x1"
     assert reg["extras"] == {"ghost": True}

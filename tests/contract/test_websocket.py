@@ -12,6 +12,19 @@ from harness import TOKEN, Server, WSConn, b64url
 BEARER = {"Authorization": f"Bearer {TOKEN}"}
 SUB_OK = ["signal-tui-bearer", f"signal-tui-token.{b64url(TOKEN)}"]
 
+
+def recv_until(ws, type_: str, timeout: float = 5.0):
+    """Read frames until one of *type_* shows up (startup events are async)."""
+    deadline = time.monotonic() + timeout
+    while True:
+        left = deadline - time.monotonic()
+        if left <= 0:
+            raise AssertionError(f"no {type_!r} frame within {timeout}s")
+        frame = ws.recv_json(left)
+        if frame.get("type") == type_:
+            return frame
+
+
 #: (id, path, subprotocols, headers, expected status, selected subprotocol).
 #: Shared with test_parity.py: the Python server must answer the same.
 HANDSHAKES = [
@@ -55,13 +68,17 @@ def test_handshake_no_auth_server(go_binary):
         srv.stop()
 
 
-def test_v2_since_zero_replays_from_the_ring(go_server: Server):
-    ws = WSConn.open(go_server.port, "/ws/v2?since=0", headers=BEARER)
+def test_v2_since_zero_replays_from_the_ring(go_signal: Server):
+    # SIGNAL_ENABLED=1: the registered backend publishes backend_connecting,
+    # two backend_status frames and backend_done (its connect has no account).
+    ws = WSConn.open(go_signal.port, "/ws/v2?since=0", headers=BEARER)
     try:
         first = ws.recv_json(5)
         assert first["seq"] == 1 and set(first) == {"seq", "type", "payload", "ts"}
-        assert first["type"] == "backend_done"
-        assert first["payload"] == {"protocol": "signal", "ok": False}
+        assert first["type"] == "backend_connecting"
+        assert first["payload"] == {"protocol": "signal"}
+        done = recv_until(ws, "backend_done")
+        assert done["payload"] == {"protocol": "signal", "ok": False}
     finally:
         ws.close()
 
@@ -69,26 +86,27 @@ def test_v2_since_zero_replays_from_the_ring(go_server: Server):
 def test_v2_since_future_is_clamped_and_live_only(go_server: Server):
     ws = WSConn.open(go_server.port, "/ws/v2?since=999999", headers=BEARER)
     try:
-        # nothing to replay; the next frame is the heartbeat, never an old event
+        # no backend on this server: nothing to replay, the next frame is the
+        # heartbeat, never an old event
         frame = ws.recv_json(8)
         assert frame == {"type": "heartbeat"}
     finally:
         ws.close()
 
 
-def test_v2_subscribe_frame_restarts_the_stream(go_server: Server):
-    ws = WSConn.open(go_server.port, "/ws/v2", headers=BEARER)
+def test_v2_subscribe_frame_restarts_the_stream(go_signal: Server):
+    ws = WSConn.open(go_signal.port, "/ws/v2", headers=BEARER)
     try:
         ws.send_json({"type": "subscribe", "since": 0})
         frame = ws.recv_json(5)
-        assert frame["seq"] == 1 and frame["type"] == "backend_done"
+        assert frame["seq"] == 1 and frame["type"] == "backend_connecting"
     finally:
         ws.close()
 
 
 @pytest.mark.parametrize("since", [True, -1, 1.5, "junk", [1]])
-def test_v2_invalid_subscribe(go_server: Server, since):
-    ws = WSConn.open(go_server.port, "/ws/v2", headers=BEARER)
+def test_v2_invalid_subscribe(go_signal: Server, since):
+    ws = WSConn.open(go_signal.port, "/ws/v2", headers=BEARER)
     try:
         ws.send_json({"type": "subscribe", "since": since})
         assert ws.recv_json(5) == {"type": "error", "payload": {"reason": "invalid_subscribe"}}
@@ -99,8 +117,8 @@ def test_v2_invalid_subscribe(go_server: Server, since):
         ws.close()
 
 
-def test_v2_ignores_non_subscribe_frames(go_server: Server):
-    ws = WSConn.open(go_server.port, "/ws/v2", headers=BEARER)
+def test_v2_ignores_non_subscribe_frames(go_signal: Server):
+    ws = WSConn.open(go_signal.port, "/ws/v2", headers=BEARER)
     try:
         ws._send(1, b"not json")
         ws.send_json({"type": "hello"})
