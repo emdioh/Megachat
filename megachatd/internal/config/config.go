@@ -113,11 +113,18 @@ func (c *Config) LoadFile() map[string]any {
 // handling) and returns it. Settings never come from here; the startup warning
 // uses the key names and "config migrate" folds the values into config.json.
 func (c *Config) ReadDotenv() map[string]string {
-	out := map[string]string{}
 	data, err := os.ReadFile(c.DotenvPath())
 	if err != nil {
-		return out
+		return map[string]string{}
 	}
+	return ParseDotenv(data)
+}
+
+// ParseDotenv parses KEY=VALUE lines, skipping blanks and comments and
+// trimming both sides. It is the single .env parser used by the warning and
+// the migration command.
+func ParseDotenv(data []byte) map[string]string {
+	out := map[string]string{}
 	for _, raw := range strings.Split(string(data), "\n") {
 		line := strings.TrimSpace(raw)
 		if line == "" || strings.HasPrefix(line, "#") || !strings.Contains(line, "=") {
