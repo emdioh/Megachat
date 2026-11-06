@@ -1,7 +1,6 @@
 package config
 
 import (
-	"net"
 	"os/exec"
 	"path/filepath"
 	"strconv"
@@ -77,20 +76,6 @@ func (c *Config) WhatsAppBrowserOS() string {
 	return strings.TrimSpace(c.Get("whatsapp_browser_os", "WHATSAPP_BROWSER_OS", ""))
 }
 
-// WhatsAppEnabled is true when an API URL is configured or a local WAHA
-// answers on the default port (auto-detect, 1s timeout).
-func (c *Config) WhatsAppEnabled() bool {
-	if c.WhatsAppAPIURL() != "" {
-		return true
-	}
-	conn, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(c.WhatsAppAPIPort())), time.Second)
-	if err != nil {
-		return false
-	}
-	_ = conn.Close()
-	return true
-}
-
 // WhatsAppWebhookPort is CLIENT_WEBHOOK_PORT (default 8088).
 func (c *Config) WhatsAppWebhookPort() int {
 	raw := c.Env("CLIENT_WEBHOOK_PORT")
@@ -141,11 +126,6 @@ func (c *Config) TelegramAPIHash() string {
 	return strings.TrimSpace(c.LoadDotenv()["TELEGRAM_API_HASH"])
 }
 
-// TelegramEnabled: credentials configured.
-func (c *Config) TelegramEnabled() bool {
-	return c.TelegramAPIID() != 0 && c.TelegramAPIHash() != ""
-}
-
 // TelegramReactionsNotify is TELEGRAM_REACTIONS_NOTIFY (default on; read
 // directly from the environment in protocols/telegram.py).
 func (c *Config) TelegramReactionsNotify() bool {
@@ -171,28 +151,6 @@ func (c *Config) SignalUserNumber() string {
 		return pyStr(v)
 	}
 	return ""
-}
-
-// SignalEnabled: explicit SIGNAL_ENABLED (env, config signal_enabled, .env)
-// wins; otherwise enabled only when a user number is configured.
-func (c *Config) SignalEnabled() bool {
-	var explicit string
-	set := false
-	if v, ok := c.envSet("SIGNAL_ENABLED"); ok {
-		explicit, set = v, true
-	} else if v, ok := c.LoadFile()["signal_enabled"]; ok {
-		explicit, set = pyStr(v), true
-	} else if v, ok := c.LoadDotenv()["SIGNAL_ENABLED"]; ok {
-		explicit, set = v, true
-	}
-	if set && strings.TrimSpace(explicit) != "" {
-		switch strings.ToLower(strings.TrimSpace(explicit)) {
-		case "1", "true", "yes", "on":
-			return true
-		}
-		return false
-	}
-	return strings.TrimSpace(c.SignalUserNumber()) != ""
 }
 
 // Signal daemon constants (protocols/rpc.py).
@@ -513,9 +471,6 @@ func (c *Config) GmailAppPassword() string {
 	}
 	return c.getGmail("gmail_app_password", "GMAIL_APP_PASSWORD", "")
 }
-
-// GmailEnabled: address and App Password both configured.
-func (c *Config) GmailEnabled() bool { return c.GmailAddress() != "" && c.GmailAppPassword() != "" }
 
 func (c *Config) secretFromFile(raw string) string {
 	p := expandHome(raw, c.Home)
