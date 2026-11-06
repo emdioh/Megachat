@@ -105,47 +105,6 @@ func whatsappRelinkNeeded(cfg *config.Config) bool {
 	return true
 }
 
-// whatsappEnabled decides whether the WhatsApp backend is registered. Python
-// registered it when a WAHA URL was configured or a local WAHA answered; the Go
-// backend is native (whatsmeow) and has no service to probe, so it is enabled
-// by an explicit WHATSAPP_ENABLED (environment, config.json "whatsapp_enabled"
-// or .env), by a previously paired device store (<data>/whatsmeow.db), or by a
-// legacy WHATSAPP_API_URL (an existing WAHA install being migrated).
-func whatsappEnabled(cfg *config.Config) bool {
-	if v, ok := lookupBool(cfg.Env("WHATSAPP_ENABLED")); ok {
-		return v
-	}
-	if raw, ok := cfg.LoadFile()["whatsapp_enabled"]; ok {
-		switch t := raw.(type) {
-		case bool:
-			return t
-		case string:
-			if v, ok := lookupBool(t); ok {
-				return v
-			}
-		}
-	}
-	// The documented way to enable WhatsApp is `echo WHATSAPP_ENABLED=1 >> .env`
-	// (README, install.sh, link_whatsapp.py); the same source as SIGNAL_ENABLED.
-	if v, ok := lookupBool(cfg.LoadDotenv()["WHATSAPP_ENABLED"]); ok {
-		return v
-	}
-	if _, err := os.Stat(filepath.Join(cfg.DataDir(), "whatsmeow.db")); err == nil {
-		return true
-	}
-	return cfg.WhatsAppAPIURL() != ""
-}
-
-func lookupBool(s string) (value, set bool) {
-	switch strings.ToLower(strings.TrimSpace(s)) {
-	case "1", "true", "yes", "on":
-		return true, true
-	case "0", "false", "no", "off":
-		return false, true
-	}
-	return false, false
-}
-
 // Build wires every package together (nothing runs until Start).
 func Build(o BuildOptions) (*App, error) {
 	cfg, log := o.Config, o.Log
@@ -170,7 +129,7 @@ func Build(o BuildOptions) (*App, error) {
 		if err := register(a.Signal); err != nil {
 			return nil, err
 		}
-		if whatsappEnabled(cfg) {
+		if cfg.WhatsAppEnabled() {
 			if whatsappRelinkNeeded(cfg) {
 				a.Notices = append(a.Notices, WhatsAppRelinkNotice)
 				log.Warn(WhatsAppRelinkNotice)
@@ -182,7 +141,7 @@ func Build(o BuildOptions) (*App, error) {
 		} else {
 			log.Info("WhatsApp backend disabled (enable with WHATSAPP_ENABLED=1 in .env or \"whatsapp_enabled\": true in config.json)")
 		}
-		if cfg.TelegramEnabled() {
+		if cfg.TelegramEnabled() && cfg.TelegramCredentials() {
 			telegram.RunMarkedIDsMigration(context.Background(), cfg, st, log)
 			a.Telegram = telegram.New(telegram.Options{Config: cfg, Store: st, Logger: log})
 			if err := register(a.Telegram); err != nil {

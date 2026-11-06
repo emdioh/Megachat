@@ -132,8 +132,12 @@ func TestInvalidFileIgnored(t *testing.T) {
 
 func TestSignalAndTelegramAndDotenv(t *testing.T) {
 	c := newCfg(t, nil, `{"user_number":"+391"}`)
-	if !c.SignalEnabled() || c.SignalUserNumber() != "+391" {
-		t.Fatal("signal via number")
+	if c.SignalEnabled() || !c.SignalPreviouslyConfigured() || c.SignalUserNumber() != "+391" {
+		t.Fatal("signal via number is evidence, not an enable")
+	}
+	c = newCfg(t, map[string]string{"SIGNAL_ENABLED": "1"}, `{"user_number":"+391"}`)
+	if !c.SignalEnabled() {
+		t.Fatal("explicit on")
 	}
 	c = newCfg(t, map[string]string{"SIGNAL_ENABLED": "0"}, `{"user_number":"+391"}`)
 	if c.SignalEnabled() {
@@ -142,7 +146,7 @@ func TestSignalAndTelegramAndDotenv(t *testing.T) {
 	c = newCfg(t, nil, "")
 	os.WriteFile(filepath.Join(c.ProjectDir, ".env"),
 		[]byte("# c\nTELEGRAM_API_ID=123\nTELEGRAM_API_HASH = abc \nWAHA_API_KEY=k1\nGMAIL_ADDRESS=a@b\n"), 0o644)
-	if c.TelegramAPIID() != 123 || c.TelegramAPIHash() != "abc" || !c.TelegramEnabled() {
+	if c.TelegramAPIID() != 123 || c.TelegramAPIHash() != "abc" || c.TelegramEnabled() || !c.TelegramCredentials() {
 		t.Fatal("telegram from .env")
 	}
 	if c.WhatsAppAPIKey() != "k1" || c.GmailAddress() != "a@b" {
@@ -252,7 +256,7 @@ func TestGmailSecrets(t *testing.T) {
 	c := newCfg(t, nil, "")
 	os.WriteFile(filepath.Join(c.ProjectDir, "pw"), []byte(" secret\n"), 0o600)
 	c.LookupEnv = func(k string) (string, bool) {
-		m := map[string]string{"GMAIL_ADDRESS": "a@b", "GMAIL_APP_PASSWORD_FILE": "pw"}
+		m := map[string]string{"GMAIL_ENABLED": "1", "GMAIL_ADDRESS": "a@b", "GMAIL_APP_PASSWORD_FILE": "pw"}
 		v, ok := m[k]
 		return v, ok
 	}
