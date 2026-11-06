@@ -5,7 +5,7 @@ Talks to the running server (``megachatd``, started on demand like the TUI does)
 with the ``link.*`` operations, the same ones the TUI's device-link screen uses:
 ``link.status`` -> ``link.start`` (QR) -> ``link.poll`` until the phone has
 scanned it.  No WAHA / Docker involved.  WhatsApp must be enabled
-(``WHATSAPP_ENABLED=1`` or ``"whatsapp_enabled": true`` in config.json).
+(``WHATSAPP_ENABLED=1`` or ``"whatsapp": {"enabled": true}`` in config.json).
 
 Mirrors ``link_account.py`` (the Signal linking flow).
 
@@ -109,8 +109,8 @@ def main() -> None:
         if not status.get("available"):
             print("❌ Il backend WhatsApp non è attivo nel server.", file=sys.stderr)
             print(
-                "   Abilitalo con WHATSAPP_ENABLED=1 (in .env) oppure "
-                '"whatsapp_enabled": true in config.json,',
+                "   Abilitalo con WHATSAPP_ENABLED=1 oppure "
+                '"whatsapp": { "enabled": true } in config.json,',
                 file=sys.stderr,
             )
             print(

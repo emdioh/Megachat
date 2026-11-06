@@ -16,7 +16,7 @@ END_MARKER = "# ── END signal-tui aliases ──"
 # Re-run ``launcher.py aliases`` to refresh an installed block.  Starting and
 # stopping go through ``launcher.py server`` (one implementation for both).
 _ALIASES_TEMPLATE = r"""# ─── Signal TUI Client: web reader + background via megachat serve ───────
-# Web su 0.0.0.0:4242. Token Bearer: config.json (web.token) o SIGNAL_TUI_WEB_TOKEN.
+# Web su 0.0.0.0:4242. Token Bearer: config.json (web.token) o WEB_TOKEN.
 # web-signal-tui-bg stampa ed esporta il token (fast cycle: curl + login Web UI).
 SIGNAL_TUI_DIR="__PROJECT_DIR__"
 alias web-signal-tui='( cd "$SIGNAL_TUI_DIR" && .venv/bin/python -m signal_tui --web --web-port 4242 --web-host 0.0.0.0 )'
@@ -31,9 +31,9 @@ _signal_tui_web_bg() {
     if [ -z "$pid" ] || ! kill -0 "$pid" 2>/dev/null; then
         "$SIGNAL_TUI_DIR/.venv/bin/python" "$SIGNAL_TUI_DIR/launcher.py" server start --no-token "$@" || return 1
     fi
-    SIGNAL_TUI_WEB_TOKEN="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["web"]["token"])' "$SIGNAL_TUI_DIR/config.json")" || return 1
-    export SIGNAL_TUI_WEB_TOKEN
-    echo "Server bg attivo — token: $SIGNAL_TUI_WEB_TOKEN"
+    WEB_TOKEN="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["web"]["token"])' "$SIGNAL_TUI_DIR/config.json")" || return 1
+    export WEB_TOKEN
+    echo "Server bg attivo — token: $WEB_TOKEN"
 }
 # Ferma solo il server (megachatd); con il server Python WAHA resta attiva (serve --waha per fermarla).
 _signal_tui_web_stop() { "$SIGNAL_TUI_DIR/.venv/bin/python" "$SIGNAL_TUI_DIR/launcher.py" server stop; }

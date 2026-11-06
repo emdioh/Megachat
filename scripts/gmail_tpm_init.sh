@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Migrate the Gmail App Password from the GPG-encrypted file to a TPM2-sealed
-# credential, then point GMAIL_APP_PASSWORD_CMD at systemd-creds.
+# credential, then point config.json gmail.app_password_cmd at systemd-creds.
 #
 # Requirements:
 #   - access to /dev/tpmrm0 (user in the "tss" group)
@@ -14,7 +14,7 @@ CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/signal-tui"
 GPG_FILE="$CONFIG_DIR/gmail-app-password.gpg"
 PLAIN_FILE="$CONFIG_DIR/gmail-app-password"
 CRED_FILE="$CONFIG_DIR/gmail-app-password.cred"
-ENV_FILE="$PROJECT_DIR/.env"
+CONFIG_FILE="$PROJECT_DIR/config.json"
 
 if [[ ! -r /dev/tpmrm0 ]]; then
     echo "TPM non accessibile (/dev/tpmrm0)." >&2
@@ -62,27 +62,49 @@ if [[ "$secret_len" -lt 8 ]]; then
     exit 1
 fi
 
-python3 - "$ENV_FILE" "$CRED_FILE" <<'PY'
+python3 - "$CONFIG_FILE" "$CRED_FILE" <<'PY'
+import json
+import os
 import shlex
+import stat
 import sys
+import tempfile
 from pathlib import Path
 
-env_path = Path(sys.argv[1])
+config_path = Path(sys.argv[1])
 cred_path = Path(sys.argv[2]).expanduser()
-lines = env_path.read_text().splitlines()
-out = [
-    line
-    for line in lines
-    if not line.startswith(("GMAIL_APP_PASSWORD_FILE=", "GMAIL_APP_PASSWORD_CMD="))
-]
-command = (
-        "systemd-creds decrypt --name=gmail-app-password "
-        + shlex.quote(str(cred_path))
-        + " -"
-    )
-out.append(f"GMAIL_APP_PASSWORD_CMD={command}")
-env_path.write_text("\n".join(out) + "\n")
-env_path.chmod(0o600)
+if config_path.exists():
+    try:
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise SystemExit(f"config.json non valido: {exc}") from exc
+    if not isinstance(config, dict):
+        raise SystemExit("config.json deve contenere un oggetto JSON")
+else:
+    config = {}
+gmail = config.get("gmail")
+if not isinstance(gmail, dict):
+    gmail = {}
+gmail.pop("app_password_file", None)
+gmail.pop("app_password", None)
+gmail["app_password_cmd"] = (
+    "systemd-creds decrypt --name=gmail-app-password "
+    + shlex.quote(str(cred_path))
+    + " -"
+)
+config["gmail"] = gmail
+fd, temporary_name = tempfile.mkstemp(prefix=".config.json.", dir=config_path.parent)
+try:
+    with os.fdopen(fd, "w", encoding="utf-8") as temporary:
+        json.dump(config, temporary, ensure_ascii=False, indent=2)
+        temporary.write("\n")
+    os.chmod(temporary_name, stat.S_IRUSR | stat.S_IWUSR)
+    os.replace(temporary_name, config_path)
+finally:
+    try:
+        os.unlink(temporary_name)
+    except FileNotFoundError:
+        pass
 PY
 
 if [[ "$source_kind" == "plaintext" ]]; then
@@ -92,5 +114,5 @@ else
     echo "File GPG mantenuto come backup: $GPG_FILE"
 fi
 echo "Fatto: credenziale TPM in $CRED_FILE"
-echo ".env ora usa GMAIL_APP_PASSWORD_CMD con systemd-creds."
-echo "Riavvia la TUI (in una sessione con il gruppo tss) per applicare il cambio."
+echo "config.json ora usa gmail.app_password_cmd con systemd-creds (il progetto .env non è più letto)."
+echo "Riavvia il server (megachatd) per applicare il cambio."

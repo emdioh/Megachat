@@ -1,0 +1,109 @@
+{
+  "signal": {
+    "enabled": false,
+    "user_number": ""
+  },
+  "whatsapp": {
+    "enabled": false,
+    "session_name": "default",
+    "media_dir": "",
+    "browser": "",
+    "browser_version": "",
+    "browser_os": "",
+    "lazy_media": true,
+    "lazy_media_negative_ttl_s": 30,
+    "lid_cache_ttl_days": 30,
+    "lid_retry_cooldown_s": 300,
+    "resync_download_media": false,
+    "resync_max_chats": 20,
+    "resync_limit": 30,
+    "resync_workers": 2,
+    "session_guard": true,
+    "session_poll_s": 60,
+    "session_restart_timeout_s": 120,
+    "session_max_restarts_per_hour": 3,
+    "session_backoff_s": "5,30,120,300",
+    "session_stable_reset_s": 600,
+    "session_failed_grace_s": 10,
+    "session_unreachable_after": 5,
+    "presence_subscribe": false
+  },
+  "telegram": {
+    "enabled": false,
+    "api_id": 0,
+    "api_hash": "",
+    "reactions_notify": true
+  },
+  "gmail": {
+    "enabled": false,
+    "address": "",
+    "app_password": "",
+    "app_password_file": "~/.config/signal-tui/gmail-app-password",
+    "app_password_cmd": "",
+    "imap_host": "imap.gmail.com",
+    "imap_port": 993,
+    "smtp_host": "smtp.gmail.com",
+    "smtp_port": 587,
+    "folder": "INBOX",
+    "timeout_s": 30,
+    "unread_poll_s": 60,
+    "html_styles": true,
+    "html_inline_css": true,
+    "image_prefetch": true
+  },
+  "web": {
+    "enabled": false,
+    "host": "127.0.0.1",
+    "port": 4242,
+    "token": ""
+  },
+  "transcription": {
+    "provider": "openai",
+    "language": "",
+    "timeout": 120,
+    "auto": {
+      "whatsapp": false,
+      "signal": false,
+      "telegram": false
+    },
+    "auto_chats": {}
+  },
+  "openai": {
+    "api_key": "",
+    "transcription_model": "gpt-transcribe",
+    "base_url": "https://api.openai.com/v1"
+  },
+  "openrouter": {
+    "api_key": "",
+    "transcription_model": "openai/whisper-large-v3",
+    "base_url": "https://openrouter.ai/api/v1",
+    "http_referer": "",
+    "app_title": ""
+  },
+  "gemini": {
+    "api_key": "",
+    "transcription_model": "gemini-flash-latest",
+    "base_url": "https://generativelanguage.googleapis.com/v1beta"
+  },
+  "messages": {
+    "retention_per_contact": 300
+  },
+  "address_book": {
+    "ttl_s": 300
+  },
+  "dynamic_refresh": {
+    "interval_s": 300,
+    "cooldown_s": 60
+  },
+  "picker": {
+    "max_results": 50,
+    "preferred_backend": ""
+  },
+  "image": {
+    "protocol": "auto"
+  },
+  "thumbnail": {
+    "max_lines": 12,
+    "max_cols": 60
+  }
+}

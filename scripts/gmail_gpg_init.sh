@@ -5,7 +5,7 @@ PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/signal-tui"
 PLAIN="$CONFIG_DIR/gmail-app-password"
 ENC="$CONFIG_DIR/gmail-app-password.gpg"
-ENV_FILE="$PROJECT_DIR/.env"
+CONFIG_FILE="$PROJECT_DIR/config.json"
 CACHE_TTL=604800
 CONFIGURE_AGENT_CACHE=1
 
@@ -137,29 +137,45 @@ else
     echo "Plaintext rimosso con rm (su macOS shred non è disponibile: nessuna sovrascrittura)."
 fi
 
-python3 - "$ENV_FILE" "$ENC" <<'PY'
+python3 - "$CONFIG_FILE" "$ENC" <<'PY'
+import json
+import os
 import shlex
+import stat
 import sys
+import tempfile
 from pathlib import Path
 
-env_path = Path(sys.argv[1])
+config_path = Path(sys.argv[1])
 enc_path = Path(sys.argv[2]).expanduser()
-lines = env_path.read_text().splitlines()
-out = [
-    line
-    for line in lines
-    if not line.startswith(
-        (
-            "GMAIL_APP_PASSWORD_FILE=",
-            "GMAIL_APP_PASSWORD=",
-            "GMAIL_APP_PASSWORD_CMD=",
-        )
-    )
-]
-command = "gpg --quiet --decrypt " + shlex.quote(str(enc_path))
-out.append(f"GMAIL_APP_PASSWORD_CMD={command}")
-env_path.write_text("\n".join(out) + "\n")
-env_path.chmod(0o600)
+if config_path.exists():
+    try:
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise SystemExit(f"config.json non valido: {exc}") from exc
+    if not isinstance(config, dict):
+        raise SystemExit("config.json deve contenere un oggetto JSON")
+else:
+    config = {}
+gmail = config.get("gmail")
+if not isinstance(gmail, dict):
+    gmail = {}
+gmail.pop("app_password_file", None)
+gmail.pop("app_password", None)
+gmail["app_password_cmd"] = "gpg --quiet --decrypt " + shlex.quote(str(enc_path))
+config["gmail"] = gmail
+fd, temporary_name = tempfile.mkstemp(prefix=".config.json.", dir=config_path.parent)
+try:
+    with os.fdopen(fd, "w", encoding="utf-8") as temporary:
+        json.dump(config, temporary, ensure_ascii=False, indent=2)
+        temporary.write("\n")
+    os.chmod(temporary_name, stat.S_IRUSR | stat.S_IWUSR)
+    os.replace(temporary_name, config_path)
+finally:
+    try:
+        os.unlink(temporary_name)
+    except FileNotFoundError:
+        pass
 PY
 
 warm_ok=1
@@ -181,7 +197,7 @@ fi
 
 echo
 echo "Fatto: segreto cifrato in $ENC"
-echo "Il plaintext è stato eliminato e .env ora usa GMAIL_APP_PASSWORD_CMD."
+echo "Il plaintext è stato eliminato e config.json ora usa gmail.app_password_cmd."
 echo "Su macOS non sono disponibili TPM2 né systemd: resta valida solo la cifratura GPG."
 echo "Dopo un reboot o alla scadenza della cache gpg-agent esegui:"
 echo "  gpg --quiet --decrypt \"$ENC\" >/dev/null"

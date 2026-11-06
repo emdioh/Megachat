@@ -79,7 +79,7 @@ Opzioni:
   --check-waha         Verifica i prerequisiti WAHA (Docker, porte, firewall)
   --no-web            Non installare le dipendenze opzionali della Web UI (requirements-web.txt)
   --aliases            Installa solo gli alias shell della Web UI
-  --gmail              Configura solo Gmail (App Password, IMAP/SMTP, .env)
+  --gmail              Configura solo Gmail (App Password, IMAP/SMTP, config.json)
   --no-docker-limits   Con --waha: avvia WAHA senza i cap CPU/RAM (default: applicati via
                        docker-compose.resources.yml; disattiva se il tuo host
                        non delega il controller cgroup memory, es. LXC senza
@@ -219,7 +219,7 @@ install_aliases() {
 
     read -r -d '' ALIASES_BLOCK <<'EOF' || true
 # ─── Signal TUI Client: web reader + background via megachat serve ───────
-# Web su 0.0.0.0:4242. Token Bearer: config.json (web.token) o SIGNAL_TUI_WEB_TOKEN.
+# Web su 0.0.0.0:4242. Token Bearer: config.json (web.token) o WEB_TOKEN.
 # web-signal-tui-bg stampa ed esporta il token (fast cycle: curl + login Web UI).
 # Gmail TPM: la shell/TUI deve avere il gruppo tss (dopo usermod serve re-login).
 SIGNAL_TUI_DIR="__PROJECT_DIR__"
@@ -233,9 +233,9 @@ _signal_tui_web_bg() {
     if [ -z "$pid" ] || ! kill -0 "$pid" 2>/dev/null; then
         "$SIGNAL_TUI_DIR/.venv/bin/python" "$SIGNAL_TUI_DIR/launcher.py" server start --no-token || return 1
     fi
-    SIGNAL_TUI_WEB_TOKEN="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["web"]["token"])' "$SIGNAL_TUI_DIR/config.json")" || return 1
-    export SIGNAL_TUI_WEB_TOKEN
-    echo "Server bg attivo — token: $SIGNAL_TUI_WEB_TOKEN"
+    WEB_TOKEN="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["web"]["token"])' "$SIGNAL_TUI_DIR/config.json")" || return 1
+    export WEB_TOKEN
+    echo "Server bg attivo — token: $WEB_TOKEN"
 }
 _signal_tui_web_stop() {
     # WAHA non viene fermata di proposito: resta attiva per i messaggi.
@@ -380,23 +380,19 @@ check_firewall() {
 
 ensure_waha_env() {
     local env_file="$PROJECT_DIR/.env"
-    local env_example="$PROJECT_DIR/.env.example"
     local existed=0
     [ -f "$env_file" ] && existed=1
 
-    python3 - "$env_file" "$env_example" "$(uname -m)" <<'PY'
+    python3 - "$env_file" "$(uname -m)" <<'PY'
 import secrets
 import stat
 import sys
 from pathlib import Path
 
 env_file = Path(sys.argv[1])
-env_example = Path(sys.argv[2])
-architecture = sys.argv[3].lower()
+architecture = sys.argv[2].lower()
 if env_file.exists():
     lines = env_file.read_text(encoding="utf-8").splitlines()
-elif env_example.exists():
-    lines = env_example.read_text(encoding="utf-8").splitlines()
 else:
     lines = []
 
@@ -447,19 +443,52 @@ ensure_env_permissions() {
 }
 
 check_optional_secrets() {
-    local env_file="$PROJECT_DIR/.env"
-    [ -f "$env_file" ] || return 0
-    if grep -q '^GMAIL_APP_PASSWORD=' "$env_file"; then
-        warn "Gmail: App Password in chiaro in .env; usa GMAIL_APP_PASSWORD_FILE/CMD (vedi .env.example)."
+    local config_file="$PROJECT_DIR/config.json"
+    [ -f "$config_file" ] || return 0
+    local flags
+    if ! flags="$(python3 - "$config_file" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+try:
+    config = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+except (OSError, json.JSONDecodeError):
+    raise SystemExit(0)
+gmail = config.get("gmail") if isinstance(config, dict) else None
+gmail = gmail if isinstance(gmail, dict) else {}
+out = []
+if str(gmail.get("app_password") or "").strip():
+    out.append("plaintext")
+command = str(gmail.get("app_password_cmd") or "")
+if "systemd-creds" in command:
+    out.append("systemd-creds")
+if "gpg" in command:
+    out.append("gpg")
+print(" ".join(out))
+PY
+    )"; then
+        return 0
     fi
-    if grep -q 'systemd-creds' "$env_file"; then
-        if ! id -nG 2>/dev/null | tr ' ' '\n' | grep -qx tss; then
-            warn "Gmail TPM: utente non nel gruppo tss; esegui 'sudo usermod -aG tss $USER' e rifai login."
-        fi
-    fi
-    if grep -q 'GMAIL_APP_PASSWORD_CMD=.*gpg' "$env_file" && ! command -v gpg >/dev/null 2>&1; then
-        warn "Gmail GPG: comando configurato ma gpg non è installato."
-    fi
+    case " $flags " in
+        *" plaintext "*)
+            warn "Gmail: App Password in chiaro in config.json (gmail.app_password); usa gmail.app_password_file o gmail.app_password_cmd."
+            ;;
+    esac
+    case " $flags " in
+        *" systemd-creds "*)
+            if ! id -nG 2>/dev/null | tr ' ' '\n' | grep -qx tss; then
+                warn "Gmail TPM: utente non nel gruppo tss; esegui 'sudo usermod -aG tss $USER' e rifai login."
+            fi
+            ;;
+    esac
+    case " $flags " in
+        *" gpg "*)
+            if ! command -v gpg >/dev/null 2>&1; then
+                warn "Gmail GPG: comando configurato in config.json ma gpg non è installato."
+            fi
+            ;;
+    esac
 }
 
 setup_whatsapp() {
@@ -845,7 +874,7 @@ fi
 # 5.6 Alias shell della Web UI
 install_aliases || warn "Installazione degli alias shell non riuscita; l'installazione continua."
 
-# 5.7 Permessi .env e controlli sui segreti opzionali (Gmail)
+# 5.7 Permessi .env (WAHA/fallback Python) e segreti Gmail in config.json
 ensure_env_permissions
 check_optional_secrets
 chmod +x "$PROJECT_DIR"/scripts/gmail_*.sh "$PROJECT_DIR"/scripts/gmail_setup.py 2>/dev/null || true
@@ -856,10 +885,9 @@ echo "${C_GREEN}${C_BOLD}=== Installazione completata! ===${C_RESET}"
 echo
 echo "Prossimi passi:"
 echo "  1. Abilita Signal (megachatd) e configura il tuo numero di telefono:"
-echo "       export SIGNAL_USER_NUMBER=\"+1234567890\""
-echo "       echo 'SIGNAL_ENABLED=1' >> .env"
-echo "     oppure crea config.json:"
-echo "       echo '{\"signal_enabled\": true, \"user_number\": \"+1234567890\"}' > config.json"
+echo "       export SIGNAL_ENABLED=1 SIGNAL_USER_NUMBER=\"+1234567890\""
+echo "     oppure aggiungi al config.json (un oggetto per dominio):"
+echo "       { \"signal\": { \"enabled\": true, \"user_number\": \"+1234567890\" } }"
 echo "  2. Collega il tuo account Signal (QR code):"
 if [ "$DO_VENV" -eq 1 ]; then
     echo "       source .venv/bin/activate"
@@ -868,11 +896,13 @@ else
     echo "       python3 link_account.py"
 fi
 echo "  3. (Opzionale) Abilita e collega WhatsApp (QR code, nessun Docker):"
-echo "       echo 'WHATSAPP_ENABLED=1' >> .env"
+echo "       export WHATSAPP_ENABLED=1"
+echo "       # oppure config.json: \"whatsapp\": { \"enabled\": true }"
 echo "       python3 link_whatsapp.py"
 echo "  4. (Opzionale) Abilita Telegram:"
-echo "       echo 'TELEGRAM_ENABLED=1' >> .env"
-echo "       # aggiungi TELEGRAM_API_ID e TELEGRAM_API_HASH a .env, poi Ctrl+L nella TUI"
+echo "       export TELEGRAM_ENABLED=1 TELEGRAM_API_ID=123456 TELEGRAM_API_HASH=..."
+echo "       # oppure config.json: \"telegram\": { \"enabled\": true, \"api_id\": 123456, \"api_hash\": \"...\" }"
+echo "       # poi Ctrl+L nella TUI"
 echo "  5. Avvia il client:"
 if [ "$DO_VENV" -eq 1 ]; then
     echo "       source .venv/bin/activate"
@@ -881,7 +911,7 @@ echo "       python3 signal_tui.py"
 if [ "$DO_WEB" -eq 1 ]; then
     echo "       Web UI: http://127.0.0.1:4242"
     echo "       Token:  config.json → web.token"
-    echo "       Gmail (opzionale): ./install.sh --gmail  (scrive GMAIL_ENABLED=1 in .env)"
+    echo "       Gmail (opzionale): ./install.sh --gmail  (scrive gmail.enabled in config.json; a mano: GMAIL_ENABLED=1)"
 fi
 echo
 if [ -f "$PROJECT_DIR/.env" ] && grep -q '^MEGACHAT_SERVER=python' "$PROJECT_DIR/.env"; then

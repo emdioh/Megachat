@@ -128,14 +128,16 @@ class TestDeviceLinkPickerScreen:
         )
 
         assert screen._protocol_unavailable_reason("signal") == (
-            "set SIGNAL_ENABLED=1 and restart the server"
+            "set SIGNAL_ENABLED=1 (or signal.enabled in config.json) "
+            "and restart the server"
         )
         assert screen._protocol_unavailable_reason("whatsapp") == (
-            "set WHATSAPP_ENABLED=1 and restart the server"
+            "set WHATSAPP_ENABLED=1 (or whatsapp.enabled in config.json) "
+            "and restart the server"
         )
         assert screen._protocol_unavailable_reason("telegram") == (
             "set TELEGRAM_ENABLED=1, TELEGRAM_API_ID and TELEGRAM_API_HASH "
-            "and restart the server"
+            "(or telegram.* in config.json) and restart the server"
         )
 
         enabled = DeviceLinkPickerScreen(

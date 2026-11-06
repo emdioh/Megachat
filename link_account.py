@@ -43,8 +43,8 @@ def main():
     print("=" * 60)
     print()
     print(
-        "ℹ️  megachatd: set SIGNAL_ENABLED=1 (in .env or config.json) and "
-        "restart the server to use the linked account."
+        "ℹ️  megachatd: set SIGNAL_ENABLED=1 or signal.enabled=true in config.json, "
+        "then restart the server to use the linked account."
     )
     print()
     print(f"✅ signal-cli found: {signal_cli_path}")

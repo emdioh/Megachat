@@ -259,12 +259,9 @@ def check_firewall(port: int, label: str) -> None:
 def ensure_waha_env() -> None:
     """Generate/preserve WAHA credentials in ``.env`` (same layout as bash)."""
     env_file = PROJECT_DIR / ".env"
-    env_example = PROJECT_DIR / ".env.example"
     existed = env_file.exists()
     if env_file.exists():
         lines = env_file.read_text(encoding="utf-8").splitlines()
-    elif env_example.exists():
-        lines = env_example.read_text(encoding="utf-8").splitlines()
     else:
         lines = []
 
