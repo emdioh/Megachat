@@ -92,7 +92,7 @@ func parseServeArgs(args []string, stderr io.Writer) (*serveArgs, int, bool) {
 	fs.BoolVar(&a.noWeb, "no-web", false, "do not start the web adapter (clients can still use the socket)")
 	fs.BoolVar(&a.noSocket, "no-socket", false, "do not start the Unix-socket adapter")
 	fs.StringVar(&a.socket, "socket", "", "Unix socket path (default: $MEGACHAT_SOCKET, else $XDG_RUNTIME_DIR/megachat/server.sock, else ~/.local/state/megachat/server.sock)")
-	fs.StringVar(&a.projectDir, "project-dir", "", "directory holding config.json and .env (default: $MEGACHAT_PROJECT_DIR, else the repo containing the executable, else the working directory)")
+	fs.StringVar(&a.projectDir, "project-dir", "", "directory holding config.json (default: $MEGACHAT_PROJECT_DIR, else the repo containing the executable, else the working directory)")
 	if err := fs.Parse(args); err != nil {
 		if err == flag.ErrHelp {
 			return nil, 0, false
@@ -115,7 +115,7 @@ func parseServeArgs(args []string, stderr io.Writer) (*serveArgs, int, bool) {
 	return &a, 0, true
 }
 
-// ResolveProjectDir picks the directory with config.json / .env: the flag,
+// ResolveProjectDir picks the directory with config.json: the flag,
 // else $MEGACHAT_PROJECT_DIR, else the nearest ancestor of the executable that
 // holds megachat.py or pyproject.toml, else the working directory.
 func ResolveProjectDir(flagValue string, env func(string) string, exe string) string {

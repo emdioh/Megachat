@@ -429,7 +429,7 @@ func TestGuardConfigDefaultsFromConfig(t *testing.T) {
 	if g := GuardConfigFrom(nil); g.PollS != 60 || !g.Enabled {
 		t.Errorf("nil config -> defaults: %+v", g)
 	}
-	over := config.NewWith(t.TempDir(), t.TempDir(), map[string]string{"WA_SESSION_BACKOFF_S": "1, 2", "WA_SESSION_GUARD": "off"})
+	over := config.NewWith(t.TempDir(), t.TempDir(), map[string]string{"WHATSAPP_SESSION_BACKOFF_S": "1, 2", "WHATSAPP_SESSION_GUARD": "off"})
 	if g := GuardConfigFrom(over); g.Enabled || len(g.BackoffS) != 2 || g.BackoffS[1] != 2 {
 		t.Errorf("overrides: %+v", g)
 	}

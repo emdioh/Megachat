@@ -17,7 +17,7 @@ const (
 	// WSAuthCloseCode is the WebSocket close code of an unauthorised socket.
 	WSAuthCloseCode = 1008
 	// EnvWebToken overrides web.token of config.json.
-	EnvWebToken = "SIGNAL_TUI_WEB_TOKEN"
+	EnvWebToken = "WEB_TOKEN"
 	// DefaultWebPort / DefaultWebHost are the web.port / web.host defaults.
 	DefaultWebPort = 4242
 	DefaultWebHost = "127.0.0.1"

@@ -274,7 +274,7 @@ var signalLinkRE = regexp.MustCompile(`((?:sgnl|signal)://link[^\s]*)`)
 
 func (s *Service) startSignal(ctx context.Context, sess *session) (api.LinkQrOut, error) {
 	if s.backend(api.ProtocolSignal) == nil {
-		return api.LinkQrOut{}, &LinkUnavailable{"Signal backend not available: set SIGNAL_ENABLED=1 in .env and restart the server"}
+		return api.LinkQrOut{}, &LinkUnavailable{"Signal backend not available: set \"signal\": {\"enabled\": true} in config.json (or SIGNAL_ENABLED=1) and restart the server"}
 	}
 	if s.cli == nil {
 		return api.LinkQrOut{}, linkErr("signal-cli not found in ./bin/")
@@ -318,8 +318,8 @@ func (s *Service) startSignal(ctx context.Context, sess *session) (api.LinkQrOut
 }
 
 const (
-	whatsAppUnavailable = "WhatsApp backend not available: set WHATSAPP_ENABLED=1 in .env and restart the server"
-	telegramUnavailable = "Telegram backend not available: set TELEGRAM_ENABLED=1 (with TELEGRAM_API_ID and TELEGRAM_API_HASH) in .env and restart the server"
+	whatsAppUnavailable = "WhatsApp backend not available: set \"whatsapp\": {\"enabled\": true} in config.json (or WHATSAPP_ENABLED=1) and restart the server"
+	telegramUnavailable = "Telegram backend not available: set \"telegram\": {\"enabled\": true} in config.json (or TELEGRAM_ENABLED=1, with telegram.api_id and telegram.api_hash) and restart the server"
 )
 
 func (s *Service) startWhatsApp(ctx context.Context) (api.LinkQrOut, error) {
@@ -562,7 +562,7 @@ func contains(l []string, v string) bool {
 	return false
 }
 
-// PersistSignalAccount atomically saves user_number into config.json,
+// PersistSignalAccount atomically saves signal.user_number into config.json,
 // preserving the other settings. An invalid or non-object existing file is
 // refused. (Go writes keys sorted; Python kept insertion order.)
 func PersistSignalAccount(configFile, account string) error {
@@ -580,7 +580,12 @@ func PersistSignalAccount(configFile, account string) error {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return errors.New("existing config.json is invalid or unreadable")
 	}
-	cfg["user_number"] = account
+	sec, ok := cfg["signal"].(map[string]any)
+	if !ok || sec == nil {
+		sec = map[string]any{}
+		cfg["signal"] = sec
+	}
+	sec["user_number"] = account
 	body, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		return err

@@ -14,53 +14,40 @@ var (
 
 const (
 	DefaultTranscriptionProvider = "openai"
-	autoGlobalKey                = "auto_transcribe"
-	autoChatsKey                 = "auto_transcribe_chats"
+	// Stored setting names of the transcription provider objects.
+	ProviderModelSetting   = "transcription_model"
+	ProviderBaseURLSetting = "base_url"
 )
 
-type apiKeySpec struct {
-	configKey string
-	envs      []string
-}
-
-var apiKeys = map[string]apiKeySpec{
-	"openai":     {"openai_api_key", []string{"OPENAI_API_KEY"}},
-	"openrouter": {"openrouter_api_key", []string{"OPENROUTER_API_KEY"}},
-	"gemini":     {"gemini_api_key", []string{"GEMINI_API_KEY", "GOOGLE_API_KEY"}},
-}
-
-type keyEnv struct{ key, env string }
-
-type providerSetting struct {
-	def   string
-	pairs []keyEnv // priority order
-}
-
-var providerSettings = map[string]map[string]providerSetting{
+// providerDefaults are the values used when config.json and the environment
+// leave a provider setting unset.
+var providerDefaults = map[string]map[string]string{
 	"openai": {
-		"model": {"gpt-transcribe", []keyEnv{
-			{"openai_transcription_model", "OPENAI_TRANSCRIPTION_MODEL"},
-			{"transcription_model", "TRANSCRIPTION_MODEL"}}},
-		"base_url": {"https://api.openai.com/v1", []keyEnv{
-			{"transcription_base_url", "TRANSCRIPTION_BASE_URL"}}},
+		ProviderModelSetting:   "gpt-transcribe",
+		ProviderBaseURLSetting: "https://api.openai.com/v1",
 	},
 	"openrouter": {
-		"model":        {"openai/whisper-large-v3", []keyEnv{{"openrouter_transcription_model", "OPENROUTER_TRANSCRIPTION_MODEL"}}},
-		"base_url":     {"https://openrouter.ai/api/v1", []keyEnv{{"openrouter_base_url", "OPENROUTER_BASE_URL"}}},
-		"http_referer": {"", []keyEnv{{"openrouter_http_referer", "OPENROUTER_HTTP_REFERER"}}},
-		"app_title":    {"", []keyEnv{{"openrouter_app_title", "OPENROUTER_APP_TITLE"}}},
+		ProviderModelSetting:   "openai/whisper-large-v3",
+		ProviderBaseURLSetting: "https://openrouter.ai/api/v1",
+		"http_referer":         "",
+		"app_title":            "",
 	},
 	"gemini": {
-		"model":    {"gemini-flash-latest", []keyEnv{{"gemini_transcription_model", "GEMINI_TRANSCRIPTION_MODEL"}}},
-		"base_url": {"https://generativelanguage.googleapis.com/v1beta", []keyEnv{{"gemini_base_url", "GEMINI_BASE_URL"}}},
+		ProviderModelSetting:   "gemini-flash-latest",
+		ProviderBaseURLSetting: "https://generativelanguage.googleapis.com/v1beta",
 	},
 }
 
-// SharedSettings: setting name -> (config.json key, env var).
-var SharedSettings = map[string]keyEnv{
-	"provider": {"ai_provider", "AI_PROVIDER"},
-	"language": {"transcription_language", "TRANSCRIPTION_LANGUAGE"},
-	"timeout":  {"transcription_timeout", "TRANSCRIPTION_TIMEOUT"},
+// providerSettingNames lists the settable fields of a provider object.
+var providerSettingNames = map[string][]string{
+	"openai":     {ProviderModelSetting, ProviderBaseURLSetting},
+	"openrouter": {ProviderModelSetting, ProviderBaseURLSetting, "http_referer", "app_title"},
+	"gemini":     {ProviderModelSetting, ProviderBaseURLSetting},
+}
+
+// sharedTranscriptionSettings are the settings stored under "transcription".
+var sharedTranscriptionSettings = map[string]bool{
+	"provider": true, "language": true, "timeout": true,
 }
 
 func contains(l []string, s string) bool {
@@ -79,17 +66,17 @@ func checkProvider(p string) error {
 	return nil
 }
 
-// TranscriptionProvider: AI_PROVIDER / ai_provider; unknown -> openai.
+// TranscriptionProvider is transcription.provider; unknown -> openai.
 func (c *Config) TranscriptionProvider() string {
-	v := strings.ToLower(strings.TrimSpace(c.Get("ai_provider", "AI_PROVIDER", "")))
+	v := strings.ToLower(c.trimmedString("transcription", "provider", ""))
 	if contains(TranscriptionProviders, v) {
 		return v
 	}
 	return DefaultTranscriptionProvider
 }
 
-// APIKey returns the provider's API key (env, config.json, extra envs, .env)
-// or "" when unset. provider "" means the selected provider.
+// APIKey returns the provider's API key (<provider>.api_key) or "" when unset.
+// provider "" means the selected provider.
 func (c *Config) APIKey(provider string) (string, error) {
 	if provider == "" {
 		provider = c.TranscriptionProvider()
@@ -97,49 +84,18 @@ func (c *Config) APIKey(provider string) (string, error) {
 	if err := checkProvider(provider); err != nil {
 		return "", err
 	}
-	spec := apiKeys[provider]
-	v := strings.TrimSpace(c.Get(spec.configKey, spec.envs[0], ""))
-	if v == "" {
-		for _, e := range spec.envs[1:] {
-			if v = strings.TrimSpace(c.Env(e)); v != "" {
-				break
-			}
-		}
-	}
-	if v == "" {
-		dot := c.LoadDotenv()
-		for _, e := range spec.envs {
-			if v = strings.TrimSpace(dot[e]); v != "" {
-				break
-			}
-		}
-	}
-	return v, nil
-}
-
-// chain: first non-empty env, then first non-empty string config key, else def.
-func (c *Config) chain(pairs []keyEnv, def string) string {
-	for _, p := range pairs {
-		if v := strings.TrimSpace(c.Env(p.env)); v != "" {
-			return v
-		}
-	}
-	cfg := c.LoadFile()
-	for _, p := range pairs {
-		if s, ok := cfg[p.key].(string); ok && strings.TrimSpace(s) != "" {
-			return strings.TrimSpace(s)
-		}
-	}
-	return def
+	return c.trimmedString(provider, "api_key", ""), nil
 }
 
 func (c *Config) providerSetting(provider, name string) (string, error) {
 	if err := checkProvider(provider); err != nil {
 		return "", err
 	}
-	s := providerSettings[provider][name]
-	v := c.chain(s.pairs, s.def)
-	if name == "base_url" {
+	if !contains(providerSettingNames[provider], name) {
+		return "", fmt.Errorf("unknown %s setting %q", provider, name)
+	}
+	v := c.trimmedString(provider, name, providerDefaults[provider][name])
+	if name == ProviderBaseURLSetting {
 		v = strings.TrimRight(v, "/")
 	}
 	return v, nil
@@ -150,7 +106,7 @@ func (c *Config) ProviderModel(provider string) (string, error) {
 	if provider == "" {
 		provider = c.TranscriptionProvider()
 	}
-	return c.providerSetting(provider, "model")
+	return c.providerSetting(provider, ProviderModelSetting)
 }
 
 // ProviderBaseURL returns the base URL of provider ("" = selected provider).
@@ -158,7 +114,7 @@ func (c *Config) ProviderBaseURL(provider string) (string, error) {
 	if provider == "" {
 		provider = c.TranscriptionProvider()
 	}
-	return c.providerSetting(provider, "base_url")
+	return c.providerSetting(provider, ProviderBaseURLSetting)
 }
 
 // OpenRouterHeaders are the optional attribution headers (only when set).
@@ -173,14 +129,14 @@ func (c *Config) OpenRouterHeaders() map[string]string {
 	return h
 }
 
-// TranscriptionLanguage ("" when unset).
+// TranscriptionLanguage is transcription.language ("" when unset).
 func (c *Config) TranscriptionLanguage() string {
-	return strings.TrimSpace(c.Get("transcription_language", "TRANSCRIPTION_LANGUAGE", ""))
+	return c.trimmedString("transcription", "language", "")
 }
 
 // TranscriptionTimeoutS defaults to 120; non-positive -> 120.
 func (c *Config) TranscriptionTimeoutS() int {
-	return positive(c.GetInt("transcription_timeout", "TRANSCRIPTION_TIMEOUT", 120), 120)
+	return positive(c.GetInt("transcription", "timeout", 120), 120)
 }
 
 // TranscriptionEnabled: the selected provider has an API key.
@@ -190,12 +146,9 @@ func (c *Config) TranscriptionEnabled() bool {
 }
 
 // AutoTranscribeGlobal is the per-protocol global switch (false if unset).
+// It lives in transcription.auto and has no environment override.
 func (c *Config) AutoTranscribeGlobal(protocol string) bool {
-	sec, ok := c.LoadFile()[autoGlobalKey].(map[string]any)
-	if !ok {
-		return false
-	}
-	b, _ := sec[protocol].(bool)
+	b, _ := c.GetMap("transcription", "auto")[protocol].(bool)
 	return b
 }
 
@@ -209,12 +162,9 @@ func (c *Config) AutoTranscribeGlobals() map[string]bool {
 }
 
 // AutoTranscribeChat returns the per-chat override; nil when not set.
+// It lives in transcription.auto_chats and has no environment override.
 func (c *Config) AutoTranscribeChat(protocol, contactID string) *bool {
-	sec, ok := c.LoadFile()[autoChatsKey].(map[string]any)
-	if !ok {
-		return nil
-	}
-	if b, ok := sec[protocol+":"+contactID].(bool); ok {
+	if b, ok := c.GetMap("transcription", "auto_chats")[protocol+":"+contactID].(bool); ok {
 		return &b
 	}
 	return nil
@@ -231,22 +181,13 @@ func (c *Config) AutoTranscribeEffective(protocol, contactID string) bool {
 	return c.AutoTranscribeGlobal(protocol)
 }
 
-func section(data map[string]any, key string) map[string]any {
-	if s, ok := data[key].(map[string]any); ok {
-		return s
-	}
-	return map[string]any{}
-}
-
 // SetAutoTranscribeGlobal persists a protocol's global switch.
 func (c *Config) SetAutoTranscribeGlobal(protocol string, enabled bool) error {
 	if !contains(AutoTranscribeProtocols, protocol) {
 		return fmt.Errorf("unsupported protocol: %q", protocol)
 	}
 	return c.UpdateFile(func(d map[string]any) {
-		s := section(d, autoGlobalKey)
-		s[protocol] = enabled
-		d[autoGlobalKey] = s
+		nestedSection(d, "transcription", "auto")[protocol] = enabled
 	})
 }
 
@@ -257,85 +198,90 @@ func (c *Config) SetAutoTranscribeChat(protocol, contactID string, enabled *bool
 	}
 	key := protocol + ":" + contactID
 	return c.UpdateFile(func(d map[string]any) {
-		s := section(d, autoChatsKey)
+		s := nestedSection(d, "transcription", "auto_chats")
 		if enabled == nil {
 			delete(s, key)
 		} else {
 			s[key] = *enabled
 		}
-		d[autoChatsKey] = s
 	})
 }
 
-// SetAPIKey stores a provider's API key in config.json.
+// SetAPIKey stores a provider's API key in config.json (<provider>.api_key).
 func (c *Config) SetAPIKey(provider, apiKey string) error {
 	if err := checkProvider(provider); err != nil {
 		return err
 	}
-	return c.UpdateFile(func(d map[string]any) { d[apiKeys[provider].configKey] = apiKey })
+	return c.UpdateFile(func(d map[string]any) { domainObject(d, provider)["api_key"] = apiKey })
 }
 
 // TranscriptionEnvOverrides lists settings forced by an environment variable:
-// "provider", "language", "timeout", "<provider>.model", "<provider>.base_url".
+// "provider", "language", "timeout", "<provider>.model", "<provider>.base_url",
+// "<provider>.http_referer", "<provider>.app_title".
 func (c *Config) TranscriptionEnvOverrides() []string {
 	var out []string
 	for _, n := range []string{"provider", "language", "timeout"} {
-		if c.Env(SharedSettings[n].env) != "" {
+		if _, ok := c.environment("transcription", n); ok {
 			out = append(out, n)
 		}
 	}
 	for _, p := range TranscriptionProviders {
 		for _, n := range []string{"model", "base_url", "http_referer", "app_title"} {
-			s, ok := providerSettings[p][n]
-			if !ok {
+			stored := n
+			if n == "model" {
+				stored = ProviderModelSetting
+			}
+			if !contains(providerSettingNames[p], stored) {
 				continue
 			}
-			for _, pe := range s.pairs {
-				if c.Env(pe.env) != "" {
-					out = append(out, p+"."+n)
-					break
-				}
+			if _, ok := c.environment(p, stored); ok {
+				out = append(out, p+"."+n)
 			}
 		}
 	}
 	return out
 }
 
-// SetTranscriptionSettings persists settings; a nil value removes the key
-// (and legacy aliases). Names: provider, language, timeout, <provider>.model,
-// <provider>.base_url.
-func (c *Config) SetTranscriptionSettings(values map[string]any) error {
-	keysFor := func(name string) ([]string, error) {
-		if s, ok := SharedSettings[name]; ok {
-			return []string{s.key}, nil
-		}
-		prov, setting, ok := strings.Cut(name, ".")
-		if ok {
-			if s, ok := providerSettings[prov][setting]; ok {
-				var ks []string
-				for _, p := range s.pairs {
-					ks = append(ks, p.key)
-				}
-				return ks, nil
-			}
-		}
-		return nil, fmt.Errorf("unknown transcription setting %q", name)
+// transcriptionTarget maps a SetTranscriptionSettings name to its stored
+// location. Names: provider, language, timeout, <provider>.model,
+// <provider>.base_url, and openrouter.http_referer/app_title.
+func transcriptionTarget(name string) (domain, setting string, ok bool) {
+	if sharedTranscriptionSettings[name] {
+		return "transcription", name, true
 	}
+	prov, field, ok := strings.Cut(name, ".")
+	if !ok || checkProvider(prov) != nil {
+		return "", "", false
+	}
+	stored := field
+	if field == "model" {
+		stored = ProviderModelSetting
+	}
+	if !contains(providerSettingNames[prov], stored) {
+		return "", "", false
+	}
+	return prov, stored, true
+}
+
+// SetTranscriptionSettings persists settings; a nil value removes the key.
+// Names: provider, language, timeout, <provider>.model, <provider>.base_url,
+// <provider>.http_referer, <provider>.app_title.
+func (c *Config) SetTranscriptionSettings(values map[string]any) error {
 	for name := range values {
-		if _, err := keysFor(name); err != nil {
-			return err
+		if _, _, ok := transcriptionTarget(name); !ok {
+			return fmt.Errorf("unknown transcription setting %q", name)
 		}
 	}
 	return c.UpdateFile(func(d map[string]any) {
 		for name, v := range values {
-			ks, _ := keysFor(name)
+			domain, setting, _ := transcriptionTarget(name)
 			if v == nil {
-				for _, k := range ks {
-					delete(d, k)
+				if dom, ok := d[domain].(map[string]any); ok {
+					delete(dom, setting)
 				}
-			} else {
-				d[ks[0]] = v
+				continue
 			}
+			domainObject(d, domain)[setting] = v
 		}
 	})
 }

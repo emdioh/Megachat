@@ -43,7 +43,6 @@ const (
 	tgrefPrefix            = "tgref:"
 	dialogLimit            = 200
 	defaultAddressBookTTLs = 300
-	reactionNotifyEnvVar   = "TELEGRAM_REACTIONS_NOTIFY"
 	maxAvatarBytes         = 5 * 1024 * 1024
 )
 
@@ -64,6 +63,7 @@ type Config interface {
 	TelegramSessionPath() string
 	TelegramMediaDir() string
 	AddressBookTTLS() int
+	TelegramReactionsNotify() bool
 }
 
 // Store is the slice of internal/store the backend persists through.

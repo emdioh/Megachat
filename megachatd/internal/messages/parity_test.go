@@ -423,7 +423,7 @@ func TestParityMessagesPage(t *testing.T) {
 
 // TestParityMessagesPageEagerMedia is the same with lazy WhatsApp media off.
 func TestParityMessagesPageEagerMedia(t *testing.T) {
-	e := seedPageEnv(t, map[string]string{"WA_LAZY_MEDIA": "0"})
+	e := seedPageEnv(t, map[string]string{"WHATSAPP_LAZY_MEDIA": "0"})
 	compareCalls(t, e, []map[string]any{
 		{"name": "wa_lid", "op": "page", "protocol": "whatsapp", "contact_id": waLid},
 		{"name": "wa_group", "op": "page", "protocol": "whatsapp", "contact_id": waGrp},

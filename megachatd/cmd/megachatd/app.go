@@ -92,13 +92,13 @@ const WhatsAppRelinkNotice = "ℹ️  WhatsApp: la sessione WAHA non è migrabil
 // would otherwise silently lose the backend after the upgrade.
 const (
 	SignalDisabledNotice = "ℹ️  Signal: un account Signal è già configurato ma l'integrazione è " +
-		"disattivata. Aggiungi SIGNAL_ENABLED=1 al file .env e riavvia per riattivarla."
+		"disattivata. Imposta signal.enabled=true in config.json (oppure SIGNAL_ENABLED=1) e riavvia per riattivarla."
 	WhatsAppDisabledNotice = "ℹ️  WhatsApp: una sessione WhatsApp è già presente ma l'integrazione è " +
-		"disattivata. Aggiungi WHATSAPP_ENABLED=1 al file .env e riavvia per riattivarla."
+		"disattivata. Imposta whatsapp.enabled=true in config.json (oppure WHATSAPP_ENABLED=1) e riavvia per riattivarla."
 	TelegramDisabledNotice = "ℹ️  Telegram: le credenziali Telegram sono già configurate ma l'integrazione è " +
-		"disattivata. Aggiungi TELEGRAM_ENABLED=1 al file .env e riavvia per riattivarla."
+		"disattivata. Imposta telegram.enabled=true in config.json (oppure TELEGRAM_ENABLED=1) e riavvia per riattivarla."
 	GmailDisabledNotice = "ℹ️  Gmail: le credenziali Gmail sono già configurate ma l'integrazione è " +
-		"disattivata. Aggiungi GMAIL_ENABLED=1 al file .env e riavvia per riattivarla."
+		"disattivata. Imposta gmail.enabled=true in config.json (oppure GMAIL_ENABLED=1) e riavvia per riattivarla."
 )
 
 // migrationNotice logs the one Warn and appends the one user-facing notice that
@@ -109,6 +109,58 @@ func (a *App) migrationNotice(previouslyConfigured bool, notice string) {
 	}
 	a.Notices = append(a.Notices, notice)
 	a.Log.Warn(notice)
+}
+
+// MigrateCommand is the suggested command for converting a legacy project.
+const MigrateCommand = "megachatd config migrate"
+
+// reportLegacySettings warns about every legacy config.json key, legacy
+// environment variable and the presence of a project .env. Legacy config keys
+// and the .env also become user-facing notices; legacy env vars are logged
+// only. The texts stay in Italian like the other startup notices.
+func (a *App) reportLegacySettings() {
+	notice := func(msg string) {
+		a.Notices = append(a.Notices, msg)
+		a.Log.Warn(msg)
+	}
+	for _, e := range a.Cfg.LegacyConfigEntries() {
+		if e.Setting.Removed() {
+			notice(fmt.Sprintf("⚠️  config.json: la chiave %s non è più supportata e viene ignorata. "+
+				"Esegui \"%s\" per ripulire il file.", e.Name, MigrateCommand))
+			continue
+		}
+		envHint := ""
+		if e.Setting.Env != "" {
+			envHint = fmt.Sprintf(" (variabile d'ambiente %s)", e.Setting.Env)
+		}
+		notice(fmt.Sprintf("⚠️  config.json: la chiave piatta %s è ora %s in config.json%s. "+
+			"Esegui \"%s\" per convertire il file.", e.Name, e.Setting.Path(), envHint, MigrateCommand))
+	}
+	for _, e := range a.Cfg.LegacyEnvEntries() {
+		if e.Setting.Removed() {
+			a.Log.Warn(fmt.Sprintf("⚠️  La variabile d'ambiente %s non è più supportata e viene ignorata.", e.Name))
+			continue
+		}
+		a.Log.Warn(fmt.Sprintf("⚠️  La variabile d'ambiente %s non è più letta: usa %s (oppure %s in config.json).",
+			e.Name, e.Setting.Env, e.Setting.Path()))
+	}
+	if !a.Cfg.DotenvExists() {
+		return
+	}
+	dotenv := a.Cfg.ReadDotenv()
+	keys := make([]string, 0, len(dotenv))
+	for k := range dotenv {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	if len(keys) == 0 {
+		notice(fmt.Sprintf("⚠️  Il file .env non viene più letto: configura i valori in config.json o con le "+
+			"variabili d'ambiente. Esegui \"%s\".", MigrateCommand))
+		return
+	}
+	notice(fmt.Sprintf("⚠️  Il file .env non viene più letto (chiavi: %s). Imposta i valori in config.json "+
+		"o con le variabili d'ambiente. Esegui \"%s\" per convertirli.",
+		strings.Join(keys, ", "), MigrateCommand))
 }
 
 // whatsappRelinkNeeded reports whether the notice is due: WhatsApp is enabled,
@@ -136,6 +188,7 @@ func Build(o BuildOptions) (*App, error) {
 		log = slog.Default()
 	}
 	a := &App{Cfg: cfg, Log: log}
+	a.reportLegacySettings()
 
 	st, err := store.Open(cfg.DBFile())
 	if err != nil {
@@ -155,7 +208,7 @@ func Build(o BuildOptions) (*App, error) {
 				return nil, err
 			}
 		} else {
-			log.Info("Signal backend disabled (enable with SIGNAL_ENABLED=1 in .env or \"signal_enabled\": true in config.json)")
+			log.Info("Signal backend disabled (enable with signal.enabled=true in config.json or SIGNAL_ENABLED=1)")
 			a.migrationNotice(cfg.SignalPreviouslyConfigured(), SignalDisabledNotice)
 		}
 		if cfg.WhatsAppEnabled() {
@@ -168,7 +221,7 @@ func Build(o BuildOptions) (*App, error) {
 				return nil, err
 			}
 		} else {
-			log.Info("WhatsApp backend disabled (enable with WHATSAPP_ENABLED=1 in .env or \"whatsapp_enabled\": true in config.json)")
+			log.Info("WhatsApp backend disabled (enable with whatsapp.enabled=true in config.json or WHATSAPP_ENABLED=1)")
 			a.migrationNotice(cfg.WhatsAppPreviouslyConfigured(), WhatsAppDisabledNotice)
 		}
 		switch {
@@ -179,18 +232,18 @@ func Build(o BuildOptions) (*App, error) {
 				return nil, err
 			}
 		case cfg.TelegramEnabled():
-			log.Warn("Telegram backend not started: TELEGRAM_ENABLED=1 but TELEGRAM_API_ID and/or TELEGRAM_API_HASH are missing")
+			log.Warn("Telegram backend not started: TELEGRAM_ENABLED=1 but telegram.api_id / telegram.api_hash (or TELEGRAM_API_ID / TELEGRAM_API_HASH) are missing")
 		default:
-			log.Info("Telegram backend disabled (enable with TELEGRAM_ENABLED=1 in .env or \"telegram_enabled\": true in config.json)")
+			log.Info("Telegram backend disabled (enable with telegram.enabled=true in config.json or TELEGRAM_ENABLED=1)")
 			a.migrationNotice(cfg.TelegramPreviouslyConfigured(), TelegramDisabledNotice)
 		}
 		switch {
 		case cfg.GmailEnabled():
 			// explicit flag + credentials: the service and its watcher start.
 		case cfg.GmailFlagEnabled():
-			log.Warn("Gmail not started: GMAIL_ENABLED=1 but GMAIL_ADDRESS and/or GMAIL_APP_PASSWORD are missing")
+			log.Warn("Gmail not started: GMAIL_ENABLED=1 but gmail.address / gmail.app_password (or GMAIL_ADDRESS / GMAIL_APP_PASSWORD) are missing")
 		default:
-			log.Info("Gmail disabled (enable with GMAIL_ENABLED=1 in .env or \"gmail_enabled\": true in config.json)")
+			log.Info("Gmail disabled (enable with gmail.enabled=true in config.json or GMAIL_ENABLED=1)")
 			a.migrationNotice(cfg.GmailPreviouslyConfigured(), GmailDisabledNotice)
 		}
 	}

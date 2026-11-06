@@ -28,7 +28,10 @@ TOKEN = "contract-token"
 _SCRUB = (
     "SIGNAL_ENABLED", "SIGNAL_USER_NUMBER", "TELEGRAM_ENABLED", "TELEGRAM_API_ID", "TELEGRAM_API_HASH",
     "WHATSAPP_ENABLED", "WHATSAPP_API_URL", "GMAIL_ENABLED", "GMAIL_ADDRESS", "GMAIL_APP_PASSWORD",
-    "OPENAI_API_KEY", "MEGACHAT_SOCKET", "MEGACHAT_FAKE_BACKEND",
+    "OPENAI_API_KEY", "MEGACHAT_SOCKET", "MEGACHAT_FAKE_BACKEND", "WEB_TOKEN",
+    "WA_LAZY_MEDIA", "WHATSAPP_LAZY_MEDIA", "WHATSAPP_PRESENCE_SUBSCRIBE",
+    "WHATSAPP_SESSION_GUARD", "WHATSAPP_SESSION_BACKOFF_S", "MESSAGES_RETENTION_PER_CONTACT",
+    "TRANSCRIPTION_PROVIDER", "WEB_ENABLED", "WEB_HOST", "WEB_PORT",
     "XDG_DATA_HOME", "XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME",
 )
 
@@ -195,6 +198,11 @@ def start_server(
     sock = root / "run" / "s.sock"
     env = _env(root, home, token)
     env.update(extra_env or {})
+    if kind == "go" and token is not None:
+        # The Go server reads WEB_TOKEN; SIGNAL_TUI_WEB_TOKEN is the legacy
+        # name the Python server still uses (same env dict for both).
+        env.pop("SIGNAL_TUI_WEB_TOKEN", None)
+        env["WEB_TOKEN"] = token
     args = ["--web-port", str(port), "--socket", str(sock), *extra_args]
     if kind == "go":
         assert binary

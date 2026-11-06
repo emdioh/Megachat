@@ -33,7 +33,7 @@ const (
 // NotConfiguredMsg is the canonical "no phone number" error text.
 const NotConfiguredMsg = "Signal phone number not configured.\n" +
 	"Set the SIGNAL_USER_NUMBER environment variable or create a config.json file:\n" +
-	`  echo '{"user_number": "+1234567890"}' > config.json`
+	`  echo '{"signal": {"user_number": "+1234567890"}}' > config.json`
 
 // ErrNotConfigured is returned when no Signal number is configured.
 var ErrNotConfigured = errors.New(NotConfiguredMsg)

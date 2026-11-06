@@ -116,9 +116,9 @@ func TestPruneMedia(t *testing.T) {
 func TestStopPrunesWithConfiguredRetention(t *testing.T) {
 	e := newEnv(t, "signal")
 	e.core.retention = nil
-	// MESSAGE_RETENTION_PER_CONTACT comes from config like in Python (min 100).
+	// MESSAGES_RETENTION_PER_CONTACT comes from config like in Python (min 100).
 	e.cfg.LookupEnv = func(k string) (string, bool) {
-		if k == "MESSAGE_RETENTION_PER_CONTACT" {
+		if k == "MESSAGES_RETENTION_PER_CONTACT" {
 			return "100", true
 		}
 		return "", false

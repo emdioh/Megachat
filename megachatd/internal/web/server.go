@@ -193,7 +193,7 @@ func listenNetwork(host string) string {
 // report a bind failure synchronously.
 func (s *Server) Listen(ctx context.Context) error {
 	if s.authRequired && s.token == "" {
-		return errors.New("web UI requires a Bearer token; configure SIGNAL_TUI_WEB_TOKEN, web.token, or disable auth (web down)")
+		return errors.New("web UI requires a Bearer token; configure web.token (or WEB_TOKEN), or disable auth (web down)")
 	}
 	if s.port < 1 || s.port > 65535 {
 		return fmt.Errorf("invalid web server port %d (web down)", s.port)

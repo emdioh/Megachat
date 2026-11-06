@@ -21,7 +21,7 @@ type Backends interface {
 // Config is the configuration the link flows need. *config.Config implements
 // it.
 type Config interface {
-	// ConfigFile is the path of config.json (user_number is persisted there).
+	// ConfigFile is the path of config.json (signal.user_number is persisted there).
 	ConfigFile() string
 	// Env returns an environment variable or "".
 	Env(name string) string
@@ -94,7 +94,7 @@ type TelegramLogin interface {
 	Needs2FA() bool
 }
 
-// SignalAccount is implemented by the Signal backend (user_number).
+// SignalAccount is implemented by the Signal backend (signal.user_number).
 type SignalAccount interface {
 	UserNumber() string
 	SetUserNumber(string)

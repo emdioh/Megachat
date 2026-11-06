@@ -9,16 +9,16 @@ import (
 // Integration enable flags (mc-7zm). Every backend (Signal, WhatsApp,
 // Telegram, Gmail) is OFF unless its explicit flag says otherwise:
 //
-//	Integration | env / .env        | config.json key
-//	------------|-------------------|-----------------
-//	Signal      | SIGNAL_ENABLED    | signal_enabled
-//	WhatsApp    | WHATSAPP_ENABLED  | whatsapp_enabled
-//	Telegram    | TELEGRAM_ENABLED  | telegram_enabled
-//	Gmail       | GMAIL_ENABLED     | gmail_enabled
+//	Integration | env               | config.json
+//	------------|-----------------|--------------------------
+//	Signal      | SIGNAL_ENABLED  | signal.enabled
+//	WhatsApp    | WHATSAPP_ENABLED| whatsapp.enabled
+//	Telegram    | TELEGRAM_ENABLED| telegram.enabled
+//	Gmail       | GMAIL_ENABLED   | gmail.enabled
 //
 // Precedence is process environment > config.json (JSON bool or one of the
-// lookupBool spellings) > project .env. Blank and unparseable values fall
-// through to the next source; with no usable value anywhere the integration is
+// lookupBool spellings) > default. Blank and unparseable values fall through
+// to the next source; with no usable value anywhere the integration is
 // disabled. In particular credentials never enable a backend: they only make
 // it startable once the flag is on (Telegram/Gmail) and are otherwise evidence
 // of earlier use for the migration notice (mc-7zm.2).
@@ -36,44 +36,30 @@ func lookupBool(s string) (value, set bool) {
 }
 
 // flagValue resolves an explicit enable flag. It returns the first usable
-// source (env, then config.json, then .env); set is false when no source has a
-// parseable value, so callers can tell "off" from "not configured".
-func (c *Config) flagValue(key, envName string) (value, set bool) {
-	if raw, ok := c.envSet(envName); ok {
+// source (env, then config.json); set is false when no source has a parseable
+// value, so callers can tell "off" from "not configured".
+func (c *Config) flagValue(domain, setting string) (value, set bool) {
+	if raw, ok := c.environment(domain, setting); ok {
 		if v, ok := lookupBool(raw); ok {
 			return v, true
 		}
 	}
-	if raw, ok := c.LoadFile()[key]; ok {
-		switch t := raw.(type) {
-		case bool:
-			return t, true
-		case string:
-			if v, ok := lookupBool(t); ok {
-				return v, true
-			}
-		}
-	}
-	if raw, ok := c.LoadDotenv()[envName]; ok {
-		if v, ok := lookupBool(raw); ok {
-			return v, true
-		}
+	if raw, ok := c.fileValue(domain, setting); ok {
+		return boolValue(raw)
 	}
 	return false, false
 }
 
 // ExplicitFlag reports an enable flag with the integration precedence and
 // defaults to false; it never consults credentials.
-func (c *Config) ExplicitFlag(key, envName string) bool {
-	v, _ := c.flagValue(key, envName)
+func (c *Config) ExplicitFlag(domain, setting string) bool {
+	v, _ := c.flagValue(domain, setting)
 	return v
 }
 
-// SignalEnabled is the explicit SIGNAL_ENABLED flag; a configured user number
+// SignalEnabled is the explicit signal.enabled flag; a configured user number
 // alone no longer enables Signal.
-func (c *Config) SignalEnabled() bool {
-	return c.ExplicitFlag("signal_enabled", "SIGNAL_ENABLED")
-}
+func (c *Config) SignalEnabled() bool { return c.ExplicitFlag("signal", "enabled") }
 
 // SignalPreviouslyConfigured reports evidence of an earlier Signal setup (a
 // user number), for the migration notice.
@@ -81,26 +67,21 @@ func (c *Config) SignalPreviouslyConfigured() bool {
 	return strings.TrimSpace(c.SignalUserNumber()) != ""
 }
 
-// WhatsAppEnabled is the explicit WHATSAPP_ENABLED flag; the whatsmeow device
-// store and a legacy WHATSAPP_API_URL are evidence of earlier use, not enables.
-func (c *Config) WhatsAppEnabled() bool {
-	return c.ExplicitFlag("whatsapp_enabled", "WHATSAPP_ENABLED")
-}
+// WhatsAppEnabled is the explicit whatsapp.enabled flag; the whatsmeow device
+// store is evidence of earlier use, not an enable.
+func (c *Config) WhatsAppEnabled() bool { return c.ExplicitFlag("whatsapp", "enabled") }
 
 // WhatsAppPreviouslyConfigured reports evidence of an earlier WhatsApp setup:
-// a paired device store (<DataDir>/whatsmeow.db) or a legacy WAHA API URL.
+// a paired device store (<DataDir>/whatsmeow.db). The WAHA API URL was the
+// other evidence until that setting was removed.
 func (c *Config) WhatsAppPreviouslyConfigured() bool {
-	if _, err := os.Stat(filepath.Join(c.DataDir(), "whatsmeow.db")); err == nil {
-		return true
-	}
-	return c.WhatsAppAPIURL() != ""
+	_, err := os.Stat(filepath.Join(c.DataDir(), "whatsmeow.db"))
+	return err == nil
 }
 
-// TelegramEnabled is the explicit TELEGRAM_ENABLED flag. It does not imply the
+// TelegramEnabled is the explicit telegram.enabled flag. It does not imply the
 // credentials are present; see TelegramCredentials.
-func (c *Config) TelegramEnabled() bool {
-	return c.ExplicitFlag("telegram_enabled", "TELEGRAM_ENABLED")
-}
+func (c *Config) TelegramEnabled() bool { return c.ExplicitFlag("telegram", "enabled") }
 
 // TelegramCredentials reports whether the Telegram API id and hash needed to
 // start the backend are configured.
@@ -122,14 +103,12 @@ func (c *Config) GmailCredentials() bool {
 // address and App Password), for the migration notice.
 func (c *Config) GmailPreviouslyConfigured() bool { return c.GmailCredentials() }
 
-// GmailFlagEnabled is the explicit GMAIL_ENABLED flag alone, without the
+// GmailFlagEnabled is the explicit gmail.enabled flag alone, without the
 // credential requirement; wiring uses it to tell "off" from "on but not
 // startable".
-func (c *Config) GmailFlagEnabled() bool {
-	return c.ExplicitFlag("gmail_enabled", "GMAIL_ENABLED")
-}
+func (c *Config) GmailFlagEnabled() bool { return c.ExplicitFlag("gmail", "enabled") }
 
-// GmailEnabled is ON only with the explicit GMAIL_ENABLED flag AND the
+// GmailEnabled is ON only with the explicit gmail.enabled flag AND the
 // credentials to start the service.
 func (c *Config) GmailEnabled() bool {
 	return c.GmailFlagEnabled() && c.GmailCredentials()
