@@ -2,8 +2,10 @@
 // (server/main.py + server/__main__.py): the chat core with its Unix-socket
 // and web adapters.
 //
-//	megachatd serve [flags]     run the server until SIGINT/SIGTERM or server.shutdown
-//	megachatd version           print the version
+//	megachatd serve [flags]                      run the server until SIGINT/SIGTERM or server.shutdown
+//	megachatd config migrate [--project-dir DIR] [--dry-run]
+//	                                             convert a legacy flat config.json and .env
+//	megachatd version                            print the version
 //
 // The flags of "serve" are those of "megachat serve" plus --project-dir.
 package main
@@ -40,8 +42,10 @@ func usage(w io.Writer) {
 	fmt.Fprint(w, `usage: megachatd <command> [flags]
 
 commands:
-  serve     run the chat core headless (web UI + Unix socket); see "megachatd serve -h"
-  version   print the version
+  serve            run the chat core headless (web UI + Unix socket); see "megachatd serve -h"
+  config migrate   convert a legacy flat config.json and the project .env to the nested schema;
+                   see "megachatd config migrate -h"
+  version          print the version
 `)
 }
 
@@ -53,6 +57,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 	switch args[0] {
 	case "serve":
 		return serve(args[1:], stdout, stderr, nil)
+	case "config":
+		return runConfig(args[1:], stdout, stderr)
 	case "version", "--version", "-version":
 		fmt.Fprintln(stdout, "megachatd", Version)
 		return 0
