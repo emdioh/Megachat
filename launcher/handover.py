@@ -273,6 +273,9 @@ def to_local(*, docker_limits: bool = True) -> int:
     except serverbin.ServerBinaryNotFound as exc:
         die(str(exc))
         return 1
+    except server_mod.ServerStartError as exc:
+        die(str(exc))
+        return 1
     except OSError as exc:
         die(f"avvio server fallito in {PROJECT_DIR}: {exc}")
         return 1

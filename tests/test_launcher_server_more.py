@@ -188,6 +188,25 @@ class TestStartAll:
         with pytest.raises(SystemExit):
             server.start_all()
 
+    def test_early_exit_surfaces_the_server_error(
+        self, monkeypatch, start_env, capsys
+    ):
+        def popen(cmd, **kw):
+            server.SERVER_LOG.write_text(
+                "starting\n"
+                "❌ telegram is enabled but missing: telegram.api_id (TELEGRAM_API_ID)\n"
+                "Fill in the missing settings in config.json\n",
+                encoding="utf-8",
+            )
+            return _FakeProc(1)
+
+        monkeypatch.setattr(server.subprocess, "Popen", popen)
+        with pytest.raises(SystemExit):
+            server.start_all()
+        err = capsys.readouterr().err
+        assert "telegram is enabled but missing" in err
+        assert "Fill in the missing settings" in err
+
     def test_reports_success_with_token_and_url(self, monkeypatch, start_env, capsys):
         monkeypatch.setattr(server, "_read_web_token", lambda: "tok123")
         monkeypatch.setattr(server, "_local_ip", lambda: "10.0.0.5")

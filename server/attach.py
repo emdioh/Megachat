@@ -98,13 +98,18 @@ def serve_args_for_web(
     return args
 
 
-def _tail(path: Path, offset: int) -> str:
+def _output_since(log_path: Path, offset: int) -> str:
+    """This run's output (from *offset*) as text; "" when unreadable."""
     try:
-        with open(path, "rb") as f:
+        with open(log_path, "rb") as f:
             f.seek(offset)
-            text = f.read().decode("utf-8", "replace")
+            return f.read().decode("utf-8", "replace")
     except OSError:
         return ""
+
+
+def _tail(path: Path, offset: int) -> str:
+    text = _output_since(path, offset)
     return "\n".join(text.strip().splitlines()[-_TAIL_LINES:])
 
 
@@ -254,11 +259,30 @@ def _log_hint(log_path: Path, offset: int) -> str:
     return hint + (f"\n{tail}" if tail else "")
 
 
+def _startup_error(log_path: Path, offset: int) -> str:
+    """The server's own startup error (``❌ ...``) in this run's output, else "".
+
+    ``megachatd serve`` prefixes an enabled-integration validation failure with
+    ``❌``; that block is more useful than the generic "exited" message plus a
+    log tail.
+    """
+    text = _output_since(log_path, offset)
+    marker = text.find("❌")
+    return text[marker:].strip() if marker >= 0 else ""
+
+
 def _early_exit_message(proc: subprocess.Popen, log_path: Path, offset: int) -> str:
-    return (
+    prefix = (
         f"The server (megachat serve) exited with code {proc.returncode} "
-        "before accepting connections." + _log_hint(log_path, offset)
+        "before accepting connections."
     )
+    detail = _startup_error(log_path, offset)
+    if detail:
+        return (
+            f"{prefix}\n{detail}\n"
+            f"Server log: /tmp/signal-tui.log, output: {log_path}"
+        )
+    return prefix + _log_hint(log_path, offset)
 
 
 def server_pid(socket_path: Path | str) -> int | None:
