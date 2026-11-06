@@ -75,9 +75,26 @@ def go_fresh(go_binary) -> Server:
     srv.stop()
 
 
+@pytest.fixture
+def go_signal(go_binary) -> Server:
+    """A private Go server with SIGNAL_ENABLED=1 and no Signal account.
+
+    The Signal backend is registered (ops and the startup event ring see it)
+    but its connect worker stops at ErrNotConfigured: no daemon is spawned.
+    """
+    srv = start_server("go", binary=go_binary, extra_env={"SIGNAL_ENABLED": "1"})
+    yield srv
+    srv.stop()
+
+
 @pytest.fixture(scope="session")
 def go_seeded(go_binary, seed_home) -> Server:
-    srv = start_server("go", binary=go_binary, seed_home=seed_home)
+    # SIGNAL_ENABLED=1 registers the Signal backend, which is what window /
+    # snapshot read the seeded Signal rows through. No SIGNAL_USER_NUMBER and no
+    # signal-cli on the fixture, so the connect worker stops at ErrNotConfigured
+    # and no daemon is ever started.
+    srv = start_server("go", binary=go_binary, seed_home=seed_home,
+                       extra_env={"SIGNAL_ENABLED": "1"})
     yield srv
     srv.stop()
 

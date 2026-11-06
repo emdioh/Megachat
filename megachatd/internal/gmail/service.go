@@ -81,6 +81,12 @@ func (s *Service) Close() {
 // ---- settings --------------------------------------------------------------------------------
 
 func (s *Service) loadSettings() (settings, error) {
+	// GmailEnabled is the explicit flag AND the credentials: with the flag off
+	// no IMAP/SMTP connection is ever attempted, and every gmail.* operation
+	// answers exactly like an unconfigured Gmail.
+	if !s.cfg.GmailEnabled() {
+		return settings{}, notConfiguredError{}
+	}
 	addr, pw := s.cfg.GmailAddress(), s.cfg.GmailAppPassword()
 	if addr == "" || pw == "" {
 		return settings{}, notConfiguredError{}

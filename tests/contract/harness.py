@@ -26,8 +26,8 @@ TOKEN = "contract-token"
 
 #: Env vars that would switch a backend on; scrubbed for both servers.
 _SCRUB = (
-    "SIGNAL_ENABLED", "SIGNAL_USER_NUMBER", "TELEGRAM_API_ID", "TELEGRAM_API_HASH",
-    "WHATSAPP_ENABLED", "WHATSAPP_API_URL", "GMAIL_ADDRESS", "GMAIL_APP_PASSWORD",
+    "SIGNAL_ENABLED", "SIGNAL_USER_NUMBER", "TELEGRAM_ENABLED", "TELEGRAM_API_ID", "TELEGRAM_API_HASH",
+    "WHATSAPP_ENABLED", "WHATSAPP_API_URL", "GMAIL_ENABLED", "GMAIL_ADDRESS", "GMAIL_APP_PASSWORD",
     "OPENAI_API_KEY", "MEGACHAT_SOCKET", "MEGACHAT_FAKE_BACKEND",
     "XDG_DATA_HOME", "XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME",
 )
@@ -159,6 +159,9 @@ def _env(root: Path, home: Path, token: str | None) -> dict[str, str]:
         MEGACHAT_LOG_FILE=str(root / "server.log"),
         MEGACHAT_PROJECT_DIR=str(proj),
         SIGNAL_ENABLED="0",
+        WHATSAPP_ENABLED="0",
+        TELEGRAM_ENABLED="0",
+        GMAIL_ENABLED="0",
         GMAIL_UNREAD_POLL_S="0",
         GMAIL_IMAGE_PREFETCH="0",
         PYTHONUNBUFFERED="1",

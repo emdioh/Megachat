@@ -107,6 +107,9 @@ type bmap map[string]proto.Backend
 
 func (m bmap) Get(p string) (proto.Backend, bool) { b, ok := m[p]; return b, ok }
 
+// signalOnly is the backend map of a server with SIGNAL_ENABLED=1.
+func signalOnly() bmap { return bmap{"signal": &signalBackend{fake.New("signal"), ""}} }
+
 type testEnv struct {
 	dir string
 	cfg *config.Config
@@ -269,7 +272,7 @@ func TestStatusReportsConfigurationWithoutIO(t *testing.T) {
 func TestSignalStartExtractsLinkAndNamesDevice(t *testing.T) {
 	e := newTest(t, nil)
 	e.cli.procs = []*fakeProc{lineProc("some error occurred", "sgnl://linkdevice?uuid=abc", "more")}
-	q, err := e.service(bmap{}).Start(context.Background(), "signal", "", "My Laptop")
+	q, err := e.service(signalOnly()).Start(context.Background(), "signal", "", "My Laptop")
 	if err != nil || q != (api.LinkQrOut{Kind: "url", Data: "sgnl://linkdevice?uuid=abc"}) {
 		t.Fatalf("%+v %v", q, err)
 	}
@@ -278,11 +281,19 @@ func TestSignalStartExtractsLinkAndNamesDevice(t *testing.T) {
 	}
 }
 
+func TestSignalStartDisabledNamesFlag(t *testing.T) {
+	_, err := newTest(t, nil).service(bmap{}).Start(context.Background(), "signal", "", "d")
+	var lu *LinkUnavailable
+	if !errors.As(err, &lu) || !strings.Contains(err.Error(), "SIGNAL_ENABLED=1") {
+		t.Fatalf("%v", err)
+	}
+}
+
 func TestSignalSnapshotFailureDoesNotBlockQR(t *testing.T) {
 	e := newTest(t, nil)
 	e.cli.listErr = errors.New("boom")
 	e.cli.procs = []*fakeProc{lineProc("sgnl://linkdevice?uuid=abc")}
-	s := e.service(bmap{})
+	s := e.service(signalOnly())
 	q, err := s.Start(context.Background(), "signal", "", "d")
 	if err != nil || q.Data != "sgnl://linkdevice?uuid=abc" {
 		t.Fatal(q, err)
@@ -296,7 +307,7 @@ func TestSignalNoLinkURLKillsProcess(t *testing.T) {
 	e := newTest(t, nil)
 	p := lineProc("no link here")
 	e.cli.procs = []*fakeProc{p}
-	s := e.service(bmap{})
+	s := e.service(signalOnly())
 	_, err := s.Start(context.Background(), "signal", "", "d")
 	var le *LinkError
 	if !errors.As(err, &le) || !strings.Contains(err.Error(), "Could not find Signal link URL") {
@@ -311,7 +322,7 @@ func TestSignalPollFollowsSubprocess(t *testing.T) {
 	e := newTest(t, nil)
 	p := lineProc("sgnl://linkdevice?uuid=abc")
 	e.cli.procs = []*fakeProc{p}
-	s := e.service(bmap{})
+	s := e.service(signalOnly())
 	s.Start(context.Background(), "signal", "", "d")
 	poll := func() api.LinkPollOut {
 		o, err := s.Poll(context.Background(), "signal")
@@ -343,7 +354,7 @@ func TestSignalCancelBehaviour(t *testing.T) {
 	running := lineProc("sgnl://linkdevice?uuid=1")
 	running.termErr = errors.New("kill failed")
 	e.cli.procs = []*fakeProc{running}
-	s := e.service(bmap{})
+	s := e.service(signalOnly())
 	s.Start(context.Background(), "signal", "", "d")
 	s.Cancel("signal") // terminate failure is survived
 	s.Cancel("signal") // nothing left: no-op
@@ -363,7 +374,7 @@ func TestSignalCancelBehaviour(t *testing.T) {
 func TestSignalCancelWhileStartingDoesNotLeak(t *testing.T) {
 	e := newTest(t, nil)
 	p := &fakeProc{}
-	s := e.service(bmap{})
+	s := e.service(signalOnly())
 	e.cli.startReturn = p
 	e.cli.onStart = func() { s.Cancel("signal") }
 	_, err := s.Start(context.Background(), "signal", "", "d")
@@ -379,7 +390,7 @@ func TestNewStartReplacesPreviousAndReapsAbandoned(t *testing.T) {
 	e := newTest(t, nil)
 	first, second := lineProc("sgnl://linkdevice?uuid=1"), lineProc("sgnl://linkdevice?uuid=2")
 	e.cli.procs = []*fakeProc{first, second}
-	s := e.service(bmap{})
+	s := e.service(signalOnly())
 	s.Start(context.Background(), "signal", "", "d")
 	s.Start(context.Background(), "signal", "", "d")
 	if first.terminatedN() != 1 || second.terminatedN() != 0 {
@@ -574,7 +585,7 @@ func TestWhatsAppStart(t *testing.T) {
 	}
 	_, err = newTest(t, nil).service(bmap{}).Start(ctx, "whatsapp", "", "")
 	var lu *LinkUnavailable
-	if !errors.As(err, &lu) || err.Error() != "WhatsApp backend not available" {
+	if !errors.As(err, &lu) || err.Error() != whatsAppUnavailable {
 		t.Fatalf("%v", err)
 	}
 }
@@ -803,12 +814,12 @@ func TestOperations(t *testing.T) {
 	}
 	// error mapping
 	_, err = call(t, reg, "link.start", map[string]any{"protocol": "whatsapp"})
-	wantErr(t, err, api.CodeBackendDown, "WhatsApp backend not available")
+	wantErr(t, err, api.CodeBackendDown, whatsAppUnavailable)
 	e.cli.procs = []*fakeProc{lineProc("nothing")}
 	_, err = call(t, reg, "link.start", map[string]any{"protocol": "signal"})
 	wantErr(t, err, api.CodeBackendError, "Could not find Signal link URL in signal-cli output. Is signal-cli configured correctly?")
 	_, err = call(t, reg, "link.submit_2fa", map[string]any{"password": "x"})
-	wantErr(t, err, api.CodeBackendDown, "Telegram backend not available")
+	wantErr(t, err, api.CodeBackendDown, telegramUnavailable)
 	// validation
 	_, err = call(t, reg, "link.start", map[string]any{"protocol": "matrix"})
 	wantErr(t, err, api.CodeInvalidRequest, "Invalid request")

@@ -273,6 +273,9 @@ func (s *Service) Start(ctx context.Context, protocol, phone, deviceName string)
 var signalLinkRE = regexp.MustCompile(`((?:sgnl|signal)://link[^\s]*)`)
 
 func (s *Service) startSignal(ctx context.Context, sess *session) (api.LinkQrOut, error) {
+	if s.backend(api.ProtocolSignal) == nil {
+		return api.LinkQrOut{}, &LinkUnavailable{"Signal backend not available: set SIGNAL_ENABLED=1 in .env and restart the server"}
+	}
 	if s.cli == nil {
 		return api.LinkQrOut{}, linkErr("signal-cli not found in ./bin/")
 	}
@@ -314,14 +317,19 @@ func (s *Service) startSignal(ctx context.Context, sess *session) (api.LinkQrOut
 	return api.LinkQrOut{}, linkErr("Could not find Signal link URL in signal-cli output. Is signal-cli configured correctly?")
 }
 
+const (
+	whatsAppUnavailable = "WhatsApp backend not available: set WHATSAPP_ENABLED=1 in .env and restart the server"
+	telegramUnavailable = "Telegram backend not available: set TELEGRAM_ENABLED=1 (with TELEGRAM_API_ID and TELEGRAM_API_HASH) in .env and restart the server"
+)
+
 func (s *Service) startWhatsApp(ctx context.Context) (api.LinkQrOut, error) {
 	be := s.backend(api.ProtocolWhatsApp)
 	if be == nil {
-		return api.LinkQrOut{}, &LinkUnavailable{"WhatsApp backend not available"}
+		return api.LinkQrOut{}, &LinkUnavailable{whatsAppUnavailable}
 	}
 	rest, ok := be.(WhatsAppLinker)
 	if !ok {
-		return s.startPairer(ctx, be, "WhatsApp backend not available")
+		return s.startPairer(ctx, be, whatsAppUnavailable)
 	}
 	status, ident, err := rest.SessionStatus(ctx)
 	if err != nil {
@@ -375,11 +383,11 @@ func (s *Service) startPairer(ctx context.Context, be proto.Backend, unavailable
 func (s *Service) startTelegram(ctx context.Context) (api.LinkQrOut, error) {
 	be := s.backend(api.ProtocolTelegram)
 	if be == nil {
-		return api.LinkQrOut{}, &LinkUnavailable{"Telegram backend not available"}
+		return api.LinkQrOut{}, &LinkUnavailable{telegramUnavailable}
 	}
 	p, ok := be.(proto.Pairer)
 	if !ok {
-		return api.LinkQrOut{}, &LinkUnavailable{"Telegram backend not available"}
+		return api.LinkQrOut{}, &LinkUnavailable{telegramUnavailable}
 	}
 	raw, err := p.PairingQR(ctx)
 	if err != nil {
@@ -636,11 +644,11 @@ func (s *Service) FinalizeSignal(ctx context.Context, phone string) (string, err
 func (s *Service) Submit2FA(ctx context.Context, password string) (bool, error) {
 	be := s.backend(api.ProtocolTelegram)
 	if be == nil {
-		return false, &LinkUnavailable{"Telegram backend not available"}
+		return false, &LinkUnavailable{telegramUnavailable}
 	}
 	tf, ok := be.(proto.TwoFactor)
 	if !ok {
-		return false, &LinkUnavailable{"Telegram backend not available"}
+		return false, &LinkUnavailable{telegramUnavailable}
 	}
 	return tf.Complete2FA(ctx, password)
 }
