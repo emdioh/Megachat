@@ -227,6 +227,33 @@ func TestConnectIdempotentAndLoadsContacts(t *testing.T) {
 	}
 }
 
+// TestReconnectRestartsSessionGuard: Disconnect stops the WhatsApp session
+// guard, so a reconnect (link.reconnect -> proto.Manager.RestartBackend) must
+// start it again for the new session.
+func TestReconnectRestartsSessionGuard(t *testing.T) {
+	e := newEnv(t)
+	guardRunning := func() bool {
+		e.b.guard.runMu.Lock()
+		defer e.b.guard.runMu.Unlock()
+		return e.b.guard.cancel != nil
+	}
+	if err := e.b.Connect(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if guardRunning() {
+		t.Fatal("a cold connect must not start the app-owned guard")
+	}
+	if err := e.b.Disconnect(ctx); err != nil || guardRunning() {
+		t.Fatalf("Disconnect must stop the guard: %v", err)
+	}
+	if err := e.b.Connect(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if !guardRunning() {
+		t.Fatal("reconnect did not restart the session guard")
+	}
+}
+
 // ---- through the real core ----------------------------------------------------------------------
 
 func TestBackendEventsFlowThroughCore(t *testing.T) {

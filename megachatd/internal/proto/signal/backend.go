@@ -12,6 +12,7 @@ package signal
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"os/exec"
@@ -114,7 +115,6 @@ type Backend struct {
 	sseCancel context.CancelFunc
 	sseDone   chan struct{}
 	closed    chan struct{} // closed by Disconnect; replaced on Connect
-	daemon    *exec.Cmd
 
 	queue *eventQueue
 
@@ -240,7 +240,8 @@ func (b *Backend) Connect(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		if err := b.startDaemon(cli); err != nil {
+		proc, err := b.startDaemon(cli)
+		if err != nil {
 			return err
 		}
 		// The SSE listener retries by itself, so start it right away to
@@ -255,6 +256,16 @@ func (b *Backend) Connect(ctx context.Context) error {
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
+			case <-proc.done:
+				// The daemon is gone (typically the account is not linked
+				// yet). Reporting success here would leave the core with a
+				// half-connected backend and no warning, so fail instead;
+				// link.reconnect restarts it once the account exists.
+				b.useDaemon.Store(false)
+				b.stopSSE()
+				err := proc.exitError()
+				b.log.Warn("signal-cli daemon exited", "err", err)
+				return err
 			case <-time.After(b.opts.ProbeInterval):
 			}
 		}
@@ -262,6 +273,7 @@ func (b *Backend) Connect(ctx context.Context) error {
 			b.useDaemon.Store(true)
 			b.loadContactsRPC(ctx)
 		} else {
+			b.log.Warn("signal-cli daemon did not answer; using the subprocess fallback")
 			b.useDaemon.Store(false)
 			b.loadContactsSubprocess(ctx)
 		}
@@ -280,19 +292,61 @@ func (b *Backend) Connect(ctx context.Context) error {
 	return nil
 }
 
-func (b *Backend) startDaemon(cli string) error {
+func (b *Backend) startDaemon(cli string) (*daemonProc, error) {
 	b.lifeMu.Lock()
 	defer b.lifeMu.Unlock()
 	cmd := exec.Command(cli, "-u", b.UserNumber(), "daemon",
 		"--http", "127.0.0.1:"+strconv.Itoa(b.port),
 		"--receive-mode", "on-connection", "--no-receive-stdout")
+	proc := &daemonProc{done: make(chan struct{})}
+	cmd.Stderr = &proc.stderr
 	if err := cmd.Start(); err != nil {
-		return err
+		return nil, err
 	}
-	b.daemon = cmd
-	go func() { _ = cmd.Wait() }() // reap; the daemon outlives Disconnect by design
-	return nil
+	go func() { // reap; the daemon outlives Disconnect by design
+		proc.err = cmd.Wait()
+		close(proc.done)
+	}()
+	return proc, nil
 }
+
+// daemonStderrCap bounds the daemon stderr kept for the connect error.
+const daemonStderrCap = 4096
+
+// daemonProc is one spawned signal-cli daemon. done is closed once Wait
+// returned; err and stderr are only read after that.
+type daemonProc struct {
+	done   chan struct{}
+	err    error
+	stderr tailBuffer
+}
+
+// exitError describes why the daemon went away: exit status plus the tail of
+// its stderr (signal-cli prints the account error there).
+func (p *daemonProc) exitError() error {
+	status := "exit status 0"
+	if p.err != nil {
+		status = p.err.Error()
+	}
+	msg := "signal-cli daemon exited (" + status + ")"
+	if s := p.stderr.String(); s != "" {
+		msg += ": " + s
+	}
+	return errors.New(msg)
+}
+
+// tailBuffer is an io.Writer keeping the last daemonStderrCap bytes.
+type tailBuffer struct{ buf []byte }
+
+func (t *tailBuffer) Write(p []byte) (int, error) {
+	t.buf = append(t.buf, p...)
+	if len(t.buf) > daemonStderrCap {
+		t.buf = append(t.buf[:0], t.buf[len(t.buf)-daemonStderrCap:]...)
+	}
+	return len(p), nil
+}
+
+func (t *tailBuffer) String() string { return strings.TrimSpace(string(t.buf)) }
 
 // Disconnect stops the SSE listener. The daemon itself is left running, by
 // design (like the Python backend).
@@ -327,6 +381,14 @@ func (b *Backend) RestartSSE() {
 		b.runCtx, b.cancel = context.WithCancel(context.Background())
 		b.closed = make(chan struct{})
 	}
+	b.lifeMu.Unlock()
+	b.stopSSE()
+	b.startSSE()
+}
+
+// stopSSE stops the listener, waiting (bounded) for its goroutine to return.
+func (b *Backend) stopSSE() {
+	b.lifeMu.Lock()
 	cancel, done := b.sseCancel, b.sseDone
 	b.sseCancel, b.sseDone = nil, nil
 	b.lifeMu.Unlock()
@@ -339,7 +401,6 @@ func (b *Backend) RestartSSE() {
 		case <-time.After(5 * time.Second):
 		}
 	}
-	b.startSSE()
 }
 
 // ---- SSE ------------------------------------------------------------------------------

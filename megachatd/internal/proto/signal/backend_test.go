@@ -105,6 +105,34 @@ func TestConnectStartsDaemonThenSubprocessFallback(t *testing.T) {
 	}
 }
 
+// TestConnectFailsWhenSpawnedDaemonExits: an unlinked account makes
+// signal-cli exit right away. Connect must fail with the exit status and
+// stderr instead of silently falling back to subprocess mode (mc-tih).
+func TestConnectFailsWhenSpawnedDaemonExits(t *testing.T) {
+	t.Setenv("FAKE_SIGNAL_DAEMON_FAIL", "-390000000000 is not registered")
+	t.Setenv("FAKE_SIGNAL_DAEMON_EXIT", "3")
+	h := newHarness(t, func(o *Options) {
+		o.CLIPath = fakeCLI(t)
+		o.DaemonURL = "http://127.0.0.1:1/api/v1/rpc"
+		o.SSEURL = "http://127.0.0.1:1/api/v1/events"
+		o.DaemonPort = 18081
+		o.ProbeAttempts = 200
+		o.ProbeInterval = 5 * time.Millisecond
+	})
+	err := h.b.Connect(bg)
+	if err == nil {
+		t.Fatal("Connect reported success although the daemon exited")
+	}
+	for _, want := range []string{"signal-cli daemon exited", "exit status 3", "is not registered"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error %q does not mention %q", err, want)
+		}
+	}
+	if h.b.IsConnected() {
+		t.Fatal("half-connected backend after a dead daemon")
+	}
+}
+
 func TestConnectErrors(t *testing.T) {
 	h := newHarness(t, func(o *Options) { o.DaemonURL = "http://127.0.0.1:1/x" })
 	if err := h.b.Connect(bg); err != ErrCLINotFound {

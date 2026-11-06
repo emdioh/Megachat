@@ -13,6 +13,10 @@ case "$1" in
     if [ -n "$FAKE_SIGNAL_SEND_OUT" ]; then printf '%s\n' "$FAKE_SIGNAL_SEND_OUT"; else printf '1700000000123\n'; fi
     ;;
   daemon)
+    if [ -n "$FAKE_SIGNAL_DAEMON_FAIL" ]; then
+      echo "Error: $FAKE_SIGNAL_DAEMON_FAIL" >&2
+      exit "${FAKE_SIGNAL_DAEMON_EXIT:-3}"
+    fi
     exec sleep 2
     ;;
   fail)

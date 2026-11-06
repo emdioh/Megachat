@@ -285,7 +285,7 @@ func (c *Core) Start(ctx context.Context) error {
 	c.goroutine(func() { c.pump(runCtx) })
 	for _, b := range c.mgr.All() {
 		p := b.Protocol()
-		c.goroutine(func() { c.connect(runCtx, p) })
+		c.goroutine(func() { c.connect(runCtx, p, false) })
 	}
 	c.ab.start(runCtx)
 	if c.gmail != nil {
@@ -331,13 +331,16 @@ func (c *Core) Stop(ctx context.Context) error {
 }
 
 // Reconnect (re)connects the given protocols' backends (called after a
-// device-link flow, ChatCore.reconnect).
+// device-link flow, ChatCore.reconnect). Unlike a cold start it forces the
+// connection: the backend may report StateConnected while its session is
+// dead (the Signal daemon exited at boot), so the connect is re-run from
+// scratch instead of being skipped.
 func (c *Core) Reconnect(ctx context.Context, protocols ...string) {
 	for _, p := range protocols {
 		if _, ok := c.mgr.Get(p); !ok {
 			continue
 		}
-		c.goroutine(func() { c.connect(c.runContext(ctx), p) })
+		c.goroutine(func() { c.connect(c.runContext(ctx), p, true) })
 	}
 }
 
@@ -347,8 +350,9 @@ func (c *Core) runContext(fallback context.Context) context.Context {
 }
 
 // connect is the connect worker of one backend: it publishes the progress
-// events and the backend_ready / backend_done outcome.
-func (c *Core) connect(ctx context.Context, protocol string) {
+// events and the backend_ready / backend_done outcome. restart forces a
+// Disconnect+Connect (link.reconnect) instead of skipping a connected slot.
+func (c *Core) connect(ctx context.Context, protocol string, restart bool) {
 	b, ok := c.mgr.Get(protocol)
 	if !ok {
 		return
@@ -361,7 +365,11 @@ func (c *Core) connect(ctx context.Context, protocol string) {
 	c.bus.Publish(bus.BackendConnecting, toMap(api.BackendConnectingPayload{Protocol: protocol}))
 	label := protocolLabel(protocol)
 	c.status(protocol, "⏳ "+label+": "+connectingText(protocol), true)
-	if err := c.mgr.StartBackend(ctx, protocol); err != nil {
+	connect := c.mgr.StartBackend
+	if restart {
+		connect = c.mgr.RestartBackend
+	}
+	if err := connect(ctx, protocol); err != nil {
 		c.log.Warn("backend connect failed", "protocol", protocol, "err", err)
 		c.status(protocol, failText(protocol, err), true)
 		c.done(protocol)
@@ -375,7 +383,14 @@ func (c *Core) connect(ctx context.Context, protocol string) {
 	case api.ProtocolSignal:
 		c.ready(ctx, b, protocol)
 		c.status(protocol, "💡 Select a contact to view chat", false)
-		c.status(protocol, "✅ Signal: daemon attivo", false)
+		if b.IsConnected() {
+			c.status(protocol, "✅ Signal: daemon attivo", false)
+		} else {
+			// Connect survived on the one-shot subprocess path: say so
+			// instead of claiming a daemon nobody is running (Python did
+			// the same).
+			c.status(protocol, "⚠️ Signal: daemon non disponibile (subprocess)", true)
+		}
 	case api.ProtocolWhatsApp:
 		if len(contacts) == 0 {
 			// Server-side contact sync still in progress (_poll_wa_contacts).

@@ -53,6 +53,9 @@ type slot struct {
 	b     Backend
 	state State
 	err   error
+	// restartMu serialises RestartBackend's Disconnect/Connect pair for this
+	// backend (per protocol, so a slow connect cannot block another).
+	restartMu sync.Mutex
 }
 
 // Manager owns the registered backends and routes operations to them.
@@ -264,6 +267,34 @@ func (m *Manager) StartBackend(ctx context.Context, protocol string) error {
 	return m.start(ctx, []string{protocol})
 }
 
+// RestartBackend disconnects the backend and connects it again, whatever its
+// tracked state is. StartBackend skips connected slots, which is wrong for a
+// reconnect after a link flow: a backend that reported a successful Connect
+// can still sit on a dead session (the Signal daemon exited at boot), so the
+// only way to recover is to tear the old stream down and run Connect again.
+func (m *Manager) RestartBackend(ctx context.Context, protocol string) error {
+	m.mu.Lock()
+	s, ok := m.slots[protocol]
+	m.mu.Unlock()
+	if !ok {
+		return fmt.Errorf("%w %q", ErrNoBackend, protocol)
+	}
+	// Two overlapping link.reconnect calls must not interleave their
+	// Disconnect/Connect pairs on the same backend, and an in-flight connect
+	// (start holds the same lock around Connect) must finish first.
+	s.restartMu.Lock()
+	if err := s.b.Disconnect(ctx); err != nil {
+		m.log.Debug("backend disconnect before restart failed", "protocol", protocol, "err", err)
+	}
+	m.mu.Lock()
+	if cur, ok := m.slots[protocol]; ok && cur == s {
+		cur.state, cur.err = StateIdle, nil
+	}
+	m.mu.Unlock()
+	s.restartMu.Unlock()
+	return m.StartBackend(ctx, protocol)
+}
+
 func (m *Manager) start(ctx context.Context, protocols []string) error {
 	m.lifeMu.Lock()
 	run := m.ensureRun()
@@ -277,36 +308,53 @@ func (m *Manager) start(ctx context.Context, protocols []string) error {
 	for _, p := range protocols {
 		m.mu.Lock()
 		s := m.slots[p]
-		skip := s == nil || s.state == StateConnected || s.state == StateConnecting
-		var b Backend
-		if !skip {
-			b = s.b
-			s.state, s.err = StateConnecting, nil
-		}
 		m.mu.Unlock()
-		if skip {
+		if s == nil {
 			continue
-		}
-		if m.onState != nil {
-			m.onState(StateChange{Protocol: p, State: StateConnecting})
 		}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if err := b.Connect(ctx); err != nil {
-				m.log.Warn("backend connect failed", "protocol", p, "err", err)
-				m.setState(p, StateFailed, err)
+			if err := m.connectOne(ctx, run, p, s); err != nil {
 				emu.Lock()
-				errs = append(errs, fmt.Errorf("%s: %w", p, err))
+				errs = append(errs, err)
 				emu.Unlock()
-				return
 			}
-			m.setState(p, StateConnected, nil)
-			m.startPump(run, p, b)
 		}()
 	}
 	wg.Wait()
 	return errors.Join(errs...)
+}
+
+// connectOne connects one slot unless it is (or became) connected or
+// connecting. The slot restart lock makes that check atomic with the Connect
+// call, so RestartBackend cannot tear the stream down mid-connect (and two of
+// them cannot start a second pump).
+func (m *Manager) connectOne(ctx context.Context, run context.Context, p string, s *slot) error {
+	s.restartMu.Lock()
+	defer s.restartMu.Unlock()
+	m.mu.Lock()
+	cur, ok := m.slots[p]
+	skip := !ok || cur != s || s.state == StateConnected || s.state == StateConnecting
+	b := s.b
+	if !skip {
+		s.state, s.err = StateConnecting, nil
+	}
+	m.mu.Unlock()
+	if skip {
+		return nil
+	}
+	if m.onState != nil {
+		m.onState(StateChange{Protocol: p, State: StateConnecting})
+	}
+	if err := b.Connect(ctx); err != nil {
+		m.log.Warn("backend connect failed", "protocol", p, "err", err)
+		m.setState(p, StateFailed, err)
+		return fmt.Errorf("%s: %w", p, err)
+	}
+	m.setState(p, StateConnected, nil)
+	m.startPump(run, p, b)
+	return nil
 }
 
 func (m *Manager) startPump(ctx context.Context, p string, b Backend) {
