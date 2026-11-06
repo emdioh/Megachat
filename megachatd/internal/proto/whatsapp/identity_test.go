@@ -66,9 +66,9 @@ func TestBrowserIdentityOverrides(t *testing.T) {
 	dir := t.TempDir()
 	cfg := config.NewWith(dir, dir, map[string]string{})
 	if err := cfg.UpdateFile(func(m map[string]any) {
-		m["whatsapp_browser"] = "Firefox"
-		m["whatsapp_browser_version"] = "155.0"
-		m["whatsapp_browser_os"] = "Windows"
+		m["whatsapp"] = map[string]any{
+			"browser": "Firefox", "browser_version": "155.0", "browser_os": "Windows",
+		}
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +85,7 @@ func TestBrowserIdentityUnknownBrowser(t *testing.T) {
 	dir := t.TempDir()
 	cfg := config.NewWith(dir, dir, map[string]string{})
 	if err := cfg.UpdateFile(func(m map[string]any) {
-		m["whatsapp_browser"] = "Brave"
+		m["whatsapp"] = map[string]any{"browser": "Brave"}
 	}); err != nil {
 		t.Fatal(err)
 	}

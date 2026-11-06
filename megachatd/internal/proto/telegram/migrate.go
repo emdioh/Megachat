@@ -30,7 +30,7 @@ func MarkedPeerCandidates(raw int64) (group, channel int64) {
 }
 
 // MigrateConfigToMarkedIDs is the one-time, idempotent fix of the per-chat
-// auto-transcribe overrides ("auto_transcribe_chats" in config.json, keys
+// auto-transcribe overrides (transcription.auto_chats in config.json, keys
 // "telegram:<contact_id>").
 //
 // The Python backend listed groups/channels with their raw positive id, and
@@ -49,8 +49,7 @@ func MarkedPeerCandidates(raw int64) (group, channel int64) {
 // before the first change (an existing backup is never overwritten).
 func MigrateConfigToMarkedIDs(cfg *config.Config, known map[int64]bool) (MarkedIDsMigration, error) {
 	res := MarkedIDsMigration{Rewritten: map[string]string{}}
-	const section = "auto_transcribe_chats"
-	chats, _ := cfg.LoadFile()[section].(map[string]any)
+	chats := autoChatsSection(cfg.LoadFile())
 	if len(chats) == 0 {
 		return res, nil
 	}
@@ -101,7 +100,7 @@ func MigrateConfigToMarkedIDs(cfg *config.Config, known map[int64]bool) (MarkedI
 	}
 	res.BackupPath = backup
 	err := cfg.UpdateFile(func(d map[string]any) {
-		cur, _ := d[section].(map[string]any)
+		cur := autoChatsSection(d)
 		for oldKey, newKey := range plan {
 			v, ok := cur[oldKey]
 			if !ok {
@@ -117,6 +116,22 @@ func MigrateConfigToMarkedIDs(cfg *config.Config, known map[int64]bool) (MarkedI
 		}
 	})
 	return res, err
+}
+
+// autoChatsSection returns config.json's transcription.auto_chats object,
+// creating the intermediate objects when creating is possible.
+func autoChatsSection(d map[string]any) map[string]any {
+	tr, ok := d["transcription"].(map[string]any)
+	if !ok || tr == nil {
+		tr = map[string]any{}
+		d["transcription"] = tr
+	}
+	chats, ok := tr["auto_chats"].(map[string]any)
+	if !ok || chats == nil {
+		chats = map[string]any{}
+		tr["auto_chats"] = chats
+	}
+	return chats
 }
 
 // KnownMarkedIDs gathers the evidence MigrateConfigToMarkedIDs needs: the

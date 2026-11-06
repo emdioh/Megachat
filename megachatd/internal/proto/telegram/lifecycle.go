@@ -219,11 +219,10 @@ func (b *Backend) runClient(r *runState, mgr *updates.Manager) {
 	b.peers.flush()
 }
 
-// configureReactionNotify is _configure_reaction_notify.
+// configureReactionNotify is _configure_reaction_notify. telegram.reactions_notify
+// (TELEGRAM_REACTIONS_NOTIFY) turns it off.
 func (b *Backend) configureReactionNotify(ctx context.Context, api *tg.Client) error {
-	switch strings.ToLower(strings.TrimSpace(envOr(reactionNotifyEnvVar, "1"))) {
-	case "1", "true", "yes", "on":
-	default:
+	if b.cfg != nil && !b.cfg.TelegramReactionsNotify() {
 		return nil
 	}
 	s, err := api.AccountGetReactionsNotifySettings(ctx)
@@ -239,13 +238,6 @@ func (b *Backend) configureReactionNotify(ctx context.Context, api *tg.Client) e
 	upd.SetMessagesNotifyFrom(&tg.ReactionNotificationsFromAll{})
 	_, err = api.AccountSetReactionsNotifySettings(ctx, upd)
 	return err
-}
-
-func envOr(key, def string) string {
-	if v, ok := os.LookupEnv(key); ok {
-		return v
-	}
-	return def
 }
 
 // Disconnect implements proto.Backend.

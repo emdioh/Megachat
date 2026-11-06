@@ -58,6 +58,8 @@ type Config interface {
 	WhatsAppBrowser() string
 	WhatsAppBrowserVersion() string
 	WhatsAppBrowserOS() string
+	// WhatsAppPresenceSubscribe is whatsapp.presence_subscribe.
+	WhatsAppPresenceSubscribe() bool
 }
 
 // Store is the slice of internal/store the backend persists through.
@@ -570,8 +572,8 @@ func (b *Backend) warmup(ctx context.Context, cli waClient) {
 	b.StartLIDResolver()
 	// Announcing "available" is what makes WhatsApp deliver typing updates, but
 	// it also mutes the phone's push notifications: only when the typing
-	// indicator is enabled (WAHA_PRESENCE_SUBSCRIBE), like Python.
-	if presenceEnabled() {
+	// indicator is enabled (whatsapp.presence_subscribe), like Python.
+	if b.presenceEnabled() {
 		if err := cli.SendPresence(ctx, "available"); err != nil {
 			b.log.Debug("WhatsApp presence available failed", "err", err)
 		}

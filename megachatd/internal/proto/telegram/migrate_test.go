@@ -21,13 +21,14 @@ func migCfg(t *testing.T, body string) *config.Config {
 
 func chatsOf(t *testing.T, cfg *config.Config) map[string]any {
 	t.Helper()
-	m, _ := cfg.LoadFile()["auto_transcribe_chats"].(map[string]any)
+	tr, _ := cfg.LoadFile()["transcription"].(map[string]any)
+	m, _ := tr["auto_chats"].(map[string]any)
 	return m
 }
 
 const fixtureConfig = `{
-  "user_number": "+39000",
-  "auto_transcribe_chats": {
+  "signal": {"user_number": "+39000"},
+  "transcription": {"auto_chats": {
     "telegram:123": true,
     "telegram:456": false,
     "telegram:789": true,
@@ -37,7 +38,7 @@ const fixtureConfig = `{
     "telegram:42": true,
     "signal:123": true,
     "whatsapp:123": false
-  }
+  }}
 }`
 
 // 123 = legacy group (-123 known), 456 = channel (-100456 known), 789 is a
@@ -75,7 +76,8 @@ func TestMigrateConfigRewritesGroupsAndChannels(t *testing.T) {
 	if !reflect.DeepEqual(got, expect) {
 		t.Fatalf("chats %v", got)
 	}
-	if cfg.LoadFile()["user_number"] != "+39000" {
+	sig, _ := cfg.LoadFile()["signal"].(map[string]any)
+	if sig["user_number"] != "+39000" {
 		t.Fatal("other keys must survive")
 	}
 	sort.Strings(res.Ambiguous)
@@ -110,7 +112,7 @@ func TestMigrateConfigBackupAndIdempotent(t *testing.T) {
 }
 
 func TestMigrateConfigMarkedKeyWins(t *testing.T) {
-	cfg := migCfg(t, `{"auto_transcribe_chats":{"telegram:99":true,"telegram:-99":false}}`)
+	cfg := migCfg(t, `{"transcription":{"auto_chats":{"telegram:99":true,"telegram:-99":false}}}`)
 	res, err := MigrateConfigToMarkedIDs(cfg, map[int64]bool{-99: true})
 	if err != nil || len(res.Dropped) != 1 || res.Dropped[0] != "telegram:99" {
 		t.Fatalf("%+v %v", res, err)
@@ -121,7 +123,7 @@ func TestMigrateConfigMarkedKeyWins(t *testing.T) {
 }
 
 func TestMigrateConfigNoChangeNoBackupNoWrite(t *testing.T) {
-	for _, body := range []string{`{}`, `{"auto_transcribe_chats":{"telegram:42":true,"telegram:-5":true}}`, `not json`} {
+	for _, body := range []string{`{}`, `{"transcription":{"auto_chats":{"telegram:42":true,"telegram:-5":true}}}`, `not json`} {
 		cfg := migCfg(t, body)
 		res, err := MigrateConfigToMarkedIDs(cfg, map[int64]bool{42: true})
 		if err != nil || res.BackupPath != "" {

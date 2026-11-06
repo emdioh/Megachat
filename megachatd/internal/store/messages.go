@@ -748,7 +748,7 @@ func (s *Store) PruneCache(ctx context.Context, limit int, nowMs int64) (int, er
 		return 0, err
 	}
 	if limit > 0 && limit < MinPruneLimit {
-		s.log.Warn("MESSAGE_RETENTION_PER_CONTACT below minimum; clamped",
+		s.log.Warn("messages.retention_per_contact below minimum; clamped",
 			"limit", limit, "min", MinPruneLimit)
 		limit = MinPruneLimit
 	}

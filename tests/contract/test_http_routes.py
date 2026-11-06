@@ -254,7 +254,7 @@ def test_refuses_to_start_without_token(go_binary):
 
 
 def test_token_from_config_json(go_binary, tmp_path):
-    # web.token in <project-dir>/config.json is the fallback of SIGNAL_TUI_WEB_TOKEN
+    # web.token in <project-dir>/config.json is the fallback of WEB_TOKEN
     import harness
 
     orig = harness._env

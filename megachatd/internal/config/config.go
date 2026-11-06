@@ -2,10 +2,19 @@
 // (protocols/config.py, transcription/config.py, server/paths.py,
 // server/lock.py, server/main.py, server/thumbnails.py, protocols/db.py ...).
 //
-// Resolution order, as in Python: environment variable (when non-empty),
-// then “config.json“ in the project directory, then (for a few legacy
-// settings only) the project “.env“, then the default. config.json is
-// re-read on every access so edits take effect without a restart.
+// megachatd has exactly two settings sources:
+//
+//  1. config.json in the project directory, one JSON object per domain:
+//     {"telegram": {"enabled": true}}. See schema.go for every domain and
+//     setting.
+//  2. Environment variables overrides of a single setting, named
+//     UPPER(domain_setting) (TELEGRAM_ENABLED, WHATSAPP_SESSION_GUARD, ...).
+//
+// The project .env is never read as a settings source. The order is: env
+// variable (when set and non-blank), then config.json[domain][setting], then
+// the default. A value that cannot be coerced to the setting's type falls
+// through to the next source. config.json is re-read on every access so edits
+// take effect without a restart.
 package config
 
 import (
@@ -23,9 +32,9 @@ import (
 // the repository root, derived from __file__).
 const ProjectDirEnv = "MEGACHAT_PROJECT_DIR"
 
-// Config resolves settings from env, config.json and .env.
+// Config resolves settings from env and config.json.
 type Config struct {
-	// ProjectDir holds config.json, .env and bin/ (Python: the repo root).
+	// ProjectDir holds config.json and bin/ (Python: the repo root).
 	ProjectDir string
 	// Home is the user's home directory.
 	Home string
@@ -82,6 +91,10 @@ func (c *Config) envSet(name string) (string, bool) {
 // ConfigFile is the path of config.json.
 func (c *Config) ConfigFile() string { return filepath.Join(c.ProjectDir, "config.json") }
 
+// DotenvPath is the path of the project .env. The file is never a settings
+// source; it is only inspected by the startup warning and "config migrate".
+func (c *Config) DotenvPath() string { return filepath.Join(c.ProjectDir, ".env") }
+
 // LoadFile returns the parsed config.json, or an empty map when missing,
 // unreadable, invalid or not a JSON object.
 func (c *Config) LoadFile() map[string]any {
@@ -96,11 +109,12 @@ func (c *Config) LoadFile() map[string]any {
 	return m
 }
 
-// LoadDotenv best-effort parses the project .env (KEY=VALUE lines; no quote
-// handling, like Python).
-func (c *Config) LoadDotenv() map[string]string {
+// ReadDotenv best-effort parses the project .env (KEY=VALUE lines; no quote
+// handling) and returns it. Settings never come from here; the startup warning
+// uses the key names and "config migrate" folds the values into config.json.
+func (c *Config) ReadDotenv() map[string]string {
 	out := map[string]string{}
-	data, err := os.ReadFile(filepath.Join(c.ProjectDir, ".env"))
+	data, err := os.ReadFile(c.DotenvPath())
 	if err != nil {
 		return out
 	}
@@ -113,6 +127,12 @@ func (c *Config) LoadDotenv() map[string]string {
 		out[strings.TrimSpace(k)] = strings.TrimSpace(v)
 	}
 	return out
+}
+
+// DotenvExists reports whether <project>/.env exists (read or not).
+func (c *Config) DotenvExists() bool {
+	_, err := os.Stat(c.DotenvPath())
+	return err == nil
 }
 
 // UpdateFile loads the whole config.json, applies mutate and writes it back
@@ -130,6 +150,164 @@ func (c *Config) UpdateFile(mutate func(map[string]any)) error {
 		return err
 	}
 	return os.WriteFile(c.ConfigFile(), buf.Bytes(), 0o644)
+}
+
+// domainObject returns config.json's d[domain] object, creating it. Writers
+// use it to keep the one-object-per-domain shape.
+func domainObject(d map[string]any, domain string) map[string]any {
+	dom, ok := d[domain].(map[string]any)
+	if !ok || dom == nil {
+		dom = map[string]any{}
+		d[domain] = dom
+	}
+	return dom
+}
+
+// nestedSection returns config.json's d[domain][setting] object, creating the
+// intermediate objects.
+func nestedSection(d map[string]any, domain, setting string) map[string]any {
+	dom := domainObject(d, domain)
+	sec, ok := dom[setting].(map[string]any)
+	if !ok || sec == nil {
+		sec = map[string]any{}
+		dom[setting] = sec
+	}
+	return sec
+}
+
+// ---- resolution -----------------------------------------------------------
+
+// environment returns the environment override of (domain, setting) when the
+// variable is set and non-blank.
+func (c *Config) environment(domain, setting string) (string, bool) {
+	raw, ok := c.envSet(envName(domain, setting))
+	if !ok || strings.TrimSpace(raw) == "" {
+		return "", false
+	}
+	return raw, true
+}
+
+// fileValue returns config.json[domain][setting] when present and not null.
+func (c *Config) fileValue(domain, setting string) (any, bool) {
+	dom, ok := c.LoadFile()[domain].(map[string]any)
+	if !ok {
+		return nil, false
+	}
+	v, ok := dom[setting]
+	if !ok || v == nil {
+		return nil, false
+	}
+	return v, true
+}
+
+// rawValue is the string view of the first usable source: the env override,
+// else the config.json value. It is what the string getters return.
+func (c *Config) rawValue(domain, setting string) (string, bool) {
+	if v, ok := c.environment(domain, setting); ok {
+		return v, true
+	}
+	if v, ok := c.fileValue(domain, setting); ok {
+		return pyStr(v), true
+	}
+	return "", false
+}
+
+// GetString returns the env override (non-blank), else config.json, else def.
+func (c *Config) GetString(domain, setting, def string) string {
+	if v, ok := c.rawValue(domain, setting); ok {
+		return v
+	}
+	return def
+}
+
+// GetInt returns an int: env (non-blank), else config.json, else def. A value
+// that is not an integer falls through to the next source.
+func (c *Config) GetInt(domain, setting string, def int) int {
+	if raw, ok := c.environment(domain, setting); ok {
+		if n, ok := pyInt(raw); ok {
+			return n
+		}
+	}
+	if raw, ok := c.fileValue(domain, setting); ok {
+		if n, ok := pyInt(raw); ok {
+			return n
+		}
+	}
+	return def
+}
+
+// GetBool returns a bool: env (non-blank), else config.json, else def.
+// Truthy 1/true/yes/on, falsy 0/false/no/off (case-insensitive); a value that
+// is not a boolean spelling falls through to the next source.
+func (c *Config) GetBool(domain, setting string, def bool) bool {
+	if raw, ok := c.environment(domain, setting); ok {
+		if v, ok := lookupBool(raw); ok {
+			return v
+		}
+	}
+	if raw, ok := c.fileValue(domain, setting); ok {
+		if v, ok := boolValue(raw); ok {
+			return v
+		}
+	}
+	return def
+}
+
+// GetFloat returns a float: env (non-blank), else config.json, else def.
+func (c *Config) GetFloat(domain, setting string, def float64) float64 {
+	if raw, ok := c.environment(domain, setting); ok {
+		if f, err := strconv.ParseFloat(strings.TrimSpace(raw), 64); err == nil {
+			return f
+		}
+	}
+	if raw, ok := c.fileValue(domain, setting); ok {
+		if f, ok := floatValue(raw); ok {
+			return f
+		}
+	}
+	return def
+}
+
+// GetMap returns an object-valued setting (config.json only: map settings have
+// no env override). Missing or non-object values yield an empty map.
+func (c *Config) GetMap(domain, setting string) map[string]any {
+	if m, ok := c.fileValue(domain, setting); ok {
+		if sec, ok := m.(map[string]any); ok && sec != nil {
+			return sec
+		}
+	}
+	return map[string]any{}
+}
+
+// boolValue coerces a JSON value to a bool: JSON booleans, the lookupBool
+// spellings and the numbers 0/1.
+func boolValue(v any) (bool, bool) {
+	switch t := v.(type) {
+	case bool:
+		return t, true
+	case string:
+		return lookupBool(t)
+	case float64:
+		switch t {
+		case 0:
+			return false, true
+		case 1:
+			return true, true
+		}
+	}
+	return false, false
+}
+
+// floatValue coerces a JSON value to a float: numbers and numeric strings.
+func floatValue(v any) (float64, bool) {
+	switch t := v.(type) {
+	case float64:
+		return t, true
+	case string:
+		f, err := strconv.ParseFloat(strings.TrimSpace(t), 64)
+		return f, err == nil
+	}
+	return 0, false
 }
 
 // ---- python-ish coercions -------------------------------------------------
@@ -173,64 +351,4 @@ func pyInt(v any) (int, bool) {
 		return t, true
 	}
 	return 0, false
-}
-
-// Get returns the env var if non-empty, else the config.json value, else def.
-func (c *Config) Get(key, envName, def string) string {
-	if v := c.Env(envName); v != "" {
-		return v
-	}
-	if v, ok := c.LoadFile()[key]; ok && v != nil {
-		return pyStr(v)
-	}
-	return def
-}
-
-// GetInt returns an int: env (non-empty), else config.json, else def.
-// Invalid values yield def.
-func (c *Config) GetInt(key, envName string, def int) int {
-	var raw any = c.Env(envName)
-	if raw == "" {
-		if v, ok := c.LoadFile()[key]; ok {
-			raw = v
-		} else {
-			return def
-		}
-	}
-	if n, ok := pyInt(raw); ok {
-		return n
-	}
-	return def
-}
-
-// GetBool returns a bool: env (non-blank), else config.json, else def.
-// Truthy 1/true/yes/on, falsy 0/false/no/off (case-insensitive); anything
-// else yields def.
-func (c *Config) GetBool(key, envName string, def bool) bool {
-	raw, ok := c.envSet(envName)
-	var s string
-	if !ok || strings.TrimSpace(raw) == "" {
-		v, present := c.LoadFile()[key]
-		if !present {
-			return def
-		}
-		s = pyStr(v)
-	} else {
-		s = raw
-	}
-	switch strings.ToLower(strings.TrimSpace(s)) {
-	case "1", "true", "yes", "on":
-		return true
-	case "0", "false", "no", "off":
-		return false
-	}
-	return def
-}
-
-func atoiOr(s string, def int) int {
-	n, err := strconv.Atoi(strings.TrimSpace(s))
-	if err != nil {
-		return def
-	}
-	return n
 }

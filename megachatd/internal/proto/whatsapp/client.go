@@ -112,8 +112,8 @@ type browserIdentity struct {
 
 // defaultBrowserIdentity mimics a recent desktop Chrome instead of
 // whatsmeow's defaults (Os "whatsmeow", PlatformType UNKNOWN). It is
-// overridable from config.json (whatsapp_browser, whatsapp_browser_version,
-// whatsapp_browser_os). Bump the version when the string falls too far behind
+// overridable from config.json (whatsapp.browser, whatsapp.browser_version,
+// whatsapp.browser_os). Bump the version when the string falls too far behind
 // Chrome stable (https://chromereleases.googleblog.com/).
 var defaultBrowserIdentity = browserIdentity{OS: "Linux", Browser: "Chrome", Version: "157.0.8103.39"}
 
@@ -141,7 +141,7 @@ func resolveBrowserIdentity(cfg Config, log *slog.Logger) browserIdentity {
 		if _, ok := browserPlatforms[strings.ToLower(v)]; ok {
 			id.Browser = v
 		} else {
-			log.Warn("whatsapp: unknown whatsapp_browser, using Chrome", "value", v)
+			log.Warn("whatsapp: unknown whatsapp.browser, using Chrome", "value", v)
 		}
 	}
 	if v := cfg.WhatsAppBrowserVersion(); v != "" {

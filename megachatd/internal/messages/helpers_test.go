@@ -87,7 +87,7 @@ func (d deps) FindContact(_ context.Context, protocol, id string) (proto.Contact
 type envOpts struct {
 	rows      func(cfg *config.Config) []row
 	reactions []reactionRow
-	// env variables of the config (WA_LAZY_MEDIA=0 turns lazy media off)
+	// env variables of the config (WHATSAPP_LAZY_MEDIA=0 turns lazy media off)
 	vars map[string]string
 }
 

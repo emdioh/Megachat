@@ -708,20 +708,16 @@ func (b *Backend) securityNoticeText(jid string) string {
 
 // ---- presence subscription -----------------------------------------------------------
 
-// presenceEnabled mirrors _PRESENCE_SUBSCRIBE_ENABLED (WAHA_PRESENCE_SUBSCRIBE):
-// the typing indicator is off by default because announcing "available" mutes
-// the phone's push notifications.
-func presenceEnabled() bool {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv("WAHA_PRESENCE_SUBSCRIBE"))) {
-	case "1", "true", "yes", "on":
-		return true
-	}
-	return false
+// presenceEnabled is whatsapp.presence_subscribe: the typing indicator is off
+// by default because announcing "available" mutes the phone's push
+// notifications.
+func (b *Backend) presenceEnabled() bool {
+	return b.cfg != nil && b.cfg.WhatsAppPresenceSubscribe()
 }
 
 // presenceSubscribeLazy subscribes a chat's presence on first activity.
 func (b *Backend) presenceSubscribeLazy(chat string) {
-	if !presenceEnabled() || chat == "" || strings.HasSuffix(chat, "@g.us") {
+	if !b.presenceEnabled() || chat == "" || strings.HasSuffix(chat, "@g.us") {
 		return
 	}
 	b.cmu.Lock()
@@ -757,7 +753,7 @@ func (b *Backend) presenceSubscribe(chat string) {
 // (start_presence_subscribe): a sweep over the known chats, a no-op unless the
 // typing indicator is enabled.
 func (b *Backend) StartPresenceSubscribe(ctx context.Context) error {
-	if !presenceEnabled() {
+	if !b.presenceEnabled() {
 		return nil
 	}
 	cli := b.currentClient()

@@ -38,78 +38,85 @@ func TestIntegrationFlagsDefaultOff(t *testing.T) {
 func TestIntegrationFlagPrecedence(t *testing.T) {
 	cases := []struct {
 		name    string
-		key     string
-		envName string
+		domain  string
+		setting string
 		enabled func(*Config) bool
 	}{
-		{"signal", "signal_enabled", "SIGNAL_ENABLED", (*Config).SignalEnabled},
-		{"whatsapp", "whatsapp_enabled", "WHATSAPP_ENABLED", (*Config).WhatsAppEnabled},
-		{"telegram", "telegram_enabled", "TELEGRAM_ENABLED", (*Config).TelegramEnabled},
+		{"signal", "signal", "enabled", (*Config).SignalEnabled},
+		{"whatsapp", "whatsapp", "enabled", (*Config).WhatsAppEnabled},
+		{"telegram", "telegram", "enabled", (*Config).TelegramEnabled},
 		// GmailEnabled also requires credentials (tested separately), so the
 		// precedence table probes the flag itself.
-		{"gmail", "gmail_enabled", "GMAIL_ENABLED", func(c *Config) bool {
-			return c.ExplicitFlag("gmail_enabled", "GMAIL_ENABLED")
+		{"gmail", "gmail", "enabled", func(c *Config) bool {
+			return c.ExplicitFlag("gmail", "enabled")
 		}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			jsonKey := `{"` + tc.key + `":`
+			ev := envName(tc.domain, tc.setting)
+			jsonKey := `{"` + tc.domain + `":{"` + tc.setting + `":`
 			// Each source on its own.
-			if !tc.enabled(newFlagCfg(t, map[string]string{tc.envName: "1"}, "", "")) {
+			if !tc.enabled(newFlagCfg(t, map[string]string{ev: "1"}, "", "")) {
 				t.Fatal("env must enable")
 			}
-			if !tc.enabled(newFlagCfg(t, map[string]string{tc.envName: "on"}, "", "")) {
+			if !tc.enabled(newFlagCfg(t, map[string]string{ev: "on"}, "", "")) {
 				t.Fatal("env on must enable")
 			}
-			if !tc.enabled(newFlagCfg(t, nil, jsonKey+`true}`, "")) {
+			if !tc.enabled(newFlagCfg(t, nil, jsonKey+`true}}`, "")) {
 				t.Fatal("config.json bool must enable")
 			}
-			if !tc.enabled(newFlagCfg(t, nil, jsonKey+`"yes"}`, "")) {
+			if !tc.enabled(newFlagCfg(t, nil, jsonKey+`"yes"}}`, "")) {
 				t.Fatal("config.json string must enable")
 			}
-			if !tc.enabled(newFlagCfg(t, nil, "", tc.envName+"=1\n")) {
-				t.Fatal(".env must enable")
-			}
 			// Off spellings.
-			if tc.enabled(newFlagCfg(t, map[string]string{tc.envName: "0"}, "", "")) {
+			if tc.enabled(newFlagCfg(t, map[string]string{ev: "0"}, "", "")) {
 				t.Fatal("env 0 must disable")
 			}
-			if tc.enabled(newFlagCfg(t, nil, "", tc.envName+"=off\n")) {
-				t.Fatal(".env off must disable")
+			if tc.enabled(newFlagCfg(t, nil, jsonKey+`false}}`, "")) {
+				t.Fatal("config.json false must disable")
 			}
-			// env > config.json > .env.
-			if tc.enabled(newFlagCfg(t, map[string]string{tc.envName: "0"}, jsonKey+`true}`, tc.envName+"=1\n")) {
+			// env > config.json.
+			if tc.enabled(newFlagCfg(t, map[string]string{ev: "0"}, jsonKey+`true}}`, "")) {
 				t.Fatal("environment must win")
 			}
-			if tc.enabled(newFlagCfg(t, nil, jsonKey+`false}`, tc.envName+"=1\n")) {
-				t.Fatal("config.json must win over .env")
-			}
 			// Blank and unparseable values fall through.
-			if !tc.enabled(newFlagCfg(t, map[string]string{tc.envName: "  "}, jsonKey+`true}`, "")) {
+			if !tc.enabled(newFlagCfg(t, map[string]string{ev: "  "}, jsonKey+`true}}`, "")) {
 				t.Fatal("blank env must fall through to config.json")
 			}
-			if !tc.enabled(newFlagCfg(t, map[string]string{tc.envName: "banana"}, jsonKey+`true}`, "")) {
+			if !tc.enabled(newFlagCfg(t, map[string]string{ev: "banana"}, jsonKey+`true}}`, "")) {
 				t.Fatal("unparseable env must fall through to config.json")
 			}
-			if !tc.enabled(newFlagCfg(t, nil, jsonKey+`""}`, tc.envName+"=1\n")) {
-				t.Fatal("blank config.json value must fall through to .env")
+			if tc.enabled(newFlagCfg(t, nil, jsonKey+`""}}`, "")) {
+				t.Fatal("blank config.json value must be unconfigured")
+			}
+			// The project .env never enables anything.
+			if tc.enabled(newFlagCfg(t, nil, "", ev+"=1\n")) {
+				t.Fatal(".env must not enable " + tc.name)
 			}
 		})
 	}
 }
 
 func TestSignalExplicitFlagBeatsUserNumber(t *testing.T) {
-	c := newFlagCfg(t, nil, `{"user_number":"+391"}`, "")
+	c := newFlagCfg(t, nil, `{"signal":{"user_number":"+391"}}`, "")
 	if c.SignalEnabled() || !c.SignalPreviouslyConfigured() || c.SignalUserNumber() != "+391" {
 		t.Fatal("a user number is evidence, not an enable")
 	}
-	if !newFlagCfg(t, map[string]string{"SIGNAL_ENABLED": "1"}, `{"user_number":"+391"}`, "").SignalEnabled() {
+	// The legacy flat key is ignored and reported.
+	legacy := newFlagCfg(t, nil, `{"user_number":"+391"}`, "")
+	if legacy.SignalEnabled() || legacy.SignalPreviouslyConfigured() || legacy.SignalUserNumber() != "" {
+		t.Fatal("the legacy user_number key must be ignored")
+	}
+	if len(legacy.LegacyConfigEntries()) != 1 {
+		t.Fatalf("%+v", legacy.LegacyConfigEntries())
+	}
+	if !newFlagCfg(t, map[string]string{"SIGNAL_ENABLED": "1"}, `{"signal":{"user_number":"+391"}}`, "").SignalEnabled() {
 		t.Fatal("SIGNAL_ENABLED=1 must enable Signal")
 	}
-	if !newFlagCfg(t, map[string]string{"SIGNAL_ENABLED": "yes"}, `{"user_number":"+391"}`, "").SignalEnabled() {
+	if !newFlagCfg(t, map[string]string{"SIGNAL_ENABLED": "yes"}, `{"signal":{"user_number":"+391"}}`, "").SignalEnabled() {
 		t.Fatal("SIGNAL_ENABLED=yes must enable Signal")
 	}
-	if newFlagCfg(t, map[string]string{"SIGNAL_ENABLED": "0"}, `{"user_number":"+391"}`, "").SignalEnabled() {
+	if newFlagCfg(t, map[string]string{"SIGNAL_ENABLED": "0"}, `{"signal":{"user_number":"+391"}}`, "").SignalEnabled() {
 		t.Fatal("explicit disable must beat the user number")
 	}
 }
@@ -131,18 +138,26 @@ func TestWhatsAppDeviceStoreIsEvidenceNotEnable(t *testing.T) {
 	if newFlagCfg(t, map[string]string{"WHATSAPP_ENABLED": "0"}, "", "").WhatsAppEnabled() {
 		t.Fatal("explicit disable must win")
 	}
+	// The removed WAHA API URL is no longer evidence of anything.
 	legacy := newFlagCfg(t, map[string]string{"WHATSAPP_API_URL": "http://127.0.0.1:3005"}, "", "")
-	if legacy.WhatsAppEnabled() || !legacy.WhatsAppPreviouslyConfigured() {
-		t.Fatal("a legacy WHATSAPP_API_URL is evidence, not an enable")
+	if legacy.WhatsAppEnabled() || legacy.WhatsAppPreviouslyConfigured() {
+		t.Fatal("a removed WHATSAPP_API_URL is neither an enable nor evidence")
+	}
+	if len(legacy.LegacyEnvEntries()) != 1 || !legacy.LegacyEnvEntries()[0].Setting.Removed() {
+		t.Fatalf("%+v", legacy.LegacyEnvEntries())
 	}
 }
 
 func TestTelegramFlagAndCredentials(t *testing.T) {
-	creds := newFlagCfg(t, nil, "", "TELEGRAM_API_ID=123\nTELEGRAM_API_HASH=abc\n")
+	creds := newFlagCfg(t, nil, `{"telegram":{"api_id":123,"api_hash":"abc"}}`, "")
 	if creds.TelegramEnabled() || !creds.TelegramCredentials() || !creds.TelegramPreviouslyConfigured() {
 		t.Fatal("credentials are evidence, not an enable")
 	}
-	if newFlagCfg(t, map[string]string{"TELEGRAM_ENABLED": "0"}, "", "TELEGRAM_API_ID=123\nTELEGRAM_API_HASH=abc\n").TelegramEnabled() {
+	envCreds := newFlagCfg(t, map[string]string{"TELEGRAM_API_ID": "123", "TELEGRAM_API_HASH": "abc"}, "", "")
+	if !envCreds.TelegramCredentials() {
+		t.Fatal("env credentials")
+	}
+	if newFlagCfg(t, map[string]string{"TELEGRAM_ENABLED": "0"}, `{"telegram":{"api_id":123,"api_hash":"abc"}}`, "").TelegramEnabled() {
 		t.Fatal("explicit disable must beat the credentials")
 	}
 	// ON without credentials reports not startable.
@@ -150,12 +165,19 @@ func TestTelegramFlagAndCredentials(t *testing.T) {
 	if !flagOnly.TelegramEnabled() || flagOnly.TelegramCredentials() {
 		t.Fatal("TELEGRAM_ENABLED alone must be on but not startable")
 	}
+	if newFlagCfg(t, map[string]string{"TELEGRAM_REACTIONS_NOTIFY": "0"}, "", "").TelegramReactionsNotify() {
+		t.Fatal("reactions notify from env")
+	}
 }
 
 func TestGmailFlagAndCredentials(t *testing.T) {
 	creds := newFlagCfg(t, map[string]string{"GMAIL_ADDRESS": "a@b", "GMAIL_APP_PASSWORD": "pw"}, "", "")
 	if creds.GmailEnabled() || !creds.GmailCredentials() || !creds.GmailPreviouslyConfigured() {
 		t.Fatal("credentials are evidence, not an enable")
+	}
+	nested := newFlagCfg(t, nil, `{"gmail":{"address":"a@b","app_password":"pw"}}`, "")
+	if nested.GmailEnabled() || !nested.GmailCredentials() {
+		t.Fatal("nested credentials are evidence, not an enable")
 	}
 	// ON without credentials reports not startable.
 	flagOnly := newFlagCfg(t, map[string]string{"GMAIL_ENABLED": "1"}, "", "")

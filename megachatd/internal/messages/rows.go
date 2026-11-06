@@ -193,7 +193,7 @@ func aggregateReactions(rows []msg, reactions []store.Reaction) map[int64][]api.
 type rowBuilder struct {
 	st        quoteStore
 	cacheDir  string
-	lazyMedia bool // protocol is WhatsApp and wa_lazy_media is on
+	lazyMedia bool // protocol is WhatsApp and whatsapp.lazy_media is on
 	protocol  string
 }
 

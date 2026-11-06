@@ -142,7 +142,10 @@ func TestPersistsOnlyLinkedAccountAndPreservesConfig(t *testing.T) {
 	var got map[string]any
 	b, _ := os.ReadFile(cf)
 	json.Unmarshal(b, &got)
-	want := map[string]any{"web": map[string]any{"token": "existing"}, "user_number": "+392222222222"}
+	want := map[string]any{
+		"web":    map[string]any{"token": "existing"},
+		"signal": map[string]any{"user_number": "+392222222222"},
+	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("%v", got)
 	}
@@ -207,9 +210,14 @@ func TestPersistRefusesBadConfigAndCreatesMissing(t *testing.T) {
 	if err := PersistSignalAccount(cf, "+39111"); err != nil {
 		t.Fatal(err)
 	}
+	var created map[string]any
 	b, _ := os.ReadFile(cf)
-	if !strings.Contains(string(b), `"user_number": "+39111"`) {
-		t.Errorf("%s", b)
+	if err := json.Unmarshal(b, &created); err != nil {
+		t.Fatalf("%v: %s", err, b)
+	}
+	signalSec, _ := created["signal"].(map[string]any)
+	if signalSec["user_number"] != "+39111" {
+		t.Errorf("signal.user_number not nested: %s", b)
 	}
 	// a replace failure leaves no temp file: target is a directory
 	d2 := t.TempDir()

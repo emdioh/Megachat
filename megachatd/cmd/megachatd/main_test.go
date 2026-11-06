@@ -103,9 +103,9 @@ func newTestEnv(t *testing.T) *testEnv {
 	}
 	e := &testEnv{socket: filepath.Join(root, "s.sock"), port: freePort(t), token: "test-token"}
 	e.cfg = config.NewWith(project, home, map[string]string{
-		"SIGNAL_TUI_WEB_TOKEN": e.token,
-		"MEGACHAT_SOCKET":      e.socket,
-		"MEGACHAT_LOCK_FILE":   filepath.Join(root, "lock"),
+		"WEB_TOKEN":          e.token,
+		"MEGACHAT_SOCKET":    e.socket,
+		"MEGACHAT_LOCK_FILE": filepath.Join(root, "lock"),
 	})
 	return e
 }
