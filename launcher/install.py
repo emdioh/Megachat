@@ -474,24 +474,25 @@ def run(args) -> int:
     print()
     print("Prossimi passi:")
     print("  1. Abilita Signal (megachatd) e configura il tuo numero di telefono:")
-    print('       export SIGNAL_USER_NUMBER="+1234567890"')
-    print("       echo 'SIGNAL_ENABLED=1' >> .env")
-    print("     oppure crea config.json:")
-    print(
-        """       echo '{"signal_enabled": true, "user_number": "+1234567890"}' > config.json"""
-    )
+    print('       export SIGNAL_ENABLED=1 SIGNAL_USER_NUMBER="+1234567890"')
+    print("     oppure aggiungi al config.json (un oggetto per dominio):")
+    print("""       { "signal": { "enabled": true, "user_number": "+1234567890" } }""")
     print("  2. Collega il tuo account Signal (QR code):")
     if do_venv:
         print("       source .venv/bin/activate")
     print("       python3 link_account.py")
     print("  3. (Opzionale) Abilita e collega WhatsApp (QR code, nessun Docker):")
-    print("       echo 'WHATSAPP_ENABLED=1' >> .env")
+    print("       export WHATSAPP_ENABLED=1")
+    print('       # oppure config.json: "whatsapp": { "enabled": true }')
     print("       python3 link_whatsapp.py")
     print("  4. (Opzionale) Abilita Telegram:")
-    print("       echo 'TELEGRAM_ENABLED=1' >> .env")
     print(
-        "       # aggiungi TELEGRAM_API_ID e TELEGRAM_API_HASH a .env, poi Ctrl+L nella TUI"
+        "       export TELEGRAM_ENABLED=1 TELEGRAM_API_ID=123456 TELEGRAM_API_HASH=..."
     )
+    print(
+        '       # oppure config.json: "telegram": { "enabled": true, "api_id": 123456, "api_hash": "..." }'
+    )
+    print("       # poi Ctrl+L nella TUI")
     print("  5. Avvia il client:")
     if do_venv:
         print("       source .venv/bin/activate")
@@ -501,7 +502,7 @@ def run(args) -> int:
         print("       Token:  config.json → web.token")
         print(
             "       Gmail (opzionale): python3 scripts/gmail_setup.py "
-            "(scrive GMAIL_ENABLED=1 in .env)"
+            "(scrive gmail.enabled in config.json; a mano: GMAIL_ENABLED=1)"
         )
     print()
     env_file = PROJECT_DIR / ".env"

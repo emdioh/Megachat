@@ -67,8 +67,8 @@ services:
       # host, so incoming message pushes are delivered in real time.
       - "host.docker.internal:host-gateway"
     env_file:
-      # Credentials (WAHA_API_KEY, dashboard/swagger auth) persist here so they
-      # are NOT regenerated on every container start.  See .env.example.
+      # WAHA-only credentials (WAHA_API_KEY, dashboard/swagger auth), generated
+      # by `./install.sh --waha`; megachatd never reads this file.
       - .env
     volumes:
       # Persist session auth + media across container restarts / updates.

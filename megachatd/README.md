@@ -46,8 +46,9 @@ megachatd/bin/megachatd version
 You normally don't run it by hand: `python3 launcher.py server start|stop|status`, `python3
 megachat.py serve` and the TUI's find-or-spawn all start `megachatd serve <flags> --project-dir
 <repo>`. Binary lookup: `$MEGACHATD_BIN`, else `<repo>/megachatd/bin/megachatd`, else `megachatd` on
-`PATH` (`launcher/serverbin.py`). Escape hatch: `MEGACHAT_SERVER=python` (environment or the repo's
-`.env`, where `install.sh` writes it when Go is missing) runs the old Python server instead.
+`PATH` (`launcher/serverbin.py`). Escape hatch: `MEGACHAT_SERVER=python` (environment, or the
+launcher's `.env` runtime file where `install.sh` writes it when Go is missing) runs the old Python
+server instead.
 
 `serve` takes the flags of `megachat serve`, plus `--project-dir`:
 
@@ -59,27 +60,30 @@ megachat.py serve` and the TUI's find-or-spawn all start `megachatd serve <flags
 | `--web-no-auth` | disable the Bearer token (INSECURE) |
 | `--no-web` | no web adapter |
 | `--no-socket` / `--socket PATH` | no Unix socket / socket path (mutually exclusive) |
-| `--project-dir DIR` | directory with `config.json` and `.env` |
+| `--project-dir DIR` | directory with `config.json` |
 
 Project directory: `--project-dir`, else `$MEGACHAT_PROJECT_DIR`, else the nearest ancestor of the
 executable holding `megachat.py` or `pyproject.toml`, else the working directory.
 
 Environment: `MEGACHAT_SOCKET`, `MEGACHAT_LOCK_FILE` (default `/tmp/signal-tui.lock`),
-`SIGNAL_TUI_WEB_TOKEN`, `SIGNAL_ENABLED`, `WHATSAPP_ENABLED`, `TELEGRAM_ENABLED`,
-`GMAIL_ENABLED`, `TELEGRAM_API_ID/HASH`, ... The log goes to `/tmp/signal-tui.log` (Go-only
-override: `MEGACHAT_LOG_FILE`). Exit code 1 when another instance holds the lock or an adapter
-cannot start. SIGINT/SIGTERM and the `server.shutdown` operation stop the server gracefully.
+`MEGACHAT_LOG_FILE`, `MEGACHAT_PROJECT_DIR` and the other runtime variables listed in
+[Configuration](#configuration). Settings come from `config.json` and their
+`<DOMAIN>_<SETTING>` environment overrides, not from `.env`. The log goes to
+`/tmp/signal-tui.log` (Go-only override: `MEGACHAT_LOG_FILE`). Exit code 1 when another instance
+holds the lock or an adapter cannot start. SIGINT/SIGTERM and the `server.shutdown` operation stop
+the server gracefully.
 
-Backends are **opt-in**. The flag is read from the process environment, else the `config.json`
-key (`signal_enabled`, `whatsapp_enabled`, `telegram_enabled`, `gmail_enabled`), else the project
-`.env`; a blank or unparseable value falls through, and with no flag the integration is off.
+Backends are **opt-in**. The flag is read from the process environment (`SIGNAL_ENABLED`, ...),
+else the matching `config.json` key (`signal.enabled`, `whatsapp.enabled`, `telegram.enabled`,
+`gmail.enabled`); with no flag the integration is off. A blank or unparseable value falls through
+to the next source.
 
 | Integration | Flag | Also required | When off |
 |---|---|---|---|
 | Signal | `SIGNAL_ENABLED=1` | —; a user number enables auto-connect, without one the backend still starts so it can be linked | not registered |
 | WhatsApp (native, whatsmeow, no WAHA) | `WHATSAPP_ENABLED=1` | — | not registered |
 | Telegram | `TELEGRAM_ENABLED=1` | `TELEGRAM_API_ID` + `TELEGRAM_API_HASH` (the existing Telethon session is reused) | not registered; enabled without credentials logs one warning naming them |
-| Gmail | `GMAIL_ENABLED=1` | `GMAIL_ADDRESS` + an App Password | reports "not configured"; the unread watcher does not run |
+| Gmail | `GMAIL_ENABLED=1` | `GMAIL_ADDRESS`/`gmail.address` + an App Password (`gmail.app_password_file` / `gmail.app_password_cmd`) | reports "not configured"; the unread watcher does not run |
 
 `link_whatsapp.py` and the TUI's `Ctrl+L` reach a backend only when it is registered, so the
 linking flow requires its flag. Link Signal with a QR through `link_account.py` or `Ctrl+L`;
@@ -92,10 +96,10 @@ WAHA non è migrabile ...", also logged; marker file `<data>/.whatsapp-relink-no
 
 The WhatsApp client registers as a recent desktop Chrome (phone: "Chrome (Linux)", QR client type
 Chrome) instead of whatsmeow's default "whatsmeow" identity. config.json overrides it
-(env equivalents in parentheses): `whatsapp_browser` (`WHATSAPP_BROWSER`, one of Chrome, Firefox,
+(env equivalents in parentheses): `whatsapp.browser` (`WHATSAPP_BROWSER`, one of Chrome, Firefox,
 Edge, Opera, Safari, IE, Desktop, Android; unknown names warn and keep Chrome),
-`whatsapp_browser_version` (`WHATSAPP_BROWSER_VERSION`, default tracks Chrome stable) and
-`whatsapp_browser_os` (`WHATSAPP_BROWSER_OS`, default `Linux`). The identity is fixed server-side at
+`whatsapp.browser_version` (`WHATSAPP_BROWSER_VERSION`, default tracks Chrome stable) and
+`whatsapp.browser_os` (`WHATSAPP_BROWSER_OS`, default `Linux`). The identity is fixed server-side at
 registration, so it applies to the next pairing; restart the server after editing config.json.
 
 Files shared with the Python server, so the launcher's `status`/`stop`/`start` and the TUI's attach
@@ -103,14 +107,66 @@ work unchanged: the instance lock (`$MEGACHAT_LOCK_FILE`, default `/tmp/signal-t
 pid; SIGINT = clean stop), the Unix socket and the runtime file `server.json` next to it (pid), and the
 log `/tmp/signal-tui.log`.
 
+## Configuration
+
+`megachatd` reads exactly two sources:
+
+1. `config.json` in the project directory, one JSON object per domain:
+
+   ```json
+   {
+       "signal": {"enabled": true, "user_number": "+1234567890"},
+       "whatsapp": {"enabled": true, "media_dir": "/srv/whatsapp-media"},
+       "transcription": {"provider": "openai", "timeout": 120}
+   }
+   ```
+
+   The full schema with every domain, key and default is
+   [`config.example.json`](../config.example.json) in the repository root.
+
+2. Environment variables that override one setting, named `<DOMAIN>_<SETTING>` in upper case:
+   `SIGNAL_ENABLED` (`signal.enabled`), `WHATSAPP_MEDIA_DIR` (`whatsapp.media_dir`),
+   `GMAIL_APP_PASSWORD_FILE` (`gmail.app_password_file`), `TRANSCRIPTION_PROVIDER`
+   (`transcription.provider`), `MESSAGES_RETENTION_PER_CONTACT`
+   (`messages.retention_per_contact`).
+
+A non-blank environment variable wins; otherwise the `config.json` value; otherwise the default.
+`config.json` is re-read on every access, so most edits need no restart (backend flags are read at
+startup). Map-valued settings (`transcription.auto`, `transcription.auto_chats`) have no environment
+override. `.env` is **not** read.
+
+Runtime/bootstrap variables that are not settings: `MEGACHAT_PROJECT_DIR`, `MEGACHAT_SOCKET`,
+`MEGACHAT_LOCK_FILE`, `MEGACHAT_LOG_FILE`, `MEGACHAT_FAKE_BACKEND`, `HOME`, `XDG_*`,
+`SSH_CONNECTION`.
+
+### Migrating from the flat config.json
+
+Older builds used flat keys (`user_number`, `whatsapp_media_dir`, `ai_provider`, ...) and read the
+project `.env`. Convert once:
+
+```bash
+megachatd/bin/megachatd config migrate [--project-dir DIR] [--dry-run]
+```
+
+The command reads `config.json` and `.env`, writes the nested `config.json` (flat keys moved,
+`.env` values folded in for every key that maps to a setting; `config.json` wins when both set the
+same setting; unknown `.env` keys are listed, not copied), keeps `config.json.pre-nested.bak`
+(never overwritten), writes the file with mode `0600` and renames `.env` to `.env.migrated` once
+every key has been migrated or listed. `--dry-run` prints the resulting JSON with secrets masked;
+the command is idempotent. Startup also warns about leftover legacy flat keys, legacy environment
+variable names (`AI_PROVIDER`, `SIGNAL_TUI_WEB_TOKEN`, `WA_*`, `WAHA_*`, `CLIENT_WEBHOOK_PORT`,
+`MESSAGE_RETENTION_PER_CONTACT`, `TRANSCRIPTION_MODEL`, `TRANSCRIPTION_BASE_URL`, `GOOGLE_API_KEY`)
+and an existing `.env`, naming the new location and this command.
+
 ## Upgrading from an implicit-enable build
 
 Existing installs must add the flags for the backends they use: `SIGNAL_ENABLED=1`,
-`WHATSAPP_ENABLED=1`, `TELEGRAM_ENABLED=1`, `GMAIL_ENABLED=1`. When an integration is off but
-still has evidence of earlier use (a Signal user number, `<data>/whatsmeow.db` or a legacy
-`WHATSAPP_API_URL`, Telegram credentials, Gmail credentials), startup logs one warning and appends
-one Italian notice to `App.Notices` (shown by `launcher.py server start`) naming the flag to set.
-The disabled log line for each integration names its flag too.
+`WHATSAPP_ENABLED=1`, `TELEGRAM_ENABLED=1`, `GMAIL_ENABLED=1` (or the matching
+`<domain>.enabled` keys in `config.json`). When an integration is off but still has evidence of
+earlier use (a Signal user number, `<data>/whatsmeow.db`, Telegram credentials, Gmail credentials),
+startup logs one warning and appends one Italian notice to `App.Notices` (shown by `launcher.py
+server start`) naming the flag to set. The disabled log line for each integration names its flag
+too.
 
 ## Smoke tests
 
@@ -126,7 +182,7 @@ Real binary with no backends, driven by Python's socket client (from the repo ro
 T=$(mktemp -d); mkdir -p $T/home $T/proj $T/run
 (cd megachatd && go build -o $T/megachatd ./cmd/megachatd)
 HOME=$T/home XDG_RUNTIME_DIR=$T/run MEGACHAT_LOCK_FILE=$T/lock MEGACHAT_LOG_FILE=$T/server.log \
-  MEGACHAT_PROJECT_DIR=$T/proj SIGNAL_TUI_WEB_TOKEN=tok SIGNAL_ENABLED=0 \
+  MEGACHAT_PROJECT_DIR=$T/proj WEB_TOKEN=tok SIGNAL_ENABLED=0 \
   $T/megachatd serve --web-port 47321 &
 sleep 1.5
 HOME=$T/home XDG_RUNTIME_DIR=$T/run python3 -I -c "
@@ -154,12 +210,12 @@ marked ids for both. Where a contact id is persisted outside `messages`:
 | Telegram address book | in memory only (`_address_book`), never persisted | none |
 | Shell aliases (`docs/ALIASES.md`, `launcher/aliases.py`) | shell aliases, no contact ids; the TUI has no contact-alias storage | none |
 | Pinned / archived lists | not in `config.json`; archive exists only for WhatsApp | none |
-| `config.json` `auto_transcribe_chats` (`telegram:<id>`) | **raw positive id** when set from the web UI (`PUT /api/autotranscribe/chat` with `contact.id` from the contact list); marked when set by the `/trascrizione` voice command | **migrated** |
+| `config.json` `transcription.auto_chats` (`telegram:<id>`) | **raw positive id** when set from the web UI (`PUT /api/autotranscribe/chat` with `contact.id` from the contact list); marked when set by the `/trascrizione` voice command | **migrated** |
 | Web SPA `localStorage` `signal-tui-web-drafts` (`telegram:<contact.id>`) | **raw positive id** | migrated client-side |
 | Other SPA keys (token, protocol, skin, sizes...) | no contact ids | none |
 
 **Migration** (`internal/proto/telegram/migrate.go`, run from `app.Build` when Telegram is
-configured, before the backend starts): rewrites `telegram:<raw>` in `auto_transcribe_chats`
+configured, before the backend starts): rewrites `telegram:<raw>` in `transcription.auto_chats`
 to the marked key. A raw id is rewritten only if exactly one of its group/channel forms is
 known (Telethon session `entities`, read-only, plus the telegram `contact_number`s in the
 store) and the id is not also a known user; unknown/ambiguous keys are left alone. If the

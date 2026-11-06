@@ -492,8 +492,6 @@ class TestWahaEnv:
         )
 
     def test_creates_secure_waha_credentials(self, tmp_path: Path):
-        shutil.copy(PROJECT_ROOT / ".env.example", tmp_path / ".env.example")
-
         result = self._run_ensure_waha_env(tmp_path)
 
         assert result.returncode == 0, result.stderr

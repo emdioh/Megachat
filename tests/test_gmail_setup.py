@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import stat
 import sys
 from pathlib import Path
@@ -32,68 +33,87 @@ def test_write_secret_uses_private_permissions(tmp_path):
     assert stat.S_IMODE(secret.parent.stat().st_mode) == 0o700
 
 
-def test_update_env_replaces_gmail_lines_and_keeps_the_rest(tmp_path):
-    env = tmp_path / ".env"
-    env.write_text(
-        "# existing\n"
-        "WAHA_API_KEY=keep-me\n"
-        "GMAIL_ADDRESS=old@example.com\n"
-        "GMAIL_APP_PASSWORD=old-secret\n"
-        "GMAIL_FOLDER=Archive\n"
+def test_update_config_replaces_gmail_keys_and_keeps_the_rest(monkeypatch, tmp_path):
+    monkeypatch.delenv("GMAIL_ENABLED", raising=False)
+    config_file = tmp_path / "config.json"
+    config_file.write_text(
+        json.dumps(
+            {
+                "web": {"port": 4242},
+                "gmail": {
+                    "address": "old@example.com",
+                    "app_password": "old-secret",
+                    "folder": "Archive",
+                },
+            }
+        )
     )
 
-    gmail_setup.update_env(env, "new@example.com", tmp_path / "gmail-secret")
+    gmail_setup.update_config(config_file, "new@example.com", tmp_path / "gmail-secret")
 
-    content = env.read_text()
-    assert "WAHA_API_KEY=keep-me" in content
-    assert "GMAIL_FOLDER=Archive" in content
-    assert "GMAIL_ENABLED=1" in content
-    assert "GMAIL_ADDRESS=new@example.com" in content
-    assert f"GMAIL_APP_PASSWORD_FILE={tmp_path / 'gmail-secret'}" in content
-    assert "GMAIL_APP_PASSWORD=old-secret" not in content
-    assert "old@example.com" not in content
-    assert stat.S_IMODE(env.stat().st_mode) == 0o600
-
-
-def test_update_env_creates_missing_file(tmp_path):
-    env = tmp_path / ".env"
-
-    gmail_setup.update_env(env, "new@example.com", tmp_path / "gmail-secret")
-
-    content = env.read_text()
-    assert "GMAIL_ADDRESS=new@example.com" in content
-    assert "GMAIL_ENABLED=1" in content
-    assert stat.S_IMODE(env.stat().st_mode) == 0o600
+    config = json.loads(config_file.read_text())
+    assert config["web"] == {"port": 4242}
+    assert config["gmail"]["folder"] == "Archive"
+    assert config["gmail"]["enabled"] is True
+    assert config["gmail"]["address"] == "new@example.com"
+    assert config["gmail"]["app_password_file"] == str(tmp_path / "gmail-secret")
+    assert "app_password" not in config["gmail"]
+    assert stat.S_IMODE(config_file.stat().st_mode) == 0o600
 
 
-def test_update_env_keeps_an_explicit_disabled_flag(tmp_path):
-    env = tmp_path / ".env"
-    env.write_text("GMAIL_ENABLED=0\n")
+def test_update_config_creates_missing_file(monkeypatch, tmp_path):
+    monkeypatch.delenv("GMAIL_ENABLED", raising=False)
+    config_file = tmp_path / "config.json"
 
-    gmail_setup.update_env(env, "new@example.com", tmp_path / "gmail-secret")
+    gmail_setup.update_config(config_file, "new@example.com", tmp_path / "gmail-secret")
 
-    content = env.read_text()
-    assert content.count("GMAIL_ENABLED=") == 1
-    assert "GMAIL_ENABLED=0" in content
-    assert "GMAIL_ENABLED=1" not in content
+    config = json.loads(config_file.read_text())
+    assert config["gmail"]["address"] == "new@example.com"
+    assert config["gmail"]["app_password_file"] == str(tmp_path / "gmail-secret")
+    assert config["gmail"]["enabled"] is True
+    assert stat.S_IMODE(config_file.stat().st_mode) == 0o600
 
 
-def test_existing_configuration_detects_secret_lines(monkeypatch, tmp_path):
-    env = tmp_path / ".env"
-    monkeypatch.setattr(gmail_setup, "ENV_FILE", env)
-    monkeypatch.setattr(gmail_setup.config, "get_gmail_address", lambda: "")
+def test_update_config_keeps_an_explicit_disabled_flag(monkeypatch, tmp_path):
+    monkeypatch.delenv("GMAIL_ENABLED", raising=False)
+    config_file = tmp_path / "config.json"
+    config_file.write_text(json.dumps({"gmail": {"enabled": False}}))
+
+    gmail_setup.update_config(config_file, "new@example.com", tmp_path / "gmail-secret")
+
+    config = json.loads(config_file.read_text())
+    assert config["gmail"]["enabled"] is False
+    assert config["gmail"]["address"] == "new@example.com"
+
+
+def test_update_config_respects_a_disabled_environment_flag(monkeypatch, tmp_path):
+    monkeypatch.setenv("GMAIL_ENABLED", "0")
+    config_file = tmp_path / "config.json"
+
+    gmail_setup.update_config(config_file, "new@example.com", tmp_path / "gmail-secret")
+
+    assert "enabled" not in json.loads(config_file.read_text())["gmail"]
+
+
+def test_existing_configuration_detects_configured_secret(monkeypatch, tmp_path):
+    config_file = tmp_path / "config.json"
+    monkeypatch.setattr(gmail_setup, "CONFIG_FILE", config_file)
+    monkeypatch.delenv("GMAIL_ADDRESS", raising=False)
+    monkeypatch.delenv("GMAIL_APP_PASSWORD", raising=False)
+    monkeypatch.delenv("GMAIL_APP_PASSWORD_FILE", raising=False)
+    monkeypatch.delenv("GMAIL_APP_PASSWORD_CMD", raising=False)
 
     assert gmail_setup._existing_configuration() is False
-    env.write_text("GMAIL_APP_PASSWORD_FILE=/tmp/secret\n")
+    config_file.write_text(json.dumps({"gmail": {"app_password_file": "/tmp/secret"}}))
     assert gmail_setup._existing_configuration() is True
 
 
-def test_main_saves_secret_and_updates_env(monkeypatch, tmp_path):
-    env = tmp_path / ".env"
+def test_main_saves_secret_and_updates_config(monkeypatch, tmp_path):
+    config_file = tmp_path / "config.json"
     secret = tmp_path / "gmail-secret"
-    monkeypatch.setattr(gmail_setup, "ENV_FILE", env)
+    monkeypatch.setattr(gmail_setup, "CONFIG_FILE", config_file)
     monkeypatch.setattr(gmail_setup, "SECRET_FILE", secret)
-    monkeypatch.setattr(gmail_setup.config, "get_gmail_address", lambda: "")
+    monkeypatch.delenv("GMAIL_ENABLED", raising=False)
     monkeypatch.setattr(
         gmail_setup.getpass, "getpass", lambda prompt: "abcd efgh ijkl mnop"
     )
@@ -102,10 +122,10 @@ def test_main_saves_secret_and_updates_env(monkeypatch, tmp_path):
     assert gmail_setup.main(["--address", "user@example.com", "--force"]) == 0
 
     assert secret.read_text() == "abcdefghijklmnop\n"
-    content = env.read_text()
-    assert "GMAIL_ENABLED=1" in content
-    assert "GMAIL_ADDRESS=user@example.com" in content
-    assert f"GMAIL_APP_PASSWORD_FILE={secret}" in content
+    config = json.loads(config_file.read_text())
+    assert config["gmail"]["enabled"] is True
+    assert config["gmail"]["address"] == "user@example.com"
+    assert config["gmail"]["app_password_file"] == str(secret)
 
 
 def test_ensure_venv_is_noop_when_dependencies_available(monkeypatch):

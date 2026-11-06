@@ -192,25 +192,29 @@ sudo apt install catimg
 
 #### 5. Configure your phone number
 
-`megachatd` starts Signal only when `SIGNAL_ENABLED=1` is set (environment,
-`.env` or `"signal_enabled": true` in `config.json`). Set it together with your
-Signal phone number:
+`megachatd` starts Signal only when `SIGNAL_ENABLED=1` (or
+`"signal": {"enabled": true}` in `config.json`) is set. Set it together with
+your Signal phone number:
 
 ```bash
 export SIGNAL_ENABLED=1
 export SIGNAL_USER_NUMBER="+1234567890"
 ```
 
-Or create a `config.json` file in the project root:
+Or add the `signal` domain to a `config.json` file in the project root:
 
 ```json
 {
-    "signal_enabled": true,
-    "user_number": "+1234567890"
+    "signal": {
+        "enabled": true,
+        "user_number": "+1234567890"
+    }
 }
 ```
 
-> **Note:** `config.json` is in `.gitignore` and will not be committed.
+> **Note:** `config.json` is in `.gitignore` and will not be committed. The
+> full schema and the environment override rule are in
+> [Configuration](#configuration).
 
 Every integration (Signal, WhatsApp, Telegram, Gmail) is **off by default** in
 `megachatd`; see [Upgrading from an install without explicit
@@ -225,35 +229,50 @@ Next, optionally enable the extra backends:
 ### Upgrading from an install without explicit flags
 
 `megachatd` starts an integration only when its `<X>_ENABLED` flag is on. The
-value comes from the process environment, else the `config.json` key
-(`signal_enabled`, `whatsapp_enabled`, `telegram_enabled`, `gmail_enabled`),
-else the project `.env`; a blank or unparseable value falls through, and with no flag the
-integration stays off. After upgrading, add the flags for the backends you
-use:
+value comes from the process environment, else the matching `config.json`
+key (`signal.enabled`, `whatsapp.enabled`, `telegram.enabled`,
+`gmail.enabled`); with no flag the integration stays off. After upgrading, add
+the flags for the backends you use:
 
 ```bash
-echo 'SIGNAL_ENABLED=1' >> .env
-echo 'WHATSAPP_ENABLED=1' >> .env
-echo 'TELEGRAM_ENABLED=1' >> .env     # needs TELEGRAM_API_ID/TELEGRAM_API_HASH
-echo 'GMAIL_ENABLED=1' >> .env        # needs the Gmail address + App Password
+export SIGNAL_ENABLED=1
+export WHATSAPP_ENABLED=1
+export TELEGRAM_ENABLED=1     # needs TELEGRAM_API_ID/TELEGRAM_API_HASH
+export GMAIL_ENABLED=1        # needs the Gmail address + App Password
 python3 launcher.py server stop && python3 launcher.py server start
 ```
 
+…or set the same four flags in `config.json`:
+
+```json
+{
+    "signal": {"enabled": true},
+    "whatsapp": {"enabled": true},
+    "telegram": {"enabled": true},
+    "gmail": {"enabled": true}
+}
+```
+
+Older releases stored settings as flat `config.json` keys (for example
+`user_number` or `whatsapp_media_dir`) and also read the project `.env`.
+`megachatd` no longer reads `.env`: run `megachatd config migrate` once to
+convert the file (see [Upgrading to the nested
+config.json](#upgrading-to-the-nested-configjson)).
+
 When a backend is off but still has evidence of earlier use (a Signal user
-number, `whatsmeow.db` or `WHATSAPP_API_URL`, Telegram credentials, Gmail
-credentials), startup logs one warning and `launcher.py server start` shows a
-notice with the flag to set. The legacy Python server
-(`MEGACHAT_SERVER=python`) is not affected: the flags above apply to
-`megachatd`.
+number, `whatsmeow.db`, Telegram credentials, Gmail credentials), startup logs
+one warning and `launcher.py server start` shows a notice with the flag to
+set. The legacy Python server (`MEGACHAT_SERVER=python`) is not affected: the
+flags above apply to `megachatd`.
 
 ### Enabling the WhatsApp backend (optional)
 
 WhatsApp is **native** in `megachatd` (whatsmeow): no Docker, no WAHA, no Node.js. Enable it with
-`WHATSAPP_ENABLED=1` (environment or `.env`) or `"whatsapp_enabled": true` in `config.json`, restart
-the server and link the phone with a QR code:
+`WHATSAPP_ENABLED=1` (or `"whatsapp": {"enabled": true}` in `config.json`), restart the server and
+link the phone with a QR code:
 
 ```bash
-echo 'WHATSAPP_ENABLED=1' >> .env
+export WHATSAPP_ENABLED=1
 python3 launcher.py server start      # (re)start the server so it registers the backend
 python3 link_whatsapp.py              # prints a QR to scan: WhatsApp > Linked devices
 ```
@@ -261,7 +280,8 @@ python3 link_whatsapp.py              # prints a QR to scan: WhatsApp > Linked d
 `link_whatsapp.py` (like the TUI's `Ctrl+L`) talks to the server through its `link.*` operations
 and starts the server if none is running. The linked device is stored in
 `~/.local/share/signal-tui-client/whatsmeow.db`. If WhatsApp is not enabled the script says how to
-enable it. Other settings: `WHATSAPP_MEDIA_DIR` / `whatsapp_media_dir` (media download dir).
+enable it. Other settings: `WHATSAPP_MEDIA_DIR` (env) / `whatsapp.media_dir` (config.json) for the
+media download dir.
 
 > **Coming from WAHA?** The WAHA session cannot be migrated. The first time `megachatd` starts with
 > WhatsApp enabled and no `whatsmeow.db`, it prints (once, in Italian) that WhatsApp must be linked
@@ -305,17 +325,16 @@ image; x86_64 hosts continue to use `:latest`.
 
 > **API key (authentication):** REST calls without the correct key return `401`.
 > `./install.sh --waha` generates and persists the credentials automatically.
-> For a manual Docker Compose setup, copy the defaults and fill in secure values:
->
-> ```bash
-> cp .env.example .env       # then edit `.env` and set WAHA_API_KEY etc.
-> docker compose up -d       # (re)start WAHA so it picks up the key
-> ```
+> For a manual Docker Compose setup, create `.env` yourself with
+> `WAHA_API_KEY`, `WAHA_DASHBOARD_USERNAME`, `WAHA_DASHBOARD_PASSWORD`,
+> `WHATSAPP_SWAGGER_USERNAME` and `WHATSAPP_SWAGGER_PASSWORD` (secure values),
+> then run `docker compose up -d` so WAHA picks up the key. That file is read
+> only by the WAHA container and the Python fallback, never by megachatd.
 >
 > `docker-compose.yml` loads `.env` via `env_file`, so WAHA reuses the key across
 > restarts instead of regenerating it. The Python client reads the same
 > `WAHA_API_KEY` from `.env` automatically; it can also be set explicitly with
-> `WHATSAPP_API_KEY` (see below). To grab the current values from a running
+> `WHATSAPP_API_KEY`. To grab the current values from a running
 > container: `docker exec signal-tui-whatsapp env | grep WAHA_API_KEY`.
 
 #### Running without CPU/RAM caps (`--no-docker-limits`)
@@ -378,29 +397,14 @@ services:
 To drop the caps entirely you don't need a replacement file: set `WAHA_DOCKER_LIMITS=0`. Don't give
 a file that `include:`s `docker-compose.yml` — the launcher always passes the base file itself.
 
-#### Configuration (env or `config.json`)
+#### WAHA-only settings
 
-Environment variables:
-
-```bash
-export WHATSAPP_API_PORT="3005"                       # docker-compose host port (default 3005)
-export WHATSAPP_API_URL="http://127.0.0.1:3005"      # base URL of the WAHA API
-export WHATSAPP_API_KEY="<api-key>"                  # X-Api-Key (auto-read from .env if unset)
-export WHATSAPP_SESSION_NAME="default"               # session name (default "default")
-export WHATSAPP_MEDIA_DIR="/srv/whatsapp-media"      # local media download dir
-```
-
-…or via `config.json`:
-
-```json
-{
-    "user_number": "+1234567890",
-    "whatsapp_api_url": "http://127.0.0.1:3005",
-    "whatsapp_api_key": "<api-key>",
-    "whatsapp_session_name": "default",
-    "whatsapp_media_dir": "/srv/whatsapp-media"
-}
-```
+WAHA and the Python fallback read their settings from the process environment
+(`WHATSAPP_API_PORT`, `WHATSAPP_API_URL`, `WHATSAPP_API_KEY`, `CLIENT_WEBHOOK_PORT`,
+`WAHA_WEBHOOK_URL`, `WAHA_COMPOSE_FILES`, `WAHA_DOCKER_LIMITS`) and from the
+container's `.env`. None of this is megachatd configuration: megachatd speaks
+WhatsApp natively and ignores it. See `docker-compose.yml` for the exact
+variables the container consumes.
 
 #### Pair the device (WAHA)
 
@@ -425,15 +429,27 @@ The Telegram backend uses [Telethon](https://docs.telethon.dev/) and requires
 
 #### Configure credentials
 
-Add to the project `.env` file (`cp .env.example .env` if not already present):
+Add the `telegram` domain to `config.json` in the project root:
 
-```bash
-TELEGRAM_ENABLED=1
-TELEGRAM_API_ID=123456
-TELEGRAM_API_HASH=your_hash_here
+```json
+{
+    "telegram": {
+        "enabled": true,
+        "api_id": 123456,
+        "api_hash": "your_hash_here"
+    }
+}
 ```
 
-`TELEGRAM_ENABLED=1` (or `"telegram_enabled": true` in `config.json`) is
+…or export the equivalent environment variables:
+
+```bash
+export TELEGRAM_ENABLED=1
+export TELEGRAM_API_ID=123456
+export TELEGRAM_API_HASH=your_hash_here
+```
+
+`TELEGRAM_ENABLED=1` (or `telegram.enabled` in `config.json`) is
 required: the backend is not started when the flag is off. When it is on but
 the API id/hash are missing, startup logs one warning naming the missing
 settings and the backend stays off.
@@ -453,6 +469,70 @@ Press `Ctrl+L`, select **Telegram**, and scan the QR code with your phone.
 > field after scanning the QR. Enter your 2FA password and press Enter.
 >
 > If you don't have 2FA, the login completes automatically.
+
+## Configuration
+
+`megachatd` reads exactly two configuration sources:
+
+1. **`config.json`** in the project directory (the directory passed as
+   `--project-dir` / `MEGACHAT_PROJECT_DIR`), organised as one JSON object per
+   domain:
+
+   ```json
+   {
+       "signal": {"enabled": true, "user_number": "+1234567890"},
+       "whatsapp": {"enabled": true, "media_dir": "/srv/whatsapp-media"},
+       "transcription": {"provider": "openai", "timeout": 120}
+   }
+   ```
+
+   The complete schema with every domain, key and default is
+   [config.example.json](config.example.json).
+
+2. **Environment variables** that override single settings, named
+   `<DOMAIN>_<SETTING>` in upper case:
+
+   | Setting | Environment override |
+   |---|---|
+   | `signal.enabled` | `SIGNAL_ENABLED` |
+   | `whatsapp.media_dir` | `WHATSAPP_MEDIA_DIR` |
+   | `gmail.app_password_file` | `GMAIL_APP_PASSWORD_FILE` |
+   | `transcription.provider` | `TRANSCRIPTION_PROVIDER` |
+   | `messages.retention_per_contact` | `MESSAGES_RETENTION_PER_CONTACT` |
+
+A non-blank environment variable wins; otherwise the `config.json` value;
+otherwise the default. `config.json` is re-read on every access, so edits take
+effect without a restart except for startup flags (`<X>_ENABLED` and the
+backend wiring). `transcription.auto` and `transcription.auto_chats` are maps
+and have no environment override.
+
+The project `.env` is **no longer read by `megachatd`**. It remains only for the
+WAHA Docker container and the Python-server fallback (`MEGACHAT_SERVER=python`).
+
+These variables are runtime/bootstrap options, not settings:
+`MEGACHAT_PROJECT_DIR`, `MEGACHAT_SOCKET`, `MEGACHAT_LOCK_FILE`,
+`MEGACHAT_LOG_FILE`, `MEGACHAT_FAKE_BACKEND`, `HOME`, `XDG_*`, `SSH_CONNECTION`.
+
+### Upgrading to the nested config.json
+
+Older releases stored settings as flat keys (`user_number`,
+`whatsapp_media_dir`, `ai_provider`, ...) and also read the project `.env`.
+Convert them once with the migration command:
+
+```bash
+megachatd/bin/megachatd config migrate [--project-dir DIR] [--dry-run]
+```
+
+It reads `config.json` and `.env`, writes the nested `config.json` (legacy flat
+keys moved; `.env` values folded in for every key that maps to a setting;
+`config.json` wins when both set the same setting; unknown `.env` keys are
+listed, not copied), keeps a one-time backup `config.json.pre-nested.bak`
+(never overwritten) and writes the new file with mode `0600`. `.env` is renamed
+to `.env.migrated` once every key has been migrated or listed as unknown.
+`--dry-run` prints the resulting JSON with secret values masked. The command is
+idempotent. On every start `megachatd` also warns (log line plus Italian notice)
+about leftover legacy flat keys, legacy environment variable names and an
+existing `.env`, naming the new location and the migration command.
 
 ## Python launcher (optional alternative to the shell scripts)
 
@@ -681,8 +761,8 @@ Chat commands (only from your own messages):
 - `!transcription on|off` — override for this chat
 - `!transcription global on|off` — switch for the whole protocol
 
-Config keys in `config.json`: `auto_transcribe` (`{"whatsapp": false, "signal": false,
-"telegram": false}`) and `auto_transcribe_chats` (`{"<protocol>:<contact_id>": true|false}`).
+Config keys in `config.json`: `transcription.auto` (`{"whatsapp": false, "signal": false,
+"telegram": false}`) and `transcription.auto_chats` (`{"<protocol>:<contact_id>": true|false}`).
 The same settings are exposed as the `autotranscribe.*` server operations.
 In the web UI the global switches are in **Impostazioni** ("Trascrizione automatica", next to the
 provider API key; one toggle per connected protocol), and each Signal/WhatsApp/Telegram chat has a
@@ -696,25 +776,29 @@ The transcription service itself is edited in the web UI under **Impostazioni �
 (only a "configured" flag per provider). Precedence is always environment variable >
 `config.json` > default; fields forced by an environment variable are shown disabled.
 
-Providers (`AI_PROVIDER` / `ai_provider`, default `openai`). Transcription is enabled when the
-selected provider has an API key. DeepSeek is not supported (its API has no audio input), nor
-Google Cloud Speech.
+Providers (`TRANSCRIPTION_PROVIDER` / `transcription.provider`, default `openai`). Transcription
+is enabled when the selected provider has an API key. DeepSeek is not supported (its API has no
+audio input), nor Google Cloud Speech.
 
 | Setting | Environment variable | `config.json` key | Default |
 |---|---|---|---|
-| Provider | `AI_PROVIDER` (`openai`\|`openrouter`\|`gemini`) | `ai_provider` | `openai` |
-| OpenAI key | `OPENAI_API_KEY` | `openai_api_key` | |
-| OpenAI model | `OPENAI_TRANSCRIPTION_MODEL`, then `TRANSCRIPTION_MODEL` | `openai_transcription_model`, then `transcription_model` | `gpt-transcribe` |
-| OpenAI base URL | `TRANSCRIPTION_BASE_URL` | `transcription_base_url` | `https://api.openai.com/v1` |
-| OpenRouter key | `OPENROUTER_API_KEY` | `openrouter_api_key` | |
-| OpenRouter model | `OPENROUTER_TRANSCRIPTION_MODEL` | `openrouter_transcription_model` | `openai/whisper-large-v3` |
-| OpenRouter base URL | `OPENROUTER_BASE_URL` | `openrouter_base_url` | `https://openrouter.ai/api/v1` |
-| OpenRouter attribution | `OPENROUTER_HTTP_REFERER`, `OPENROUTER_APP_TITLE` | `openrouter_http_referer`, `openrouter_app_title` | unset (headers `HTTP-Referer` / `X-OpenRouter-Title` only when set) |
-| Gemini key | `GEMINI_API_KEY` (fallback `GOOGLE_API_KEY`) | `gemini_api_key` | |
-| Gemini model | `GEMINI_TRANSCRIPTION_MODEL` | `gemini_transcription_model` | `gemini-flash-latest` |
-| Gemini base URL | `GEMINI_BASE_URL` | `gemini_base_url` | `https://generativelanguage.googleapis.com/v1beta` |
-| Language (shared) | `TRANSCRIPTION_LANGUAGE` | `transcription_language` | automatic |
-| Timeout, seconds (shared) | `TRANSCRIPTION_TIMEOUT` | `transcription_timeout` | `120` |
+| Provider | `TRANSCRIPTION_PROVIDER` (`openai`\|`openrouter`\|`gemini`) | `transcription.provider` | `openai` |
+| OpenAI key | `OPENAI_API_KEY` | `openai.api_key` | |
+| OpenAI model | `OPENAI_TRANSCRIPTION_MODEL` | `openai.transcription_model` | `gpt-transcribe` |
+| OpenAI base URL | `OPENAI_BASE_URL` | `openai.base_url` | `https://api.openai.com/v1` |
+| OpenRouter key | `OPENROUTER_API_KEY` | `openrouter.api_key` | |
+| OpenRouter model | `OPENROUTER_TRANSCRIPTION_MODEL` | `openrouter.transcription_model` | `openai/whisper-large-v3` |
+| OpenRouter base URL | `OPENROUTER_BASE_URL` | `openrouter.base_url` | `https://openrouter.ai/api/v1` |
+| OpenRouter attribution | `OPENROUTER_HTTP_REFERER`, `OPENROUTER_APP_TITLE` | `openrouter.http_referer`, `openrouter.app_title` | unset (headers `HTTP-Referer` / `X-OpenRouter-Title` only when set) |
+| Gemini key | `GEMINI_API_KEY` | `gemini.api_key` | |
+| Gemini model | `GEMINI_TRANSCRIPTION_MODEL` | `gemini.transcription_model` | `gemini-flash-latest` |
+| Gemini base URL | `GEMINI_BASE_URL` | `gemini.base_url` | `https://generativelanguage.googleapis.com/v1beta` |
+| Language (shared) | `TRANSCRIPTION_LANGUAGE` | `transcription.language` | automatic |
+| Timeout, seconds (shared) | `TRANSCRIPTION_TIMEOUT` | `transcription.timeout` | `120` |
+
+Older names (`AI_PROVIDER`, `TRANSCRIPTION_MODEL`, `TRANSCRIPTION_BASE_URL`, `GOOGLE_API_KEY`
+and the flat `config.json` keys) still produce a startup warning; `megachatd config migrate`
+rewrites them (see [Configuration](#configuration)).
 
 The settings use the same names as the sibling project botty. OpenAI and OpenRouter use the
 OpenAI-compatible multipart `POST {base}/audio/transcriptions`; Gemini uses the native
@@ -856,7 +940,7 @@ The automatic installer enables the Web UI in `config.json`, so a normal
 | Alias | What it does |
 |---|---|
 | `web-signal-tui` | Starts the TUI with the web server on `0.0.0.0:4242`: attaches to a running server or starts one that keeps running after the TUI exits (stop it with `web-signal-tui-stop`) |
-| `web-signal-tui-bg` | Starts the headless server (`launcher.py server start`: `megachatd serve`, no TUI) as a **detached background process** and **exports** the Bearer token to your shell as `SIGNAL_TUI_WEB_TOKEN`; extra arguments go to `server start` (e.g. `web-signal-tui-bg --web-port 8080`) |
+| `web-signal-tui-bg` | Starts the headless server (`launcher.py server start`: `megachatd serve`, no TUI) as a **detached background process** and **exports** the Bearer token to your shell as `WEB_TOKEN`; extra arguments go to `server start` (e.g. `web-signal-tui-bg --web-port 8080`) |
 | `web-signal-tui-stop` | Cleanly stops the background server (`launcher.py server stop`; WAHA, if any, is left alone) |
 
 `signal-tui-bg` and `signal-tui-stop` are shorter aliases for the two background commands.
@@ -907,18 +991,18 @@ show a reconnect message and resync if a new server appears.
 
 ### Fast cycle (background + token)
 
-`web-signal-tui-bg` runs in the background and exports `SIGNAL_TUI_WEB_TOKEN` to the current shell,
+`web-signal-tui-bg` runs in the background and exports `WEB_TOKEN` to the current shell,
 so the token is immediately ready for the Web UI login (it is printed to the console) or for `curl`:
 
 ```bash
 web-signal-tui-bg
 # Server bg attivo — token: <the-token>
 
-curl -H "Authorization: Bearer $SIGNAL_TUI_WEB_TOKEN" http://127.0.0.1:4242/api/contacts
+curl -H "Authorization: Bearer $WEB_TOKEN" http://127.0.0.1:4242/api/contacts
 ```
 
 The Bearer token lives in `config.json` under `web.token`; the web server also accepts it via the
-`SIGNAL_TUI_WEB_TOKEN` environment variable. The default port is `4242`.
+`WEB_TOKEN` environment variable. The default port is `4242`.
 
 ### Running without a token (`--web-no-auth`)
 
@@ -956,15 +1040,16 @@ The Gmail tab is configured from a terminal, so the App Password never passes th
 python3 scripts/gmail_setup.py
 ```
 
-Gmail is off until `GMAIL_ENABLED=1` (or `"gmail_enabled": true` in `config.json`) is set; the
-script writes `GMAIL_ENABLED=1` to `.env` when the key is absent, without touching an existing
-value. The address and App Password are still required: with the flag on and either missing, the
-tab reports "not configured", the unread watcher does not run, and startup logs one warning.
-Restart `megachatd` after adding the flag.
+Gmail is off until `GMAIL_ENABLED=1` (or `"gmail": {"enabled": true}` in `config.json`) is set; the
+script writes `gmail.enabled: true` into `config.json` when no explicit false is configured. The
+address and App Password are still required: with the flag on and either missing, the tab reports
+"not configured", the unread watcher does not run, and startup logs one warning. Restart
+`megachatd` after adding the flag.
 
 The script asks for the Gmail address and a Google **App Password** (hidden input), verifies IMAP and
 SMTP login, stores the secret in `~/.config/signal-tui/gmail-app-password` with `600` permissions and
-updates `.env`. Then reload the Gmail tab in the Web UI. Email HTML is sanitized server-side:
+writes the `gmail` domain of `config.json` (`address`, `app_password_file`; a plaintext
+`app_password` is removed). Then reload the Gmail tab in the Web UI. Email HTML is sanitized server-side:
 scripts, `<style>` blocks, classes, iframes and external CSS are removed, while safe inline CSS
 (allow-listed properties/values; no `url()`, `position`, `var()` or `calc()`) and legacy table
 attributes are preserved, within size/complexity caps. The reader can toggle between HTML and plain
@@ -973,15 +1058,15 @@ sender never sees the browser's IP: it sees the server's IP, at the time the mes
 Tracking is therefore accepted. When a message is opened the server starts fetching its first 30
 remote images in the background and keeps them in memory (48 MB, 15 minutes), so the browser's
 requests find them ready; responses are sent with `Cache-Control: private, max-age=3600`, so
-reopening a message within the hour does not re-ping the tracker. Set `GMAIL_IMAGE_PREFETCH=0` to
-disable the prefetch. Images are capped at **50 per message**, **25 MP each**, and the
+reopening a message within the hour does not re-ping the tracker. Set `GMAIL_IMAGE_PREFETCH=0`
+(or `gmail.image_prefetch: false`) to disable the prefetch. Images are capped at **50 per message**, **25 MP each**, and the
 proxy allows at most **4 concurrent Gmail image fetches**. Residual risks: the signed image URL
 does not expire and is not single-use, `/gmail-image` is mounted outside the Bearer-protected
 `/api` namespace, and there is no per-message aggregate budget: the theoretical ceiling is
 50 × 25 MP ≈ 1.25 Gpixel (~5 GB decoded RGBA) and 50 × 8 MiB = 400 MB of payload, while the
 semaphore only bounds concurrency (4 per worker; the background prefetch adds up to 4 more). `<style>` blocks are inlined server-side with
 `css-inline` (only allow-listed properties, no `@media`/remote CSS) before sanitization; set
-`GMAIL_HTML_INLINE_CSS=0` to disable it. Responsive (`@media`) layouts are not reproduced.
+`GMAIL_HTML_INLINE_CSS=0` (or `gmail.html_inline_css: false`) to disable it. Responsive (`@media`) layouts are not reproduced.
 Inline `cid:` images (signatures, logos) are served by the same proxy with a signed token that
 expires after 24 hours, only when the MIME part's bytes are a raster image.
 
@@ -1008,7 +1093,7 @@ the message stays in All Mail; it is offered only in the inbox.
 Optional at-rest encryption: `bash scripts/gmail_gpg_init.sh` (GPG passphrase; it also configures
 the gpg-agent cache, 7 days by default via `--cache-ttl`) or `bash scripts/gmail_tpm_init.sh`
 (Linux TPM2 only — macOS has no TPM2/systemd; requires the `tss` group and a re-login). See
-[docs/DESIGN_GMAIL_POC.md](docs/DESIGN_GMAIL_POC.md) and [.env.example](.env.example).
+[docs/DESIGN_GMAIL_POC.md](docs/DESIGN_GMAIL_POC.md) and [config.example.json](config.example.json).
 
 ### Installing the aliases
 
@@ -1053,10 +1138,10 @@ in the modal.
 
 ![Native kitty thumbnails](assets/screenshots/native-images-kitty.png)
 
-### Configuration
+### Image rendering settings
 
 The mode is automatic (`auto`). To force it, use the `IMAGE_PROTOCOL` environment variable or the
-`image_protocol` key in `config.json`:
+`image.protocol` key in `config.json`:
 
 ```bash
 export IMAGE_PROTOCOL=auto    # auto | kitty | catimg | off
@@ -1064,7 +1149,7 @@ export IMAGE_PROTOCOL=auto    # auto | kitty | catimg | off
 
 ```json
 {
-    "image_protocol": "auto"
+    "image": {"protocol": "auto"}
 }
 ```
 
@@ -1072,8 +1157,8 @@ Thumbnail limits are configurable the same way (env or `config.json`):
 
 | `config.json` key | Environment variable | Default | Meaning |
 |---|---|---|---|
-| `thumbnail_max_lines` | `THUMBNAIL_MAX_LINES` | `12` | Maximum thumbnail height, in rows |
-| `thumbnail_max_cols` | `THUMBNAIL_MAX_COLS` | `60` | Maximum width, in columns (also clamped to the chat width) |
+| `thumbnail.max_lines` | `THUMBNAIL_MAX_LINES` | `12` | Maximum thumbnail height, in rows |
+| `thumbnail.max_cols` | `THUMBNAIL_MAX_COLS` | `60` | Maximum width, in columns (also clamped to the chat width) |
 
 > **Developer note:** the client is normally launched with the **`signal`** alias (DEBUG log on
 > `/tmp/signal-tui.log`; the app also accepts a `--debug` flag for verbose logging). Manual
@@ -1154,7 +1239,7 @@ without `LIVE_TESTS=1` they are always skipped.
 **Prerequisites:**
 
 - Signal: `SIGNAL_ENABLED=1` (megachatd) plus a signal-cli daemon and `config.json` with
-  `user_number`;
+  `signal.user_number`;
 - WhatsApp: `WHATSAPP_ENABLED=1` (megachatd) with a linked device; with the Python server, WAHA
   reachable with a WORKING session;
 - Telegram: `TELEGRAM_ENABLED=1` (megachatd) and `TELEGRAM_API_ID`/`TELEGRAM_API_HASH` + an
@@ -1282,7 +1367,7 @@ signal-tui-client/
 │                              #   DESIGN_*.md, PLAN_*.md
 ├── assets/screenshots/        # README screenshots (main UI, image viewer)
 ├── docker-compose.yml         # WAHA (WhatsApp HTTP API) Docker container
-├── .env.example               # Integration flags (SIGNAL/WHATSAPP/TELEGRAM/GMAIL_ENABLED) + credentials
+├── config.example.json        # Nested config.json schema: one object per domain
 ├── install.sh                 # Automatic installation script
 ├── launcher.py                # Optional Python alternative to the shell scripts
 ├── launcher/                  # launcher.py's command implementations

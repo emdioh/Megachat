@@ -6,7 +6,6 @@ Replaces the WAHA-related portion of tests/test_install_script.py.
 from __future__ import annotations
 
 import os
-import shutil
 import stat
 import subprocess
 from pathlib import Path
@@ -100,13 +99,8 @@ class TestComposeArgs:
         assert calls[0][-3:] == ["-f", "/abs/other.yml", "down"]
 
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-
-
 class TestWahaEnv:
     def test_creates_secure_waha_credentials(self, project: Path):
-        shutil.copy(PROJECT_ROOT / ".env.example", project / ".env.example")
-
         whatsapp.ensure_waha_env()
 
         env_file = project / ".env"
