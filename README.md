@@ -27,6 +27,7 @@ A terminal-based (TUI) multi-protocol messaging client built with [Textual](http
 - [Installation](#installation)
   - [Option A — Automatic installation](#option-a--automatic-installation-recommended)
   - [Option B — Manual installation](#option-b--manual-installation)
+  - [Upgrading from an install without explicit flags](#upgrading-from-an-install-without-explicit-flags)
   - [Enabling the WhatsApp backend (optional)](#enabling-the-whatsapp-backend-optional)
   - [Enabling the Telegram backend (optional)](#enabling-the-telegram-backend-optional)
 - [Virtual environment](#virtual-environment-optional-but-recommended)
@@ -191,9 +192,12 @@ sudo apt install catimg
 
 #### 5. Configure your phone number
 
-Set your Signal phone number via environment variable:
+`megachatd` starts Signal only when `SIGNAL_ENABLED=1` is set (environment,
+`.env` or `"signal_enabled": true` in `config.json`). Set it together with your
+Signal phone number:
 
 ```bash
+export SIGNAL_ENABLED=1
 export SIGNAL_USER_NUMBER="+1234567890"
 ```
 
@@ -201,15 +205,46 @@ Or create a `config.json` file in the project root:
 
 ```json
 {
+    "signal_enabled": true,
     "user_number": "+1234567890"
 }
 ```
 
 > **Note:** `config.json` is in `.gitignore` and will not be committed.
 
+Every integration (Signal, WhatsApp, Telegram, Gmail) is **off by default** in
+`megachatd`; see [Upgrading from an install without explicit
+flags](#upgrading-from-an-install-without-explicit-flags) for all four. With
+`SIGNAL_ENABLED=1` and no number yet the backend still starts, so the device
+can be linked first.
+
 Next, optionally enable the extra backends:
 [WhatsApp](#enabling-the-whatsapp-backend-optional) and/or
 [Telegram](#enabling-the-telegram-backend-optional).
+
+### Upgrading from an install without explicit flags
+
+`megachatd` starts an integration only when its `<X>_ENABLED` flag is on. The
+value comes from the process environment, else the `config.json` key
+(`signal_enabled`, `whatsapp_enabled`, `telegram_enabled`, `gmail_enabled`),
+else the project `.env`; a blank or unparseable value falls through, and with no flag the
+integration stays off. After upgrading, add the flags for the backends you
+use:
+
+```bash
+echo 'SIGNAL_ENABLED=1' >> .env
+echo 'WHATSAPP_ENABLED=1' >> .env
+echo 'TELEGRAM_ENABLED=1' >> .env     # needs TELEGRAM_API_ID/TELEGRAM_API_HASH
+echo 'GMAIL_ENABLED=1' >> .env        # needs the Gmail address + App Password
+python3 launcher.py server stop && python3 launcher.py server start
+```
+
+When a backend is off but still has evidence of earlier use (a Signal user
+number, `whatsmeow.db` or `WHATSAPP_API_URL`, Telegram credentials, Gmail
+credentials), startup logs one warning and `launcher.py server start` shows a
+notice with the flag to set. The legacy Python server
+(`MEGACHAT_SERVER=python`) is not affected: the flags above apply to
+`megachatd`.
 
 ### Enabling the WhatsApp backend (optional)
 
@@ -230,8 +265,9 @@ enable it. Other settings: `WHATSAPP_MEDIA_DIR` / `whatsapp_media_dir` (media do
 
 > **Coming from WAHA?** The WAHA session cannot be migrated. The first time `megachatd` starts with
 > WhatsApp enabled and no `whatsmeow.db`, it prints (once, in Italian) that WhatsApp must be linked
-> again with a QR; `launcher.py server start` shows the notice. Telegram needs nothing: the existing
-> Telethon session is reused.
+> again with a QR; `launcher.py server start` shows the notice. Telegram needs no re-link: the
+> existing Telethon session is reused as soon as `TELEGRAM_ENABLED=1` (plus the API credentials) is
+> set.
 
 ### WAHA (only for the Python-server fallback)
 
@@ -392,9 +428,15 @@ The Telegram backend uses [Telethon](https://docs.telethon.dev/) and requires
 Add to the project `.env` file (`cp .env.example .env` if not already present):
 
 ```bash
+TELEGRAM_ENABLED=1
 TELEGRAM_API_ID=123456
 TELEGRAM_API_HASH=your_hash_here
 ```
+
+`TELEGRAM_ENABLED=1` (or `"telegram_enabled": true` in `config.json`) is
+required: the backend is not started when the flag is off. When it is on but
+the API id/hash are missing, startup logs one warning naming the missing
+settings and the backend stays off.
 
 #### Pair the device (QR login)
 
@@ -485,18 +527,21 @@ line or directly from the TUI.
 ### From the command line
 
 ```bash
-python3 link_account.py          # Signal
+python3 link_account.py          # Signal (calls signal-cli directly; megachatd needs SIGNAL_ENABLED=1)
 python3 link_whatsapp.py         # WhatsApp (needs WHATSAPP_ENABLED=1; talks to the server via link.* ops)
 ```
 
-Each script displays a QR code. Scan it with the respective app on your phone. There is no CLI
-script for Telegram — pair it from the TUI as described below.
+In `megachatd` each backend must be enabled before its linking flow is available:
+`SIGNAL_ENABLED=1`, `WHATSAPP_ENABLED=1`, `TELEGRAM_ENABLED=1` (plus the Telegram API
+credentials). The disabled entries in the TUI picker and `link_whatsapp.py`'s error say which
+flag to set. Each script displays a QR code. Scan it with the respective app on your phone.
+There is no CLI script for Telegram — pair it from the TUI as described below.
 
 ### From the TUI
 
 Launch the app and press `Ctrl+L`, select Signal, WhatsApp, or Telegram, then scan the QR code. For
 Signal you may need to enter your phone number. For Telegram with 2FA, the TUI will prompt for your
-password after scanning.
+password after scanning. A backend that is off is shown disabled with the `<X>_ENABLED` flag to set.
 
 ## Usage
 
@@ -911,6 +956,12 @@ The Gmail tab is configured from a terminal, so the App Password never passes th
 python3 scripts/gmail_setup.py
 ```
 
+Gmail is off until `GMAIL_ENABLED=1` (or `"gmail_enabled": true` in `config.json`) is set; the
+script writes `GMAIL_ENABLED=1` to `.env` when the key is absent, without touching an existing
+value. The address and App Password are still required: with the flag on and either missing, the
+tab reports "not configured", the unread watcher does not run, and startup logs one warning.
+Restart `megachatd` after adding the flag.
+
 The script asks for the Gmail address and a Google **App Password** (hidden input), verifies IMAP and
 SMTP login, stores the secret in `~/.config/signal-tui/gmail-app-password` with `600` permissions and
 updates `.env`. Then reload the Gmail tab in the Web UI. Email HTML is sanitized server-side:
@@ -1102,9 +1153,12 @@ without `LIVE_TESTS=1` they are always skipped.
 
 **Prerequisites:**
 
-- signal-cli daemon running (`config.json` with `user_number`) — required for Signal;
-- WAHA reachable with a WORKING session (for WhatsApp);
-- `TELEGRAM_API_ID`/`TELEGRAM_API_HASH` + an authorized Telethon session (for Telegram);
+- Signal: `SIGNAL_ENABLED=1` (megachatd) plus a signal-cli daemon and `config.json` with
+  `user_number`;
+- WhatsApp: `WHATSAPP_ENABLED=1` (megachatd) with a linked device; with the Python server, WAHA
+  reachable with a WORKING session;
+- Telegram: `TELEGRAM_ENABLED=1` (megachatd) and `TELEGRAM_API_ID`/`TELEGRAM_API_HASH` + an
+  authorized Telethon session;
 - the test contact present on all three protocols, or explicit ID overrides with
   `LIVE_TARGET_SIGNAL` / `LIVE_TARGET_WHATSAPP` / `LIVE_TARGET_TELEGRAM`.
 
@@ -1228,7 +1282,7 @@ signal-tui-client/
 │                              #   DESIGN_*.md, PLAN_*.md
 ├── assets/screenshots/        # README screenshots (main UI, image viewer)
 ├── docker-compose.yml         # WAHA (WhatsApp HTTP API) Docker container
-├── .env.example               # Template for WAHA + Telegram credentials
+├── .env.example               # Integration flags (SIGNAL/WHATSAPP/TELEGRAM/GMAIL_ENABLED) + credentials
 ├── install.sh                 # Automatic installation script
 ├── launcher.py                # Optional Python alternative to the shell scripts
 ├── launcher/                  # launcher.py's command implementations
