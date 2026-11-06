@@ -233,7 +233,7 @@ Pydantic "Stripped" string fields (`str(value or "").strip()`): `ChatsMarkReadRe
 | op | params -> result | notes / errors | cl |
 |---|---|---|---|
 | `server.status` | `{}` -> `{"signal":bool,"whatsapp":bool,"telegram":bool}` (`ServerStatus`) | `is_connected` of each backend; unregistered = false | T W |
-| `server.config` | `{}` -> `ServerConfigOut {thumbnail_max_lines(12), thumbnail_max_cols(60), picker_max_results(50), picker_preferred_backend(""), wa_lazy_media(true)}` | values from config (section 9) | T |
+| `server.config` | `{}` -> `ServerConfigOut {thumbnail_max_lines(12), thumbnail_max_cols(60), picker_max_results(50), picker_preferred_backend(""), wa_lazy_media(true)}` | values from config (section 9); the wire field names are unchanged by the nested schema (`thumbnail.max_lines`, `thumbnail.max_cols`, `picker.max_results`, `picker.preferred_backend`, `whatsapp.lazy_media`) | T |
 | `server.clients` | `{}` -> `{"connections":N,"self_included":bool,"web":N}` | connections = socket count incl. caller (`self_included` true when the socket adapter exists); web = browser WebSockets (`/ws` + `/ws/v2`) | T |
 | `server.shutdown` | `{}` -> `{"status":"ok"}` | answers at once, then ~0.2 s later stops the server as SIGINT does (the socket adapter flushes pending output before aborting connections). `not_supported` "This server cannot be shut down remotely" if no hook | T |
 | `server.client_log` | `{message?:any, source:"client"}` -> `{"status":"ok"}` | logs `[source] str(message or "")[:500]` at INFO. Web route forces source `web-client` | W |
@@ -293,7 +293,7 @@ non-empty), `is_group: true` (group chats only).
   `name = attachment_display_name(attachment_info, attachment_id)`;
   `type = content_type or ("image/*" if msg_type=="image") or inferred from an image extension`
   (null otherwise). `version = "<mtime_ns>-<size>"` of the local file (cache buster,
-  best effort, omitted on any error). WhatsApp lazy media (`wa_lazy_media`): a media row
+  best effort, omitted on any error). WhatsApp lazy media (`whatsapp.lazy_media`): a media row
   without `attachment_id` gets `{attachment_id:<lazy token>,name:<label>,type:<content_type or
   "image/*"|"video/*"|"audio/*">,media_kind,pending:true}` or, with no resolvable token,
   `media_placeholder` = "Immagine"/"GIF"/"Video"/"Audio"/"Messaggio vocale"/"Sticker"/"Documento"/"Allegato".
@@ -419,7 +419,7 @@ are reaped; `QR_REFRESH_AFTER_S`=60). `LinkQrOut{kind: url|png|text|info|error, 
 | `link.required` | `{}` -> `{"protocols":{"whatsapp":bool}}` | WhatsApp session guard says a new QR is needed | W |
 | `link.start` | `{protocol(Literal),phone:"",device_name:"Signal-TUI-Client"}` -> `{"qr":LinkQrOut}` | cancels a link already open for the protocol; Signal spawns `signal-cli link -n <device_name>` and extracts the `sgnl://` URL; WhatsApp asks WAHA for a QR; Telegram starts the QR login. `backend_down` (protocol unavailable), `backend_error` (message shown to the user) | T W |
 | `link.poll` | `{protocol}` -> `{"state":"waiting"\|"finalize"\|"done","needs_2fa":bool,"qr":LinkQrOut\|null}` | `conflict` "No link in progress"; signal -> `finalize` when the subprocess exited 0 (else waiting); whatsapp -> `done` when WAHA status is WORKING with `me`; telegram -> needs_2fa once when a password is required; QR renewed when older than 60 s | T W |
-| `link.finalize` | `{protocol:"signal",phone:""}` -> `{"account":str}` | resolves the new account via `signal-cli listAccounts` and persists `user_number` to config.json (atomic temp file + `os.replace`, other keys preserved; refuses an invalid existing config.json, or `SIGNAL_USER_NUMBER` selecting a different account) | T W |
+| `link.finalize` | `{protocol:"signal",phone:""}` -> `{"account":str}` | resolves the new account via `signal-cli listAccounts` and persists `signal.user_number` to config.json (atomic temp file + rename, other keys preserved; refuses an invalid existing config.json, or `SIGNAL_USER_NUMBER` selecting a different account) | T W |
 | `link.submit_2fa` | `{password}` -> `{"ok":bool}` | Telegram; `ok:false` = wrong password; never log the password | W |
 | `link.cancel` | `{protocol}` -> `{"ok":true}` | kills the subprocess; idempotent | T W |
 | `link.reconnect` | `{protocols:[...]}` -> `{"ok":true}` | non-blocking reconnect of those backends; `not_supported` "This server cannot reconnect backends" | T W |
@@ -438,14 +438,14 @@ Messages are Italian. `backend_down` "Trascrizione non configurata" = no API key
 | `transcribe.config` | `{}` -> `{"enabled":bool}` | service exists (selected provider has a key) | W |
 | `transcribe.status` | `{protocol,attachment_id}` -> `TranscribeStatusOut` or `{"status":"unknown"}` | stored record `{status:"ok"\|"pending"\|"error",text,error,model,updated_at}`; `backend_down` | W |
 | `transcribe.submit` | `{protocol:any,attachment_id:any}` -> `{"status":"done","text"}` / `{"status":"pending"}` | `invalid_request` (protocol not str/known, attachment_id not str/blank after strip); status `ok` record -> done; `pending` -> pending; else resolves the file via `media.attachment` (`not_found` "Allegato non trovato") and queues it | W |
-| `transcribe.set_api_key` / `config.set_openai_key` | `{provider,api_key}` / `{api_key}` -> `{"status":"ok"}` | `invalid_request` "Provider non valido" / "Chiave non valida" (not str, blank, any whitespace, > 500 chars; openai must start `sk-`, openrouter `sk-or-`, gemini >= 20 chars); `internal` "Errore di salvataggio" / "Errore di inizializzazione". Writes `config.json` key `<provider>_api_key` and rebuilds the service | W |
+| `transcribe.set_api_key` / `config.set_openai_key` | `{provider,api_key}` / `{api_key}` -> `{"status":"ok"}` | `invalid_request` "Provider non valido" / "Chiave non valida" (not str, blank, any whitespace, > 500 chars; openai must start `sk-`, openrouter `sk-or-`, gemini >= 20 chars); `internal` "Errore di salvataggio" / "Errore di inizializzazione". Writes `config.json` `<provider>.api_key` and rebuilds the service | W |
 | `transcribe.settings` | `{}` -> `TranscribeSettingsOut` | never contains a key; `providers.<name>` = `{api_key_set,model,base_url}` (+`http_referer`,`app_title` for openrouter); top-level `api_key_set/model/base_url` = selected provider's; `language` "" if unset; `timeout` default 120; `env_overrides` | W |
 | `transcribe.set_settings` | `TranscribeSettingsRequest` (partial) -> `TranscribeSettingsOut` | only keys present are applied (`model_fields_set`); top-level `model`/`base_url` go to the provider selected by this request's `provider` else the current; validators and exact messages in `server/ops/transcribe.py::_validated_settings` (`Provider non valido`, `Modello non valido`, `Modello troppo lungo (massimo 100 caratteri)`, `Modello Gemini non valido (es. gemini-flash-latest)`, `Modello OpenRouter non valido (formato fornitore/modello)`, `URL non valido`, `URL non valido: deve iniziare con http:// o https://`, `Referer non valido...`, `Titolo non valido...`, `Lingua non valida...` (`[a-z]{2,3}` or empty), `Timeout non valido` (int 5..600, not bool)); `""` for language/base_url restores the default | W |
 | `transcribe.diagnostics` | `{}` -> `TranscribeDiagnosticsOut` | no key; `recent` = last 10 records; `[{"status":"db_error","error":...}]` if the store fails | W |
 | `transcribe.check` | `{}` -> `TranscribeCheckOut` | GET to the provider (openrouter `<base>/key` Bearer, gemini `<base>/models?pageSize=1` `x-goog-api-key`, openai `<base>/models` Bearer; timeout 20 s); missing key -> `{"ok":false,"provider","detail":"Chiave API mancante"}`; network error -> `{"ok":false,"provider","url","detail":"Errore di rete: <Type>: <msg>"}`; else `{"ok":status==200,"provider","url","http_status","detail":<redacted first 500 chars>}` | W |
 | `autotranscribe.config` | `{}` -> `{"configured":bool,"globals":{whatsapp,signal,telegram}}` | | W |
-| `autotranscribe.set_global` | `{protocol,enabled:strict bool}` -> `{whatsapp,signal,telegram}` bools | writes `config.json` `auto_transcribe.<protocol>`; `internal` "Errore di salvataggio" | W |
-| `autotranscribe.chat` | `{protocol,contact_id(min 1)}` -> `{"global","override":bool\|null,"effective"}` | override from `auto_transcribe_chats["<protocol>:<contact_id>"]` | W |
+| `autotranscribe.set_global` | `{protocol,enabled:strict bool}` -> `{whatsapp,signal,telegram}` bools | writes `config.json` `transcription.auto.<protocol>`; `internal` "Errore di salvataggio" | W |
+| `autotranscribe.chat` | `{protocol,contact_id(min 1)}` -> `{"global","override":bool\|null,"effective"}` | override from `transcription.auto_chats["<protocol>:<contact_id>"]` | W |
 | `autotranscribe.set_chat` | `{protocol,contact_id,enabled:bool\|null}` -> same as `.chat` | null removes the override; `enabled` must be present | W |
 
 ### 4.7 Gmail
@@ -520,8 +520,9 @@ Server: `127.0.0.1:4242` by default (`web.host` may be a comma list or JSON list
 `web.port` 1..65535; `--web-host`, `--web-port`, `--no-web`). Everything is relative-URL based in the SPA
 (works behind a path-prefix reverse proxy).
 
-* **Auth scheme**: a single static Bearer token. Source: `SIGNAL_TUI_WEB_TOKEN` env, else `web.token` in
-  config.json. Without a token (and without `--web-no-auth`) the web server refuses to start. Header
+* **Auth scheme**: a single static Bearer token. Source: `WEB_TOKEN` env, else `web.token` in
+  config.json (the legacy `SIGNAL_TUI_WEB_TOKEN` is reported but no longer read). Without a token (and
+  without `--web-no-auth`) the web server refuses to start. Header
   `Authorization: Bearer <token>`; scheme matched case-insensitively, exactly one space, non-empty token,
   compared in constant time. **No cookies, no sessions, no CORS headers.** Every path that starts with `/api/`
   (including unknown ones: auth runs before routing) answers `401 {"detail":"Unauthorized"}` with header
@@ -720,35 +721,223 @@ What the SPA does with them (app.js `connectSocket`): `message`/`contact_update`
 
 ### 9.1 `config.json`
 
-Location in Python: `PROJECT_DIR/config.json` where `PROJECT_DIR` is the repository root (parent of `protocols/`).
-Missing/invalid JSON or non-object = `{}`. It is re-read on every getter call (no cache) and rewritten wholesale
-(`json.dump(indent=2)` + trailing newline, other keys preserved) by `transcribe.*`, `autotranscribe.*` and
-`link.finalize` (atomic temp file + `os.replace` for the latter). The Go port needs to decide where to read it
-(same file recommended); precedence everywhere is **environment variable > config.json > default** unless noted
-(`.env` in the project dir is consulted only by the settings marked `.env`).
+`internal/config/schema.go` is the single schema table: it defines every setting, its `config.json`
+location (`domain.setting`), the environment override derived from it (`UPPER(domain_setting)`) and the
+legacy names it replaced. The startup warnings and `megachatd config migrate` read that table; the
+per-domain tables below are generated from it.
 
-| config.json key | env | default / notes |
+`config.json` lives in the project directory: `--project-dir`, else `$MEGACHAT_PROJECT_DIR`, else the
+repository containing the executable, else the working directory. Missing/invalid JSON or a non-object
+value is treated as `{}`. It is re-read on every getter call (no cache). Writers rewrite the whole file
+with two-space indentation and a trailing newline, preserving the other keys and writing the nested
+shape: `transcribe.set_settings`, `transcribe.set_api_key` (`<provider>.api_key`), `autotranscribe.*`
+(`transcription.auto.<protocol>`, `transcription.auto_chats["<protocol>:<contact_id>"]`) and
+`link.finalize` (`signal.user_number`, atomic temp file + rename).
+
+Resolution rule for every getter:
+
+1. the environment variable `UPPER(domain_setting)`, when set and non-blank;
+2. else `config.json[domain][setting]`, when present and not `null`;
+3. else the default below.
+
+A value that cannot be coerced to the setting's type falls through to the next source. Types: `string`
+(a JSON string or any scalar stringified; the trimmed getters treat a whitespace-only value as unset),
+`int` (JSON number or integer string), `bool` (JSON bool, `0`/`1`, or the spellings `1/true/yes/on` and
+`0/false/no/off`, case-insensitive), `float` (JSON number or numeric string) and `map` (object only).
+Map settings have no environment override. Getters keep their clamps: positive / non-negative values,
+ports 1..65535, base URLs without a trailing `/`, `gmail.unread_poll_s` = max(0, value), and
+`web.host` may be a string or a JSON array of hosts joined with commas.
+
+The project `.env` is never a settings source (it is inspected only for the startup warning and
+`config migrate`). Variables that do not appear in the table are *not* settings: `MEGACHAT_PROJECT_DIR`,
+`MEGACHAT_SOCKET`, `MEGACHAT_LOCK_FILE`, `MEGACHAT_LOG_FILE`, `MEGACHAT_FAKE_BACKEND`, `HOME`, `XDG_*`,
+`SSH_CONNECTION`.
+
+#### `signal`
+
+| Setting | Env override | Type | Default | Legacy config.json key / env |
+|---|---|---|---|---|
+| `signal.enabled` | `SIGNAL_ENABLED` | bool | false | `signal_enabled` |
+| `signal.user_number` | `SIGNAL_USER_NUMBER` | string | "" | `user_number` |
+
+#### `whatsapp`
+
+| Setting | Env override | Type | Default | Legacy config.json key / env |
+|---|---|---|---|---|
+| `whatsapp.enabled` | `WHATSAPP_ENABLED` | bool | false | `whatsapp_enabled` |
+| `whatsapp.session_name` | `WHATSAPP_SESSION_NAME` | string | "default" | `whatsapp_session_name` |
+| `whatsapp.media_dir` | `WHATSAPP_MEDIA_DIR` | string | "" (then `<data>/whatsapp-media`) | `whatsapp_media_dir` |
+| `whatsapp.browser` | `WHATSAPP_BROWSER` | string | "" (Chrome) | `whatsapp_browser` |
+| `whatsapp.browser_version` | `WHATSAPP_BROWSER_VERSION` | string | "" (Chrome stable) | `whatsapp_browser_version` |
+| `whatsapp.browser_os` | `WHATSAPP_BROWSER_OS` | string | "" (`Linux`) | `whatsapp_browser_os` |
+| `whatsapp.lazy_media` | `WHATSAPP_LAZY_MEDIA` | bool | true | `wa_lazy_media`<br>env `WA_LAZY_MEDIA` |
+| `whatsapp.lazy_media_negative_ttl_s` | `WHATSAPP_LAZY_MEDIA_NEGATIVE_TTL_S` | int | 30 | `wa_lazy_media_negative_ttl_s`<br>env `WA_LAZY_MEDIA_NEGATIVE_TTL_S` |
+| `whatsapp.lid_cache_ttl_days` | `WHATSAPP_LID_CACHE_TTL_DAYS` | int | 30 | `wa_lid_cache_ttl_days`<br>env `WA_LID_CACHE_TTL_DAYS` |
+| `whatsapp.lid_retry_cooldown_s` | `WHATSAPP_LID_RETRY_COOLDOWN_S` | int | 300 | `wa_lid_retry_cooldown_s`<br>env `WA_LID_RETRY_COOLDOWN_S` |
+| `whatsapp.resync_download_media` | `WHATSAPP_RESYNC_DOWNLOAD_MEDIA` | bool | false | `wa_resync_download_media`<br>env `WA_RESYNC_DOWNLOAD_MEDIA` |
+| `whatsapp.resync_max_chats` | `WHATSAPP_RESYNC_MAX_CHATS` | int | 20 (0 = unlimited) | `wa_resync_max_chats`<br>env `WA_RESYNC_MAX_CHATS` |
+| `whatsapp.resync_limit` | `WHATSAPP_RESYNC_LIMIT` | int | 30 | `wa_resync_limit`<br>env `WA_RESYNC_LIMIT` |
+| `whatsapp.resync_workers` | `WHATSAPP_RESYNC_WORKERS` | int | 2 | `wa_resync_workers`<br>env `WA_RESYNC_WORKERS` |
+| `whatsapp.session_guard` | `WHATSAPP_SESSION_GUARD` | bool | true | `wa_session_guard`<br>env `WA_SESSION_GUARD` |
+| `whatsapp.session_poll_s` | `WHATSAPP_SESSION_POLL_S` | int | 60 | `wa_session_poll_s`<br>env `WA_SESSION_POLL_S` |
+| `whatsapp.session_restart_timeout_s` | `WHATSAPP_SESSION_RESTART_TIMEOUT_S` | int | 120 | `wa_session_restart_timeout_s`<br>env `WA_SESSION_RESTART_TIMEOUT_S` |
+| `whatsapp.session_max_restarts_per_hour` | `WHATSAPP_SESSION_MAX_RESTARTS_PER_HOUR` | int | 3 (0 = never) | `wa_session_max_restarts_per_hour`<br>env `WA_SESSION_MAX_RESTARTS_PER_HOUR` |
+| `whatsapp.session_backoff_s` | `WHATSAPP_SESSION_BACKOFF_S` | string | "5,30,120,300" | `wa_session_backoff_s`<br>env `WA_SESSION_BACKOFF_S` |
+| `whatsapp.session_stable_reset_s` | `WHATSAPP_SESSION_STABLE_RESET_S` | int | 600 | `wa_session_stable_reset_s`<br>env `WA_SESSION_STABLE_RESET_S` |
+| `whatsapp.session_failed_grace_s` | `WHATSAPP_SESSION_FAILED_GRACE_S` | int | 10 | `wa_session_failed_grace_s`<br>env `WA_SESSION_FAILED_GRACE_S` |
+| `whatsapp.session_unreachable_after` | `WHATSAPP_SESSION_UNREACHABLE_AFTER` | int | 5 | `wa_session_unreachable_after`<br>env `WA_SESSION_UNREACHABLE_AFTER` |
+| `whatsapp.presence_subscribe` | `WHATSAPP_PRESENCE_SUBSCRIBE` | bool | false | env `WAHA_PRESENCE_SUBSCRIBE` |
+
+#### `telegram`
+
+| Setting | Env override | Type | Default | Legacy config.json key / env |
+|---|---|---|---|---|
+| `telegram.enabled` | `TELEGRAM_ENABLED` | bool | false | `telegram_enabled` |
+| `telegram.api_id` | `TELEGRAM_API_ID` | int | 0 | `telegram_api_id` |
+| `telegram.api_hash` | `TELEGRAM_API_HASH` | string | "" | `telegram_api_hash` |
+| `telegram.reactions_notify` | `TELEGRAM_REACTIONS_NOTIFY` | bool | true | — |
+
+#### `gmail`
+
+| Setting | Env override | Type | Default | Legacy config.json key / env |
+|---|---|---|---|---|
+| `gmail.enabled` | `GMAIL_ENABLED` | bool | false (also needs credentials) | `gmail_enabled` |
+| `gmail.address` | `GMAIL_ADDRESS` | string | "" | `gmail_address` |
+| `gmail.app_password` | `GMAIL_APP_PASSWORD` | string | "" | `gmail_app_password` |
+| `gmail.app_password_file` | `GMAIL_APP_PASSWORD_FILE` | string | "" | `gmail_app_password_file` |
+| `gmail.app_password_cmd` | `GMAIL_APP_PASSWORD_CMD` | string | "" | `gmail_app_password_cmd` |
+| `gmail.imap_host` | `GMAIL_IMAP_HOST` | string | "imap.gmail.com" | `gmail_imap_host` |
+| `gmail.imap_port` | `GMAIL_IMAP_PORT` | int | 993 | `gmail_imap_port` |
+| `gmail.smtp_host` | `GMAIL_SMTP_HOST` | string | "smtp.gmail.com" | `gmail_smtp_host` |
+| `gmail.smtp_port` | `GMAIL_SMTP_PORT` | int | 587 | `gmail_smtp_port` |
+| `gmail.folder` | `GMAIL_FOLDER` | string | "INBOX" | `gmail_folder` |
+| `gmail.timeout_s` | `GMAIL_TIMEOUT_S` | int | 30 | `gmail_timeout_s` |
+| `gmail.unread_poll_s` | `GMAIL_UNREAD_POLL_S` | float | 60 (negative -> 0) | — |
+| `gmail.html_styles` | `GMAIL_HTML_STYLES` | bool | true | — |
+| `gmail.html_inline_css` | `GMAIL_HTML_INLINE_CSS` | bool | true | — |
+| `gmail.image_prefetch` | `GMAIL_IMAGE_PREFETCH` | bool | true | — |
+
+#### `web`
+
+| Setting | Env override | Type | Default | Legacy config.json key / env |
+|---|---|---|---|---|
+| `web.enabled` | `WEB_ENABLED` | bool | false | — |
+| `web.host` | `WEB_HOST` | string | "127.0.0.1" | — |
+| `web.port` | `WEB_PORT` | int | 4242 | — |
+| `web.token` | `WEB_TOKEN` | string | "" | env `SIGNAL_TUI_WEB_TOKEN` |
+
+#### `transcription`
+
+| Setting | Env override | Type | Default | Legacy config.json key / env |
+|---|---|---|---|---|
+| `transcription.provider` | `TRANSCRIPTION_PROVIDER` | string | "openai" | `ai_provider`<br>env `AI_PROVIDER` |
+| `transcription.language` | `TRANSCRIPTION_LANGUAGE` | string | "" (automatic) | `transcription_language` |
+| `transcription.timeout` | `TRANSCRIPTION_TIMEOUT` | int | 120 | `transcription_timeout` |
+| `transcription.auto` | — (map) | map | {} (per-protocol, unset = false) | `auto_transcribe` |
+| `transcription.auto_chats` | — (map) | map | {} | `auto_transcribe_chats` |
+
+#### `openai`
+
+| Setting | Env override | Type | Default | Legacy config.json key / env |
+|---|---|---|---|---|
+| `openai.api_key` | `OPENAI_API_KEY` | string | "" | `openai_api_key` |
+| `openai.transcription_model` | `OPENAI_TRANSCRIPTION_MODEL` | string | "gpt-transcribe" | `openai_transcription_model`, `transcription_model`<br>env `TRANSCRIPTION_MODEL` |
+| `openai.base_url` | `OPENAI_BASE_URL` | string | "https://api.openai.com/v1" | `transcription_base_url`<br>env `TRANSCRIPTION_BASE_URL` |
+
+#### `openrouter`
+
+| Setting | Env override | Type | Default | Legacy config.json key / env |
+|---|---|---|---|---|
+| `openrouter.api_key` | `OPENROUTER_API_KEY` | string | "" | `openrouter_api_key` |
+| `openrouter.transcription_model` | `OPENROUTER_TRANSCRIPTION_MODEL` | string | "openai/whisper-large-v3" | `openrouter_transcription_model` |
+| `openrouter.base_url` | `OPENROUTER_BASE_URL` | string | "https://openrouter.ai/api/v1" | `openrouter_base_url` |
+| `openrouter.http_referer` | `OPENROUTER_HTTP_REFERER` | string | "" | `openrouter_http_referer` |
+| `openrouter.app_title` | `OPENROUTER_APP_TITLE` | string | "" | `openrouter_app_title` |
+
+#### `gemini`
+
+| Setting | Env override | Type | Default | Legacy config.json key / env |
+|---|---|---|---|---|
+| `gemini.api_key` | `GEMINI_API_KEY` | string | "" | `gemini_api_key`<br>env `GOOGLE_API_KEY` |
+| `gemini.transcription_model` | `GEMINI_TRANSCRIPTION_MODEL` | string | "gemini-flash-latest" | `gemini_transcription_model` |
+| `gemini.base_url` | `GEMINI_BASE_URL` | string | "https://generativelanguage.googleapis.com/v1beta" | `gemini_base_url` |
+
+#### `messages`
+
+| Setting | Env override | Type | Default | Legacy config.json key / env |
+|---|---|---|---|---|
+| `messages.retention_per_contact` | `MESSAGES_RETENTION_PER_CONTACT` | int | 300 (0 disables) | `message_retention_per_contact`<br>env `MESSAGE_RETENTION_PER_CONTACT` |
+
+#### `address_book`
+
+| Setting | Env override | Type | Default | Legacy config.json key / env |
+|---|---|---|---|---|
+| `address_book.ttl_s` | `ADDRESS_BOOK_TTL_S` | int | 300 | `address_book_ttl_s` |
+
+#### `dynamic_refresh`
+
+| Setting | Env override | Type | Default | Legacy config.json key / env |
+|---|---|---|---|---|
+| `dynamic_refresh.interval_s` | `DYNAMIC_REFRESH_INTERVAL_S` | int | 300 | `dynamic_refresh_interval_s` |
+| `dynamic_refresh.cooldown_s` | `DYNAMIC_REFRESH_COOLDOWN_S` | int | 60 | `dynamic_refresh_cooldown_s` |
+
+#### `picker`
+
+| Setting | Env override | Type | Default | Legacy config.json key / env |
+|---|---|---|---|---|
+| `picker.max_results` | `PICKER_MAX_RESULTS` | int | 50 | `picker_max_results` |
+| `picker.preferred_backend` | `PICKER_PREFERRED_BACKEND` | string | "" | `picker_preferred_backend` |
+
+#### `image`
+
+| Setting | Env override | Type | Default | Legacy config.json key / env |
+|---|---|---|---|---|
+| `image.protocol` | `IMAGE_PROTOCOL` | string | "auto" | `image_protocol` |
+
+#### `thumbnail`
+
+| Setting | Env override | Type | Default | Legacy config.json key / env |
+|---|---|---|---|---|
+| `thumbnail.max_lines` | `THUMBNAIL_MAX_LINES` | int | 12 | `thumbnail_max_lines` |
+| `thumbnail.max_cols` | `THUMBNAIL_MAX_COLS` | int | 60 | `thumbnail_max_cols` |
+
+#### Legacy names and the project `.env`
+
+Legacy names are recorded in `schema.go` and reported, but **not read**: a flat `config.json` key or a
+legacy environment variable never changes the value of a setting.
+
+* A legacy flat key present in `config.json` is ignored and produces one `Warn` plus one Italian
+  `App.Notices` entry naming the new `domain.setting` (and its env variable) and
+  `megachatd config migrate`. A removed WAHA-only key is ignored with a notice asking to run the
+  command to clean the file.
+* A legacy environment variable that is set is logged once with its new name (removed ones are reported
+  as ignored). These are warnings only, not notices.
+* If `<project>/.env` exists, startup logs one `Warn` and appends one Italian notice listing its key
+  names only (never values) and pointing at `megachatd config migrate`.
+
+Removed settings (no Go code reads them any more):
+
+| Removed setting | Legacy config.json key | Legacy env |
 |---|---|---|
-| `user_number` | `SIGNAL_USER_NUMBER` | Signal account; `signal_enabled` key / `SIGNAL_ENABLED` (env, config, `.env`) overrides, else enabled iff a number is set |
-| `whatsapp_api_url` | `WHATSAPP_API_URL` | WAHA base URL (trailing `/` stripped); empty = WhatsApp disabled. Port env `WHATSAPP_API_PORT` (3005) used to auto-resolve a local WAHA |
-| `whatsapp_api_key` | `WHATSAPP_API_KEY`, `.env` `WAHA_API_KEY` | sent as `X-Api-Key` |
-| `whatsapp_session_name` | `WHATSAPP_SESSION_NAME` | `default` |
-| `whatsapp_media_dir` | `WHATSAPP_MEDIA_DIR` | WAHA media directory |
-| - | `CLIENT_WEBHOOK_PORT` (8088), `WAHA_WEBHOOK_URL` | webhook receiver |
-| `telegram_api_id` / `telegram_api_hash` | `TELEGRAM_API_ID` / `TELEGRAM_API_HASH` (+ `.env`) | Telegram enabled iff id != 0 and hash non-empty; session file `$XDG_DATA_HOME/signal-tui-client/telegram.session` (default `~/.local/share/...`) |
-| `message_retention_per_contact` | `MESSAGE_RETENTION_PER_CONTACT` (+ `.env`) | 300; 0 disables |
-| `address_book_ttl_s` 300, `dynamic_refresh_interval_s` 300, `dynamic_refresh_cooldown_s` 60 | `ADDRESS_BOOK_TTL_S` ... | |
-| `wa_lid_cache_ttl_days` 30, `wa_lid_retry_cooldown_s` 300, `wa_resync_download_media` false, `wa_lazy_media` **true**, `wa_lazy_media_negative_ttl_s` 30, `wa_resync_max_chats` 20, `wa_resync_limit` 30, `wa_resync_workers` 2 | upper-case names (`WA_LAZY_MEDIA`...) | bool parsing: 1/true/yes/on, 0/false/no/off (trimmed, case-insens.), else default |
-| `wa_session_guard` true, `wa_session_poll_s` 60, `wa_session_restart_timeout_s`, `wa_session_max_restarts_per_hour`, `wa_session_backoff_s` ([5,30,120,300]), `wa_session_stable_reset_s` 600, `wa_session_failed_grace_s` 10, `wa_session_unreachable_after` 5 | `WA_SESSION_*` | session watchdog (`server/wa_session_guard.py`) |
-| `picker_max_results` 50, `picker_preferred_backend` "" | `PICKER_MAX_RESULTS`, `PICKER_PREFERRED_BACKEND` | exposed via `server.config` |
-| `thumbnail_max_lines` 12, `thumbnail_max_cols` 60, `image_protocol` auto | `THUMBNAIL_MAX_LINES`, `THUMBNAIL_MAX_COLS`, `IMAGE_PROTOCOL` | |
-| `web: {enabled:false, port:4242, host:"127.0.0.1" (string, comma list or JSON list), token:""}` | `SIGNAL_TUI_WEB_TOKEN` | invalid port -> 4242 |
-| `gmail_address`, `gmail_app_password`, `gmail_app_password_file` (relative = under project dir), `gmail_app_password_cmd` (output cached 300 s), `gmail_imap_host` imap.gmail.com, `gmail_imap_port` 993, `gmail_smtp_host` smtp.gmail.com, `gmail_smtp_port` 587, `gmail_folder` INBOX, `gmail_timeout_s` 30 | `GMAIL_*` (env > config.json > `.env`) | whitespace-only = unset |
-| `ai_provider` (openai\|openrouter\|gemini), `openai_api_key`, `openrouter_api_key`, `gemini_api_key` | `AI_PROVIDER`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `GEMINI_API_KEY`/`GOOGLE_API_KEY` | keys also from `.env`; transcription settings: `openai_transcription_model`/`transcription_model` (`gpt-transcribe`), `transcription_base_url` (`https://api.openai.com/v1`), `openrouter_transcription_model` (`openai/whisper-large-v3`), `openrouter_base_url`, `openrouter_http_referer`, `openrouter_app_title`, `gemini_transcription_model` (`gemini-flash-latest`), `gemini_base_url` (`https://generativelanguage.googleapis.com/v1beta`), `transcription_language`, `transcription_timeout` (120) - env names in `transcription/config.py` |
-| `auto_transcribe: {whatsapp,signal,telegram: bool}`, `auto_transcribe_chats: {"<protocol>:<contact_id>": bool}` | - | written by the ops above |
+| WAHA API URL | `whatsapp_api_url` | `WHATSAPP_API_URL` |
+| WAHA API key | `whatsapp_api_key` | `WHATSAPP_API_KEY`, `WAHA_API_KEY` |
+| WAHA webhook/port | — | `WHATSAPP_API_PORT`, `CLIENT_WEBHOOK_PORT`, `WAHA_WEBHOOK_URL` |
 
-Other environment variables read by the server: `MEGACHAT_SOCKET`, `XDG_RUNTIME_DIR`, `XDG_DATA_HOME`,
-`MEGACHAT_LOCK_FILE`, `GMAIL_IMAGE_PREFETCH` (`0` disables), `GMAIL_UNREAD_POLL_S`.
+#### `megachatd config migrate`
+
+`megachatd config migrate [--project-dir DIR] [--dry-run]` converts a legacy project in place: it reads
+`config.json` and `.env`, moves every legacy flat key to its `domain.setting` (removed WAHA-only keys
+are dropped) and folds in every `.env` key that maps to a setting (the nested `config.json` value wins
+when both set the same setting; unknown `.env` keys are listed, not copied). It keeps a backup
+`config.json.pre-nested.bak` (never overwritten), writes `config.json` with mode `0600` (it now holds
+secrets) and renames `.env` to `.env.migrated` only when every key was migrated or reported.
+`--dry-run` prints the resulting JSON with secret values masked and writes nothing. The command is
+idempotent: running it on an already nested config changes nothing.
+
+Other environment variables read by the server (runtime, not settings): `MEGACHAT_PROJECT_DIR`,
+`MEGACHAT_SOCKET`, `MEGACHAT_LOCK_FILE`, `MEGACHAT_LOG_FILE`, `XDG_RUNTIME_DIR`, `XDG_DATA_HOME`,
+`XDG_CACHE_HOME`, `HOME`, `SSH_CONNECTION`.
+
 CLI (`megachat serve`): `--debug`, `--web-port`, `--web-host`, `--web-no-auth`, `--no-web`, `--no-socket`, `--socket PATH`
 (`--socket` and `--no-socket` are mutually exclusive; `--web-port` 1..65535). Exit code 1 if the lock is taken or an
 enabled adapter fails to start. Shutdown order: stop socket adapter, then web, then backends, prune.
