@@ -524,8 +524,8 @@ func TestRoutesAreUnique(t *testing.T) {
 			}
 		}
 	}
-	if len(Routes) != 54 {
-		t.Errorf("Routes has %d entries, want 54", len(Routes))
+	if len(Routes) != 55 {
+		t.Errorf("Routes has %d entries, want 55", len(Routes))
 	}
 }
 

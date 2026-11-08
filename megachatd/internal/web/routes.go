@@ -154,6 +154,22 @@ func (s *Server) routes(r chi.Router) {
 		}
 		return obj{"protocol": proto, "contact_id": cid, "enabled": get(b, "enabled")}
 	}))
+	// Query-string form used by the SPA: WhatsApp attachment ids are whole URLs
+	// ("http://localhost:3000/api/files/..."), and in the path their "//" gets
+	// merged by reverse proxies, so the exact-match lookup misses.
+	r.Get("/api/transcribe/status", s.jsonRoute(api.OpTranscribeStatus, func(c *call) any {
+		proto, ok := c.lastQuery("protocol")
+		if !ok {
+			c.addErr("missing", "query", "protocol", "Field required")
+		} else {
+			c.protoOf("query", "protocol", proto)
+		}
+		id, ok := c.lastQuery("attachment_id")
+		if !ok {
+			c.addErr("missing", "query", "attachment_id", "Field required")
+		}
+		return obj{"protocol": proto, "attachment_id": id}
+	}))
 	r.Get("/api/transcribe/{proto}/*", s.jsonRoute(api.OpTranscribeStatus, func(c *call) any {
 		proto := protoParam(c)
 		return obj{"protocol": proto, "attachment_id": chi.URLParam(c.r, "*")}

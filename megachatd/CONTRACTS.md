@@ -546,7 +546,7 @@ Server: `127.0.0.1:4242` by default (`web.host` may be a comma list or JSON list
 
 ---
 
-## 7. REST routes (54)
+## 7. REST routes (55)
 
 Column "op": operation called (`api.Routes`). Auth = Bearer required (all `/api/*`). JSON responses are the
 operation result **unchanged** unless noted.
@@ -576,6 +576,7 @@ operation result **unchanged** unless noted.
 | PUT `/api/autotranscribe/global/{proto}` | path `proto` (signal\|whatsapp\|telegram, else 422), body `{enabled}` -> `autotranscribe.set_global` | `{whatsapp,signal,telegram}` |
 | GET `/api/autotranscribe/chat` | `proto`, `contact_id` (both required; ids never in the path) -> `autotranscribe.chat` | |
 | PUT `/api/autotranscribe/chat` | `proto`, `contact_id`, body `{enabled}` (key mandatory: absent -> `422 {"detail":"enabled richiesto"}`; null clears) -> `autotranscribe.set_chat` | |
+| GET `/api/transcribe/status?protocol=&attachment_id=` | -> `transcribe.status` | Same as below; the form the SPA uses (WhatsApp ids are URLs whose `//` reverse proxies merge in a path). Both query params required (422). |
 | GET `/api/transcribe/{proto}/{attachment_id:path}` | -> `transcribe.status` | `TranscribeStatusOut` / `{"status":"unknown"}` |
 | GET `/api/messages` | `proto`, `contact_id` (required), `refresh=false`, `limit?`, `since?` -> `messages.page` (`proto` -> `protocol`) | `[MessageRow]`; limit outside 1..2000 -> `400 {"detail":"Invalid limit"}` |
 | POST `/api/messages/read` | body `{protocol,contact_id}` -> `chats.mark_read` | `{"status":"ok"}` |

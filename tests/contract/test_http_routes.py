@@ -37,6 +37,7 @@ EXPECTED = {
     ("GET", f"/api/autotranscribe/chat?proto=signal&contact_id={SIGQ}"): 200,
     ("PUT", f"/api/autotranscribe/chat?proto=signal&contact_id={SIGQ}"): 200,
     ("GET", "/api/transcribe/signal/sigvoice1"): 503,
+    ("GET", "/api/transcribe/status?protocol=signal&attachment_id=sigvoice1"): 503,
     ("GET", f"/api/messages?proto=signal&contact_id={SIGQ}"): 200,
     ("POST", "/api/messages/read"): 200,
     ("POST", "/api/chats/archive"): 400,
@@ -70,7 +71,7 @@ EXPECTED = {
 
 def test_samples_cover_every_route():
     assert {(m, p) for m, p, _ in SAMPLES} == set(EXPECTED)
-    assert len(SAMPLES) + 1 == 54  # CONTRACTS.md section 7 counts /health too
+    assert len(SAMPLES) + 1 == 55  # CONTRACTS.md section 7 counts /health too
 
 
 def test_health(go_server: Server):

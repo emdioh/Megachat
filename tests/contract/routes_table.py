@@ -40,6 +40,7 @@ SAMPLES: list[tuple[str, str, object]] = [
     ("GET", f"/api/autotranscribe/chat?proto=signal&contact_id={SIGQ}", None),
     ("PUT", f"/api/autotranscribe/chat?proto=signal&contact_id={SIGQ}", {"enabled": None}),
     ("GET", "/api/transcribe/signal/sigvoice1", None),
+    ("GET", "/api/transcribe/status?protocol=signal&attachment_id=sigvoice1", None),
     ("GET", f"/api/messages?proto=signal&contact_id={SIGQ}", None),
     ("POST", "/api/messages/read", {"protocol": "signal", "contact_id": SIG}),
     ("POST", "/api/chats/archive", {"protocol": "signal", "contact_id": SIG, "archived": True}),

@@ -29,6 +29,7 @@ const (
 	RouteAutotranscribeGlb  = "/api/autotranscribe/global/{proto}"
 	RouteAutotranscribeChat = "/api/autotranscribe/chat" // GET and PUT
 	RouteTranscribeStatus   = "/api/transcribe/{proto}/{attachment_id:path}"
+	RouteTranscribeStatusQ  = "/api/transcribe/status" // ?protocol=&attachment_id=
 	RouteMessages           = "/api/messages"
 	RouteMessagesRead       = "/api/messages/read"
 	RouteChatsArchive       = "/api/chats/archive"
@@ -103,6 +104,7 @@ var Routes = []Route{
 	{http.MethodPut, RouteAutotranscribeGlb, true, OpAutotranscribeSetGlobal, false},
 	{http.MethodGet, RouteAutotranscribeChat, true, OpAutotranscribeChat, false},
 	{http.MethodPut, RouteAutotranscribeChat, true, OpAutotranscribeSetChat, false},
+	{http.MethodGet, RouteTranscribeStatusQ, true, OpTranscribeStatus, false},
 	{http.MethodGet, RouteTranscribeStatus, true, OpTranscribeStatus, false},
 	{http.MethodGet, RouteMessages, true, OpMessagesPage, false},
 	{http.MethodPost, RouteMessagesRead, true, OpChatsMarkRead, false},
