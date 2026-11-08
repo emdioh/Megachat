@@ -1,8 +1,8 @@
 """Move the server (`megachat serve`) between this machine and the remote (Hetzner) server.
 
-Ported from ``scripts/tui_handover.sh``. The shared account state (WAHA
-session, signal-cli daemon) must never run on two machines at once, so these
-commands centralize the clean handoff.
+Ported from ``scripts/tui_handover.sh``. The shared account state (the
+signal-cli daemon) must never run on two machines at once, so these commands
+centralize the clean handoff.
 
 Configuration:
   HZ_HOST — remote server IP (default 167.233.140.207)
@@ -26,7 +26,6 @@ from pathlib import Path
 
 from . import server as server_mod
 from . import serverbin
-from . import whatsapp as whatsapp_mod
 from .common import PROJECT_DIR, command_exists, die, info, ok
 
 REMOTE_PROJECT_DIR = "/root/signal-tui-client"
@@ -76,7 +75,6 @@ pid="$(cat "$LOCK" 2>/dev/null || true)"
 case "$pid" in ''|*[!0-9]*) pid="" ;; esac
 if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then echo "  Server: ATTIVO (lock pid $pid)"; else echo "  Server: spento"; fi
 pgrep -f "signal-cli.*daemon" >/dev/null && echo "  daemon signal-cli: attivo" || echo "  daemon signal-cli: spento"
-docker ps --format '{{.Names}}' 2>/dev/null | grep -q "signal-tui-whatsapp" && echo "  WAHA: attivo" || echo "  WAHA: spento"
 """
 
 #: Exit code of REMOTE_STOP when the remote server refuses to stop.
@@ -87,44 +85,30 @@ REMOTE_STOP = (
     + f"""
 stop_serve || {{ echo "server remoto non si ferma (pid $(lock_pid))" >&2; exit {REMOTE_STOP_STUCK}; }}
 pkill -f "signal-cli.*daemon" 2>/dev/null || true
-cd {shlex.quote(REMOTE_PROJECT_DIR)} && python3 launcher.py whatsapp stop >/dev/null 2>&1 || true
 echo "server spento"
 """
 )
 
 
-def _remote_start_script(*, docker_limits: bool = True) -> str:
-    limits_flag = "" if docker_limits else " --no-docker-limits"
+def _remote_start_script() -> str:
     flags = shlex.join(server_mod.SERVE_ARGS)
-    py_serve = shlex.join(
-        [".venv/bin/python", "megachat.py", "serve", *server_mod.SERVE_ARGS]
-    )
     log = shlex.quote(str(server_mod.SERVER_LOG))
-    # Same choice as launcher/serverbin.py: MEGACHAT_SERVER=python (environment
-    # or .env) = Python server + WAHA; else $MEGACHATD_BIN, the repo build,
-    # megachatd on PATH.  No binary found: fail (never a silent fallback).
+    # Same binary lookup as launcher/serverbin.py: $MEGACHATD_BIN, the repo
+    # build, megachatd on PATH.  No binary found: fail (never a silent fallback).
     return (
         _REMOTE_FUNCS
         + f"""
 cd {shlex.quote(REMOTE_PROJECT_DIR)} || {{ echo FAIL_TUI_SERVER; exit 0; }}
-ENGINE="${{MEGACHAT_SERVER:-}}"
-[ -n "$ENGINE" ] || ENGINE="$(sed -n 's/^MEGACHAT_SERVER=//p' .env 2>/dev/null | tail -1)"
 BIN="${{MEGACHATD_BIN:-}}"
 [ -n "$BIN" ] || {{ [ -x megachatd/bin/megachatd ] && BIN="$PWD/megachatd/bin/megachatd"; }}
 [ -n "$BIN" ] || BIN="$(command -v megachatd || true)"
-if [ "$ENGINE" = python ]; then
-    python3 launcher.py whatsapp start --no-wait{limits_flag} >/dev/null 2>&1 || true
-elif [ -z "$BIN" ]; then
+if [ -z "$BIN" ]; then
     echo "megachatd non trovato sul server (make megachatd)" >&2
     echo "FAIL_TUI_SERVER"
     exit 0
 fi
 stop_serve || {{ echo FAIL_TUI_SERVER; exit 0; }}
-if [ "$ENGINE" = python ]; then
-    ( nohup {py_serve} </dev/null >>{log} 2>&1 & )
-else
-    ( nohup "$BIN" serve {flags} --project-dir "$PWD" </dev/null >>{log} 2>&1 & )
-fi
+( nohup "$BIN" serve {flags} --project-dir "$PWD" </dev/null >>{log} 2>&1 & )
 for _ in $(seq 1 {server_mod.READY_TIMEOUT_S}); do
     if lock_pid >/dev/null && (exec 3<>/dev/tcp/127.0.0.1/{server_mod.SERVER_PORT}) 2>/dev/null; then
         echo "OK_TUI_SERVER"
@@ -190,17 +174,12 @@ def status() -> int:
         if server_mod._pgrep("signal-cli.*daemon")
         else "  daemon signal-cli: spento"
     )
-    print(
-        "  WAHA: attivo"
-        if server_mod._docker_container_running("signal-tui-whatsapp")
-        else "  WAHA: spento"
-    )
     print(f"=== REMOTO ({_hz_user()}@{_hz_host()}) ===")
     result = _run_remote(REMOTE_STATUS, capture=False)
     return result.returncode
 
 
-def to_server(*, docker_limits: bool = True) -> int:
+def to_server() -> int:
     info("Fermo il client LOCALE...")
     if not server_mod.stop_server():
         die(
@@ -211,16 +190,9 @@ def to_server(*, docker_limits: bool = True) -> int:
     subprocess.run(
         ["pkill", "-f", "signal-cli.*daemon"], capture_output=True, check=False
     )
-    subprocess.run(
-        ["docker", "compose", *whatsapp_mod.compose_args(False), "down"],
-        capture_output=True,
-        check=False,
-    )
 
     info(f"Accendo il client sul SERVER ({_hz_host()})...")
-    result = _run_remote(
-        _remote_start_script(docker_limits=docker_limits), capture=True
-    )
+    result = _run_remote(_remote_start_script(), capture=True)
     print(result.stdout, end="")
     if "OK_TUI_SERVER" not in result.stdout:
         if result.stderr:
@@ -244,7 +216,7 @@ def to_server(*, docker_limits: bool = True) -> int:
     return 0
 
 
-def to_local(*, docker_limits: bool = True) -> int:
+def to_local() -> int:
     info(f"Fermo il client sul SERVER ({_hz_host()})...")
     stop = _run_remote(REMOTE_STOP, capture=False)
     if stop.returncode != 0:
@@ -256,15 +228,6 @@ def to_local(*, docker_limits: bool = True) -> int:
         return 1
 
     info("Accendo il client LOCALE...")
-    if serverbin.use_python(PROJECT_DIR):
-        if whatsapp_mod.start(no_wait=False, docker_limits=docker_limits) == 0:
-            ok("WAHA avviato e pronto")
-        else:
-            info(
-                "avvio WAHA non riuscito o timeout; provo comunque a far partire il server"
-            )
-            whatsapp_mod.start(no_wait=True, docker_limits=docker_limits)
-
     if not server_mod.stop_server():
         die(f"Il server locale (pid {server_mod.server_pid()}) non si ferma.")
         return 1
@@ -285,7 +248,7 @@ def to_local(*, docker_limits: bool = True) -> int:
             f"tail -50 /tmp/signal-tui.log {server_mod.SERVER_LOG}"
         )
         return 1
-    ok(f"Server avviato ({serverbin.engine_name(PROJECT_DIR)} serve) in {PROJECT_DIR}")
+    ok(f"Server avviato (megachatd serve) in {PROJECT_DIR}")
 
     ok("Handover verso il locale completato.")
     print()

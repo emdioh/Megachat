@@ -35,7 +35,6 @@ _signal_tui_web_bg() {
     export WEB_TOKEN
     echo "Server bg attivo — token: $WEB_TOKEN"
 }
-# Ferma solo il server (megachatd); con il server Python WAHA resta attiva (serve --waha per fermarla).
 _signal_tui_web_stop() { "$SIGNAL_TUI_DIR/.venv/bin/python" "$SIGNAL_TUI_DIR/launcher.py" server stop; }
 _signal_tui_web_status() { "$SIGNAL_TUI_DIR/.venv/bin/python" "$SIGNAL_TUI_DIR/launcher.py" server status; }
 alias web-signal-tui-bg='_signal_tui_web_bg'

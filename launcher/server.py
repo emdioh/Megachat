@@ -1,6 +1,5 @@
 """Start/stop/status the headless server directly on this machine
-(``megachatd serve`` as a detached background process; with
-``MEGACHAT_SERVER=python`` the old Python server, plus WAHA on request).
+(``megachatd serve`` as a detached background process).
 
 Ported from ``scripts/start_on_server.sh`` — a disaster-recovery utility:
 if the local machine is unreachable, this can be run from a server console
@@ -18,12 +17,12 @@ import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from client.paths import candidate_socket_paths, runtime_file_path
+
 from . import serverbin
-from . import whatsapp as whatsapp_mod
 from .common import PROJECT_DIR, command_exists, die, info, ok, port_listening, warn
 
-# The instance lock belongs to the server (or to a ``megachat --in-process``
-# TUI); same location and override as ``server/lock.py``.
+# The instance lock belongs to the server.
 LOCK_FILE = Path(os.environ.get("MEGACHAT_LOCK_FILE") or "/tmp/signal-tui.lock")
 SERVER_LOG = Path("/tmp/megachat-serve.log")
 SERVER_PORT = 4242
@@ -59,8 +58,8 @@ class ServeOptions:
     debug: bool = False
 
     def serve_args(self) -> list[str]:
-        """``serve`` flags of this server (same for megachatd and the Python
-        server); see :func:`serve_argv` for the full command."""
+        """``serve`` flags of megachatd; see :func:`serve_argv` for the full
+        command."""
         args: list[str] = []
         if self.no_web:
             args.append("--no-web")
@@ -127,18 +126,12 @@ def _kill_tmux_session(name: str = "tui") -> None:
         pass  # tmux not installed: nothing legacy to clean up
 
 
-def _python() -> str:
-    return str(PROJECT_DIR / ".venv" / "bin" / "python")
-
-
 def serve_argv(opts: ServeOptions) -> list[str]:
     """Command that starts the server: ``megachatd serve ... --project-dir
-    <repo>``, or the Python server with ``MEGACHAT_SERVER=python``.
+    <repo>``.
 
     Raises :class:`serverbin.ServerBinaryNotFound` (Italian message)."""
-    return serverbin.serve_command(
-        opts.serve_args(), python=_python(), repo=PROJECT_DIR
-    )
+    return serverbin.serve_command(opts.serve_args(), repo=PROJECT_DIR)
 
 
 def _spawn_server(opts: ServeOptions) -> subprocess.Popen:
@@ -163,14 +156,18 @@ def _pid_alive(pid: int) -> bool:
         return True  # exists, owned by someone else
     except OSError:
         return False
-    return True
+    try:  # a zombie nobody reaped yet is as good as gone
+        with open(f"/proc/{pid}/stat", "rb") as handle:
+            return handle.read().rpartition(b")")[2].split()[0] != b"Z"
+    except (OSError, IndexError):
+        return True
 
 
 def server_pid() -> int | None:
     """Pid in the instance lock if that process is alive, else ``None``.
 
     "Running" means the lock holder is alive: the lock belongs to the
-    ``megachat serve`` process (or to a legacy/``--in-process`` TUI).
+    ``megachat serve`` process.
     """
     try:
         pid = int(LOCK_FILE.read_text().strip())
@@ -179,26 +176,56 @@ def server_pid() -> int | None:
     return pid if _pid_alive(pid) else None
 
 
-def stop_server() -> bool:
-    """Stop the instance holding the lock (SIGINT = clean stop) and any legacy
-    tmux session; wait for the process to exit.  Attached TUIs just lose their
-    connection.
+def _socket_server() -> tuple[Path, int] | None:
+    """``(socket, pid)`` of a server that published its runtime file, if alive.
 
-    Returns ``False`` (lock left in place, so no second server can start next
-    to a half-stopped one) when the process is still alive after the timeout.
+    Covers servers started by a system service, which listens on
+    ``~/.local/state/megachat/server.sock`` (see
+    :func:`client.paths.candidate_socket_paths`).
     """
+    for socket_path in candidate_socket_paths():
+        try:
+            data = json.loads(runtime_file_path(socket_path).read_text("utf-8"))
+            pid = data.get("pid")
+        except (OSError, ValueError, AttributeError):
+            continue
+        if isinstance(pid, int) and not isinstance(pid, bool) and _pid_alive(pid):
+            return socket_path, pid
+    return None
+
+
+def _server_pids() -> list[int]:
+    """Live server pids known from the lock and from the socket runtime files."""
+    pids: list[int] = []
     pid = server_pid()
     if pid is not None:
+        pids.append(pid)
+    found = _socket_server()
+    if found is not None and found[1] not in pids:
+        pids.append(found[1])
+    return pids
+
+
+def stop_server() -> bool:
+    """Stop the instance holding the lock (and a system-service server on its
+    socket), SIGINT = clean stop, plus any legacy tmux session; wait for the
+    processes to exit.  Attached TUIs just lose their connection.
+
+    Returns ``False`` (lock left in place, so no second server can start next
+    to a half-stopped one) when a process is still alive after the timeout.
+    """
+    pids = _server_pids()
+    for pid in pids:
         try:
             os.kill(pid, signal.SIGINT)
         except OSError:
             pass
-        for _ in range(int(STOP_TIMEOUT_S / 0.5)):
-            if not _pid_alive(pid):
-                break
-            time.sleep(0.5)
-        if _pid_alive(pid):
-            return False
+    for _ in range(int(STOP_TIMEOUT_S / 0.5)):
+        if not any(_pid_alive(pid) for pid in pids):
+            break
+        time.sleep(0.5)
+    if any(_pid_alive(pid) for pid in pids):
+        return False
     _kill_tmux_session()
     LOCK_FILE.unlink(missing_ok=True)
     _state_file().unlink(missing_ok=True)
@@ -305,18 +332,6 @@ def _pgrep(pattern: str) -> bool:
     )
 
 
-def _docker_container_running(name: str) -> bool:
-    if not command_exists("docker"):
-        return False
-    result = subprocess.run(
-        ["docker", "ps", "--format", "{{.Names}}"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    return name in result.stdout.splitlines()
-
-
 def _web_url(opts: ServeOptions) -> str:
     # The address worth sharing: the first one other machines can reach.
     hosts = opts.web_hosts()
@@ -336,27 +351,12 @@ def _describe(opts: ServeOptions) -> str:
 
 def start_all(
     *,
-    docker_limits: bool = True,
     print_token: bool = True,
     opts: ServeOptions | None = None,
-    whatsapp: bool = False,
     foreground: bool = False,
 ) -> int:
-    """Restart the headless server.  *whatsapp* starts WAHA first: only for
-    the old Python server (``MEGACHAT_SERVER=python``) and ``--waha``;
-    megachatd speaks WhatsApp natively."""
+    """Restart the headless server (megachatd)."""
     opts = opts or ServeOptions()
-    if whatsapp and not serverbin.use_python(PROJECT_DIR):
-        info("WAHA non serve a megachatd (WhatsApp è nativo): ignoro --waha.")
-        whatsapp = False
-    if whatsapp:
-        info("Avvio WAHA (WhatsApp HTTP API)...")
-        if whatsapp_mod.start(no_wait=False, docker_limits=docker_limits) == 0:
-            ok("WAHA avviato e pronto")
-            whatsapp_mod.describe_session(whatsapp_mod.session_status())
-        else:
-            info("WAHA non partito (vedi docker compose logs whatsapp)")
-
     loopback = all(
         host in ("127.0.0.1", "::1", "localhost") for host in opts.web_hosts()
     )
@@ -365,10 +365,7 @@ def start_all(
             "Web UI senza token su un indirizzo raggiungibile dalla rete: chiunque "
             f"raggiunga {opts.web_host}:{opts.web_port} legge e invia messaggi."
         )
-    info(
-        f"Avvio il server headless ({serverbin.engine_name(PROJECT_DIR)} serve) "
-        f"{_describe(opts)}..."
-    )
+    info(f"Avvio il server headless (megachatd serve) {_describe(opts)}...")
     # Restart semantics: stop a running instance (lock pid, SIGINT) and any
     # legacy tmux 'tui' session before taking the lock again.
     if not stop_server():
@@ -419,46 +416,27 @@ def start_all(
     return 1
 
 
-def stop_all(*, whatsapp: bool = False) -> int:
-    """Stop the server; *whatsapp* also brings WAHA down (``--waha``, only
-    relevant when WAHA was started for the Python server)."""
+def stop_all() -> int:
+    """Stop the server."""
     info("Spegnimento server (SIGINT pulito)...")
     if not stop_server():
         die(f"Il server (pid {server_pid()}) non si ferma.")
         return 1
     ok("Server fermato")
-    if not whatsapp:
-        ok("Server spento. Per riaccendere: python3 launcher.py server start")
-        return 0
-
-    info("Spegnimento WAHA...")
-    result = subprocess.run(
-        ["docker", "compose", *whatsapp_mod.compose_args(False), "down"],
-        capture_output=True,
-        check=False,
-    )
-    if result.returncode == 0:
-        ok("WAHA fermato")
-    else:
-        info("WAHA non era attivo")
     ok("Server spento. Per riaccendere: python3 launcher.py server start")
     return 0
 
 
-def _engine_of(pid: int) -> str:
-    """``megachatd`` or ``python`` for the process *pid* (from /proc)."""
-    try:
-        cmd = Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
-    except OSError:
-        return serverbin.engine_name(PROJECT_DIR)
-    exe = os.path.basename(cmd[0].decode("utf-8", "replace")) if cmd else ""
-    return "megachatd" if exe.startswith("megachatd") else "python"
-
-
 def status() -> int:
     pid = server_pid()
+    socket_path: Path | None = None
+    if pid is None:
+        found = _socket_server()
+        if found is not None:
+            socket_path, pid = found
     if pid is not None:
-        print(f"Server: ATTIVO (pid {pid}, {_engine_of(pid)})")
+        where = f", socket {socket_path}" if socket_path else ""
+        print(f"Server: ATTIVO (pid {pid}, megachatd{where})")
     else:
         print("Server: spento")
     print(
@@ -466,11 +444,6 @@ def status() -> int:
         if _pgrep("signal-cli.*daemon")
         else "daemon signal-cli: spento"
     )
-    waha_active = _docker_container_running("signal-tui-whatsapp")
-    if waha_active or serverbin.use_python(PROJECT_DIR):
-        print("WAHA: attivo" if waha_active else "WAHA: spento")
-    if waha_active:
-        whatsapp_mod.describe_session(whatsapp_mod.session_status(timeout=2))
     opts = _read_state(pid)
     if opts.no_web:
         print("Web UI: disattivata (--no-web)")

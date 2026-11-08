@@ -5,8 +5,7 @@ find-or-spawn (``client/attach.py``).
 
 ``megachatd serve <args> --project-dir <repo>``.  Binary lookup:
 ``$MEGACHATD_BIN``, else ``<repo>/megachatd/bin/megachatd``, else
-``megachatd`` on ``PATH``.  (The legacy Python server and its
-``MEGACHAT_SERVER=python`` switch are gone.)
+``megachatd`` on ``PATH``.
 """
 
 from __future__ import annotations
@@ -17,20 +16,12 @@ from pathlib import Path
 
 REPO_DIR = Path(__file__).resolve().parent.parent
 BIN_ENV = "MEGACHATD_BIN"
-ENGINE_ENV = "MEGACHAT_SERVER"
 #: Where ``make megachatd`` puts the binary, relative to the repo.
 REPO_BIN_REL = Path("megachatd") / "bin" / "megachatd"
 
 
 class ServerBinaryNotFound(Exception):
     """megachatd cannot be found; the message is user facing (Italian)."""
-
-
-def use_python(repo: Path = REPO_DIR) -> bool:
-    """Always ``False``: the Python server was deleted.  Kept only until the
-    launcher callers drop their WAHA / Python branches (bead mc-zao.4.4)."""
-    del repo
-    return False
 
 
 def resolve_megachatd(repo: Path = REPO_DIR) -> str | None:
@@ -56,18 +47,12 @@ def not_found_message(repo: Path = REPO_DIR) -> str:
     )
 
 
-def serve_command(
-    serve_args: list[str],
-    *,
-    python: str | None = None,
-    repo: Path = REPO_DIR,
-) -> list[str]:
+def serve_command(serve_args: list[str], *, repo: Path = REPO_DIR) -> list[str]:
     """Full argv of the headless server for *serve_args* (``megachat serve``
     flags, without the ``serve`` word).
 
-    Raises :class:`ServerBinaryNotFound` when megachatd is wanted but missing.
+    Raises :class:`ServerBinaryNotFound` when megachatd is missing.
     """
-    del python  # unused: the Python server is gone
     binary = resolve_megachatd(repo)
     if binary is None:
         raise ServerBinaryNotFound(not_found_message(repo))
@@ -77,7 +62,3 @@ def serve_command(
 
 def _has_project_dir(args: list[str]) -> bool:
     return any(a == "--project-dir" or a.startswith("--project-dir=") for a in args)
-
-
-def engine_name(repo: Path = REPO_DIR) -> str:
-    return "python" if use_python(repo) else "megachatd"

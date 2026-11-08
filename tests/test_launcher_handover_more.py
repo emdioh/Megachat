@@ -9,7 +9,6 @@ import pytest
 
 from launcher import handover
 from launcher import server as server_mod
-from launcher import whatsapp as whatsapp_mod
 
 
 def _cp(cmd, returncode=0, stdout="", stderr=""):
@@ -74,7 +73,6 @@ class TestRemoteScripts:
             handover.REMOTE_STATUS,
             handover.REMOTE_STOP,
             handover._remote_start_script(),
-            handover._remote_start_script(docker_limits=False),
         ):
             result = subprocess.run(
                 ["bash", "-n"],
@@ -88,23 +86,16 @@ class TestRemoteScripts:
     def test_start_runs_detached_serve_and_never_tmux_new_session(self):
         script = handover._remote_start_script()
         flags = shlex.join(server_mod.SERVE_ARGS)
-        py_serve = shlex.join(
-            [".venv/bin/python", "megachat.py", "serve", *server_mod.SERVE_ARGS]
-        )
-        # megachatd by default (binary: $MEGACHATD_BIN, repo build, PATH) ...
+        # megachatd only (binary: $MEGACHATD_BIN, repo build, PATH) ...
         assert f'nohup "$BIN" serve {flags} --project-dir "$PWD" </dev/null' in script
         assert "megachatd/bin/megachatd" in script
-        # ... the Python server (and WAHA) only with MEGACHAT_SERVER=python
-        assert f"nohup {py_serve} </dev/null" in script
-        assert script.index('"$ENGINE" = python') < script.index("whatsapp start")
         assert "--web-host 0.0.0.0" in script
         assert "tmux new-session" not in script
         assert "signal_tui" not in script
         assert "OK_TUI_SERVER" in script and "FAIL_TUI_SERVER" in script
+        assert "MEGACHAT_SERVER" not in script
+        assert "whatsapp" not in script
         assert "--no-docker-limits" not in script
-        assert "--no-docker-limits" in handover._remote_start_script(
-            docker_limits=False
-        )
 
     def test_start_stops_previous_instance_before_spawning(self):
         script = handover._remote_start_script()
@@ -130,7 +121,6 @@ class TestRemoteScripts:
 class TestStatus:
     def test_prints_local_and_remote_sections(self, monkeypatch, capsys):
         monkeypatch.setattr(server_mod, "_pgrep", lambda pattern: False)
-        monkeypatch.setattr(server_mod, "_docker_container_running", lambda n: False)
         monkeypatch.setattr(
             handover, "_run_remote", lambda script, capture: _cp(["ssh"], 0)
         )
@@ -143,7 +133,6 @@ class TestStatus:
     def test_local_running_means_live_lock_holder(self, monkeypatch, capsys):
         monkeypatch.setattr(server_mod, "server_pid", lambda: 4321)
         monkeypatch.setattr(server_mod, "_pgrep", lambda pattern: False)
-        monkeypatch.setattr(server_mod, "_docker_container_running", lambda n: False)
         monkeypatch.setattr(
             handover, "_run_remote", lambda script, capture: _cp(["ssh"], 0)
         )
@@ -154,7 +143,6 @@ class TestStatus:
 class TestToServer:
     def _common(self, monkeypatch, tmp_path):
         monkeypatch.setattr(server_mod, "stop_server", lambda: True)
-        monkeypatch.setattr(whatsapp_mod, "COMPOSE_FILE", tmp_path / "c.yml")
         monkeypatch.setattr(handover.subprocess, "run", lambda *a, **k: _cp(a[0], 0))
 
     def test_dies_when_remote_start_fails(self, monkeypatch, tmp_path):
@@ -211,21 +199,14 @@ class TestToServer:
 
 
 class TestToLocal:
-    def _stubs(
-        self, monkeypatch, tmp_path, *, remote_rc=0, stops=True, up=True, python=False
-    ):
+    def _stubs(self, monkeypatch, tmp_path, *, remote_rc=0, stops=True, up=True):
         events = []
-        if python:
-            monkeypatch.setenv("MEGACHAT_SERVER", "python")
         monkeypatch.setattr(
             handover,
             "_run_remote",
             lambda script, capture: (
                 events.append("remote-stop") or _cp(["ssh"], remote_rc)
             ),
-        )
-        monkeypatch.setattr(
-            whatsapp_mod, "start", lambda **k: events.append("waha") or 0
         )
         monkeypatch.setattr(handover, "PROJECT_DIR", tmp_path)
         monkeypatch.setattr(

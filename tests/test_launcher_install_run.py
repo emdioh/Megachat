@@ -3,8 +3,7 @@
 The individual helpers (download_signal_cli, check_java, ensure_web_config,
 etc.) are already covered in tests/test_launcher_install.py; here we drive
 run(args) end-to-end with every helper mocked, to cover its branch wiring
-(--update, --skip-signal-cli, --whatsapp/--check-whatsapp, --aliases, the
-final next-steps banner).
+(--update, --skip-signal-cli, --aliases, the final next-steps banner).
 """
 
 from __future__ import annotations
@@ -20,10 +19,6 @@ def _args(**overrides):
     defaults = {
         "no_venv": False,
         "skip_signal_cli": False,
-        "no_web": False,
-        "whatsapp": False,
-        "check_whatsapp": False,
-        "no_docker_limits": False,
         "version": "",
         "aliases": False,
         "update": False,
@@ -49,18 +44,13 @@ def wired(monkeypatch, tmp_path):
     monkeypatch.setattr(
         install, "remove_old_versions", lambda v: calls.setdefault("removed", v)
     )
-    monkeypatch.setattr(install, "install_python_deps", lambda venv, web: web)
+    monkeypatch.setattr(install, "install_python_deps", lambda venv: None)
     monkeypatch.setattr(
         install, "build_megachatd", lambda: calls.setdefault("megachatd", True)
     )
     monkeypatch.setattr(install, "PROJECT_DIR", tmp_path)
     monkeypatch.setattr(
         install, "ensure_web_config", lambda: calls.setdefault("web_config", True)
-    )
-    monkeypatch.setattr(
-        install.whatsapp_mod,
-        "setup",
-        lambda **k: calls.setdefault("whatsapp_setup", k),
     )
     monkeypatch.setattr(install, "install_aliases", lambda: True)
     return calls
@@ -112,26 +102,6 @@ class TestSignalCliInstall:
         assert wired["removed"] == "0.14.7"
 
 
-class TestWhatsAppFlags:
-    def test_check_whatsapp_calls_setup_without_starting(self, wired):
-        install.run(_args(check_whatsapp=True))
-        assert wired["whatsapp_setup"] == {
-            "should_start": False,
-            "docker_limits": True,
-        }
-
-    def test_whatsapp_flag_calls_setup_and_starts(self, wired):
-        install.run(_args(whatsapp=True, no_docker_limits=True))
-        assert wired["whatsapp_setup"] == {
-            "should_start": True,
-            "docker_limits": False,
-        }
-
-    def test_neither_flag_skips_whatsapp_setup(self, wired):
-        install.run(_args())
-        assert "whatsapp_setup" not in wired
-
-
 class TestAliasesSoftFailure:
     def test_warns_but_completes_when_aliases_fail(self, wired, monkeypatch, capsys):
         monkeypatch.setattr(install, "install_aliases", lambda: False)
@@ -146,10 +116,9 @@ class TestFinalBanner:
         assert "Hai Docker installato" not in out
         assert "WAHA" not in out
 
-    def test_default_install_builds_megachatd_and_never_touches_waha(self, wired):
+    def test_default_install_builds_megachatd(self, wired):
         install.run(_args())
         assert wired["megachatd"] is True
-        assert "whatsapp_setup" not in wired
 
     def test_always_explains_how_to_enable_each_integration(self, wired, capsys):
         install.run(_args())
@@ -163,10 +132,3 @@ class TestFinalBanner:
             assert flag in out
         assert "link_account.py" in out
         assert "link_whatsapp.py" in out
-
-    def test_python_fallback_note_points_to_waha_flag(self, wired, tmp_path, capsys):
-        (tmp_path / ".env").write_text("MEGACHAT_SERVER=python\n", encoding="utf-8")
-        install.run(_args())
-        out = capsys.readouterr().out
-        assert "server Python" in out
-        assert "install --waha" in out

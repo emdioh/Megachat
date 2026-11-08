@@ -1,8 +1,7 @@
-"""Which server gets spawned: megachatd (binary lookup) or the Python fallback."""
+"""megachatd binary lookup and the serve command."""
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import pytest
@@ -14,7 +13,6 @@ from launcher import serverbin
 def repo(tmp_path, monkeypatch) -> Path:
     """A fake checkout; nothing on PATH, no env override."""
     monkeypatch.delenv("MEGACHATD_BIN", raising=False)
-    monkeypatch.delenv("MEGACHAT_SERVER", raising=False)
     monkeypatch.setenv("PATH", str(tmp_path / "emptybin"))
     return tmp_path / "repo"
 
@@ -72,14 +70,3 @@ class TestServeCommand:
         cmd = serverbin.serve_command(["--project-dir", "/elsewhere"], repo=repo)
         assert cmd.count("--project-dir") == 1
         assert "/elsewhere" in cmd
-
-    def test_environment_beats_dotenv(self, repo, monkeypatch):
-        repo.mkdir()
-        (repo / ".env").write_text("MEGACHAT_SERVER=python\n", encoding="utf-8")
-        monkeypatch.setenv("MEGACHAT_SERVER", "megachatd")
-        assert serverbin.use_python(repo) is False
-        assert serverbin.engine_name(repo) == "megachatd"
-
-    def test_default_is_megachatd(self, repo):
-        assert serverbin.use_python(repo) is False
-        assert os.environ.get("MEGACHAT_SERVER") is None

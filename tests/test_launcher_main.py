@@ -42,20 +42,10 @@ def launcher_cli():
 class TestBuildParser:
     def test_parses_install_flags(self, launcher_cli):
         parser = launcher_cli.build_parser()
-        args = parser.parse_args(
-            ["install", "--no-venv", "--version", "1.2.3", "--whatsapp"]
-        )
+        args = parser.parse_args(["install", "--no-venv", "--version", "1.2.3"])
         assert args.command == "install"
         assert args.no_venv is True
         assert args.version == "1.2.3"
-        assert args.whatsapp is True
-
-    def test_parses_whatsapp_start_with_no_docker_limits(self, launcher_cli):
-        parser = launcher_cli.build_parser()
-        args = parser.parse_args(["whatsapp", "start", "--no-docker-limits"])
-        assert args.command == "whatsapp"
-        assert args.wa_command == "start"
-        assert args.no_docker_limits is True
 
     def test_parses_profile_pyspy_duration(self, launcher_cli):
         parser = launcher_cli.build_parser()
@@ -82,43 +72,14 @@ class TestMainDispatch:
         monkeypatch.setattr(launcher_cli.install, "run_aliases_only", lambda: 0)
         assert launcher_cli.main(["aliases"]) == 0
 
-    def test_whatsapp_start_dispatches_with_docker_limits(
-        self, launcher_cli, monkeypatch
-    ):
-        calls = []
-        monkeypatch.setattr(
-            launcher_cli.whatsapp,
-            "start",
-            lambda **kwargs: calls.append(kwargs) or 0,
-        )
-        assert launcher_cli.main(["whatsapp", "start"]) == 0
-        assert calls == [{"no_wait": False, "docker_limits": True}]
-
-    def test_whatsapp_start_no_docker_limits_flag(self, launcher_cli, monkeypatch):
-        calls = []
-        monkeypatch.setattr(
-            launcher_cli.whatsapp,
-            "start",
-            lambda **kwargs: calls.append(kwargs) or 0,
-        )
-        launcher_cli.main(["whatsapp", "start", "--no-docker-limits", "--no-wait"])
-        assert calls == [{"no_wait": True, "docker_limits": False}]
-
-    def test_whatsapp_stop_dispatches(self, launcher_cli, monkeypatch):
-        monkeypatch.setattr(launcher_cli.whatsapp, "stop", lambda: 0)
-        assert launcher_cli.main(["whatsapp", "stop"]) == 0
-
     def test_backend_restart_dispatches(self, launcher_cli, monkeypatch):
         calls = []
         monkeypatch.setattr(
             launcher_cli.backend, "run", lambda **kwargs: calls.append(kwargs) or 0
         )
         launcher_cli.main(["backend-restart", "--no-wait"])
-        launcher_cli.main(["backend-restart", "--waha"])
-        assert calls == [
-            {"no_wait": True, "docker_limits": True, "waha": None},
-            {"no_wait": False, "docker_limits": True, "waha": True},
-        ]
+        launcher_cli.main(["backend-restart"])
+        assert calls == [{"no_wait": True}, {"no_wait": False}]
 
     def test_server_start_dispatches(self, launcher_cli, monkeypatch):
         calls = []
@@ -130,24 +91,11 @@ class TestMainDispatch:
         launcher_cli.main(["server", "start"])
         assert calls == [
             {
-                "docker_limits": True,
                 "print_token": True,
                 "opts": launcher_cli.server.ServeOptions(),
-                "whatsapp": False,
                 "foreground": False,
             }
         ]
-
-    def test_server_start_waha_flag(self, launcher_cli, monkeypatch):
-        calls = []
-        monkeypatch.setattr(
-            launcher_cli.server,
-            "start_all",
-            lambda **kwargs: calls.append(kwargs) or 0,
-        )
-        launcher_cli.main(["server", "start", "--waha"])
-        launcher_cli.main(["server", "start", "--no-whatsapp"])  # obsolete no-op
-        assert [c["whatsapp"] for c in calls] == [True, False]
 
     def test_server_start_no_token_flag(self, launcher_cli, monkeypatch):
         calls = []
@@ -159,38 +107,13 @@ class TestMainDispatch:
         launcher_cli.main(["server", "start", "--no-token"])
         assert calls[0]["print_token"] is False
 
-    def test_compose_file_flag_reaches_compose_args(
-        self, launcher_cli, monkeypatch, tmp_path
-    ):
-        # main() writes os.environ directly: register the key for restore.
-        monkeypatch.setenv("WAHA_COMPOSE_FILES", "")
-        monkeypatch.setattr(launcher_cli.whatsapp, "PROJECT_DIR", tmp_path)
-        monkeypatch.chdir(tmp_path)
-        seen = []
-        monkeypatch.setattr(
-            launcher_cli.whatsapp,
-            "start",
-            lambda **k: seen.append(launcher_cli.whatsapp.compose_args()) or 0,
-        )
-        launcher_cli.main(
-            ["whatsapp", "start", "--compose-file", "a.yml", "--compose-file", "b.yml"]
-        )
-        assert seen[0][-4:] == [
-            "-f",
-            str((tmp_path / "a.yml").resolve()),
-            "-f",
-            str((tmp_path / "b.yml").resolve()),
-        ]
-
     def test_server_stop_dispatches(self, launcher_cli, monkeypatch):
         calls = []
         monkeypatch.setattr(
             launcher_cli.server, "stop_all", lambda **kw: calls.append(kw) or 0
         )
         assert launcher_cli.main(["server", "stop"]) == 0
-        assert launcher_cli.main(["server", "stop", "--waha"]) == 0
-        assert launcher_cli.main(["server", "stop", "--keep-whatsapp"]) == 0
-        assert calls == [{"whatsapp": False}, {"whatsapp": True}, {"whatsapp": False}]
+        assert calls == [{}]
 
     def test_server_status_dispatches(self, launcher_cli, monkeypatch):
         monkeypatch.setattr(launcher_cli.server, "status", lambda: 0)
@@ -203,8 +126,8 @@ class TestMainDispatch:
             "to_server",
             lambda **kwargs: calls.append(kwargs) or 0,
         )
-        launcher_cli.main(["handover", "to-server", "--no-docker-limits"])
-        assert calls == [{"docker_limits": False}]
+        launcher_cli.main(["handover", "to-server"])
+        assert calls == [{}]
 
     def test_handover_to_local_dispatches(self, launcher_cli, monkeypatch):
         calls = []
@@ -214,7 +137,7 @@ class TestMainDispatch:
             lambda **kwargs: calls.append(kwargs) or 0,
         )
         launcher_cli.main(["handover", "to-local"])
-        assert calls == [{"docker_limits": True}]
+        assert calls == [{}]
 
     def test_handover_status_dispatches(self, launcher_cli, monkeypatch):
         monkeypatch.setattr(launcher_cli.handover, "status", lambda: 0)
@@ -245,5 +168,5 @@ class TestMainDispatch:
         assert launcher_cli.main(["test"]) == 0
 
     def test_propagates_nonzero_return_codes(self, launcher_cli, monkeypatch):
-        monkeypatch.setattr(launcher_cli.whatsapp, "stop", lambda: 1)
-        assert launcher_cli.main(["whatsapp", "stop"]) == 1
+        monkeypatch.setattr(launcher_cli.server, "stop_all", lambda: 1)
+        assert launcher_cli.main(["server", "stop"]) == 1

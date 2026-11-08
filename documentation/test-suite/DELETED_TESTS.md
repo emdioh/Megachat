@@ -4493,3 +4493,138 @@ The rest of each file still runs. Reason = the error the test hit once the serve
 - `TestSelectContactUnreadOnly::test_proto_unread_pin_only_when_protocol_matches` — used `app.core` (the in-process `ChatCore` with mocked backends)
 - `TestSelectContactUnreadOnly::test_select_contact_pins_selected_keeps_chat` — used `app.core` (the in-process `ChatCore` with mocked backends)
 - `TestSelectContactUnreadOnly::test_select_other_contact_unpins_previous` — used `app.core` (the in-process `ChatCore` with mocked backends)
+
+## Removed in mc-zao.4.6 (launcher/installer cleanup)
+
+The launcher, installer, CI, requirements and helper scripts no longer carry any Python-server or
+WAHA path (`launcher/whatsapp.py`, `docker-compose*.yml`, `.dockerignore`,
+`requirements-web.txt`, `scripts/start_whatsapp.sh`, `scripts/smoke_e2e.sh` and
+`scripts/smoke_socket.py` were deleted). Three WAHA-only test files were deleted and the
+launcher/installer/handover tests that covered those removed paths were deleted or renamed.
+**Totals:** 3 test files deleted outright (56 test functions) plus 68 test functions removed or
+renamed from 13 kept files.
+
+- `tests/test_docker_compose_extra_hosts.py::test_compose_file_exists` — read the deleted `docker-compose.yml` (WAHA only)
+- `tests/test_docker_compose_extra_hosts.py::test_whatsapp_service_extra_hosts_host_gateway` — covered the deleted WAHA compose service
+- `tests/test_docker_compose_extra_hosts.py::test_whatsapp_media_files_do_not_expire` — covered the deleted WAHA compose service
+- `tests/test_launcher_whatsapp.py::TestComposeArgs::test_default_layers_resources_overlay` — module `launcher.whatsapp` deleted (WAHA)
+- `tests/test_launcher_whatsapp.py::TestComposeArgs::test_no_docker_limits_omits_resources_overlay` — module `launcher.whatsapp` deleted (WAHA)
+- `tests/test_launcher_whatsapp.py::TestComposeArgs::test_waha_docker_limits_0_in_dotenv_omits_overlay` — module `launcher.whatsapp` deleted (WAHA)
+- `tests/test_launcher_whatsapp.py::TestComposeArgs::test_waha_docker_limits_1_keeps_overlay` — module `launcher.whatsapp` deleted (WAHA)
+- `tests/test_launcher_whatsapp.py::TestComposeArgs::test_extra_files_are_layered_last_in_order` — module `launcher.whatsapp` deleted (WAHA)
+- `tests/test_launcher_whatsapp.py::TestComposeArgs::test_extra_files_from_dotenv` — module `launcher.whatsapp` deleted (WAHA)
+- `tests/test_launcher_whatsapp.py::TestComposeArgs::test_compose_file_flag_appends_after_dotenv` — module `launcher.whatsapp` deleted (WAHA)
+- `tests/test_launcher_whatsapp.py::TestComposeArgs::test_stop_uses_the_extra_files` — module `launcher.whatsapp` deleted (WAHA)
+- `tests/test_launcher_whatsapp.py::TestWahaEnv::test_creates_secure_waha_credentials` — module `launcher.whatsapp` deleted (WAHA)
+- `tests/test_launcher_whatsapp.py::TestWahaEnv::test_preserves_existing_values_and_is_idempotent` — module `launcher.whatsapp` deleted (WAHA)
+- `tests/test_launcher_whatsapp.py::TestWahaEnv::test_recalculates_image_for_current_architecture` — module `launcher.whatsapp` deleted (WAHA)
+- `tests/test_launcher_whatsapp.py::TestReadWahaApiKey::test_env_var_wins` — module `launcher.whatsapp` deleted (WAHA)
+- `tests/test_launcher_whatsapp.py::TestReadWahaApiKey::test_falls_back_to_dotenv_file` — module `launcher.whatsapp` deleted (WAHA)
+- `tests/test_launcher_whatsapp.py::TestReadWahaApiKey::test_strips_quotes` — module `launcher.whatsapp` deleted (WAHA)
+- `tests/test_launcher_whatsapp.py::TestReadWahaApiKey::test_missing_returns_empty` — module `launcher.whatsapp` deleted (WAHA)
+- `tests/test_launcher_whatsapp.py::TestSetup::test_check_only_does_not_create_env` — module `launcher.whatsapp` deleted (WAHA)
+- `tests/test_launcher_whatsapp.py::TestSetup::test_start_probes_sessions_endpoint_with_api_key` — module `launcher.whatsapp` deleted (WAHA)
+- `tests/test_launcher_whatsapp.py::TestSetup::test_docker_missing_fails_cleanly` — module `launcher.whatsapp` deleted (WAHA)
+- `tests/test_launcher_whatsapp.py::TestSetup::test_start_default_layers_resources_overlay` — module `launcher.whatsapp` deleted (WAHA)
+- `tests/test_launcher_whatsapp.py::TestSetup::test_start_no_docker_limits_skips_resources_overlay` — module `launcher.whatsapp` deleted (WAHA)
+- `tests/test_launcher_whatsapp.py::TestStandaloneStartStop::test_start_no_wait_skips_readiness_probe` — module `launcher.whatsapp` deleted (WAHA)
+- `tests/test_launcher_whatsapp.py::TestStandaloneStartStop::test_start_default_layers_resources_overlay` — module `launcher.whatsapp` deleted (WAHA)
+- `tests/test_launcher_whatsapp.py::TestStandaloneStartStop::test_start_no_docker_limits_skips_resources_overlay` — module `launcher.whatsapp` deleted (WAHA)
+- `tests/test_launcher_whatsapp.py::TestStandaloneStartStop::test_start_waits_and_reports_timeout` — module `launcher.whatsapp` deleted (WAHA)
+- `tests/test_launcher_whatsapp.py::TestStandaloneStartStop::test_stop_runs_compose_down` — module `launcher.whatsapp` deleted (WAHA)
+- `tests/test_launcher_whatsapp_more.py::TestListeningPortOwner::test_none_when_ss_missing` — module `launcher.whatsapp` deleted (WAHA)
+- `tests/test_launcher_whatsapp_more.py::TestListeningPortOwner::test_parses_pid_and_process_name` — module `launcher.whatsapp` deleted (WAHA)
+- `tests/test_launcher_whatsapp_more.py::TestListeningPortOwner::test_none_when_port_not_found` — module `launcher.whatsapp` deleted (WAHA)
+- `tests/test_launcher_whatsapp_more.py::TestListeningPortOwner::test_none_on_subprocess_error` — module `launcher.whatsapp` deleted (WAHA)
+- `tests/test_launcher_whatsapp_more.py::TestCheckPort::test_available_when_nothing_listens` — module `launcher.whatsapp` deleted (WAHA)
+- `tests/test_launcher_whatsapp_more.py::TestCheckPort::test_webhook_port_owned_by_python_is_ok` — module `launcher.whatsapp` deleted (WAHA)
+- `tests/test_launcher_whatsapp_more.py::TestCheckPort::test_in_use_by_other_process_warns_false` — module `launcher.whatsapp` deleted (WAHA)
+- `tests/test_launcher_whatsapp_more.py::TestCheckPort::test_in_use_with_unknown_owner_warns_false` — module `launcher.whatsapp` deleted (WAHA)
+- `tests/test_launcher_whatsapp_more.py::TestCheckFirewall::test_no_firewall_tools_present` — module `launcher.whatsapp` deleted (WAHA)
+- `tests/test_launcher_whatsapp_more.py::TestCheckFirewall::test_ufw_active_and_port_allowed` — module `launcher.whatsapp` deleted (WAHA)
+- `tests/test_launcher_whatsapp_more.py::TestCheckFirewall::test_ufw_active_and_port_not_allowed` — module `launcher.whatsapp` deleted (WAHA)
+- `tests/test_launcher_whatsapp_more.py::TestCheckFirewall::test_iptables_allows_port` — module `launcher.whatsapp` deleted (WAHA)
+- `tests/test_launcher_whatsapp_more.py::TestCheckFirewall::test_iptables_drop_policy_warns` — module `launcher.whatsapp` deleted (WAHA)
+- `tests/test_launcher_whatsapp_more.py::TestSetupFailureBranches::test_docker_compose_missing_returns_false` — module `launcher.whatsapp` deleted (WAHA)
+- `tests/test_launcher_whatsapp_more.py::TestSetupFailureBranches::test_start_up_failure_returns_false` — module `launcher.whatsapp` deleted (WAHA)
+- `tests/test_launcher_whatsapp_more.py::TestSetupFailureBranches::test_start_not_ready_after_timeout_still_returns_true` — module `launcher.whatsapp` deleted (WAHA)
+- `tests/test_launcher_whatsapp_more.py::TestStandaloneStartFailureBranches::test_docker_missing_returns_1` — module `launcher.whatsapp` deleted (WAHA)
+- `tests/test_launcher_whatsapp_more.py::TestStandaloneStartFailureBranches::test_up_failure_returns_its_code` — module `launcher.whatsapp` deleted (WAHA)
+- `tests/test_launcher_whatsapp_more.py::TestStandaloneStartFailureBranches::test_waits_and_reports_ready` — module `launcher.whatsapp` deleted (WAHA)
+- `tests/test_launcher_whatsapp_more.py::TestStop::test_prints_on_success` — module `launcher.whatsapp` deleted (WAHA)
+- `tests/test_launcher_whatsapp_more.py::TestDockerAvailable::test_true_when_info_succeeds` — module `launcher.whatsapp` deleted (WAHA)
+- `tests/test_launcher_whatsapp_more.py::TestDockerAvailable::test_false_when_info_fails` — module `launcher.whatsapp` deleted (WAHA)
+- `tests/test_launcher_whatsapp_more.py::TestDockerAvailable::test_false_when_docker_is_missing` — module `launcher.whatsapp` deleted (WAHA)
+- `tests/test_launcher_whatsapp_more.py::TestDockerAvailable::test_false_on_timeout` — module `launcher.whatsapp` deleted (WAHA)
+- `tests/test_launcher_whatsapp_more.py::TestStartRequiresDockerDaemon::test_suggests_colima_and_skips_compose` — module `launcher.whatsapp` deleted (WAHA)
+- `tests/test_launcher_whatsapp_more.py::TestSessionStatus::test_reads_status_from_json` — module `launcher.whatsapp` deleted (WAHA)
+- `tests/test_launcher_whatsapp_more.py::TestSessionStatus::test_none_on_transport_error` — module `launcher.whatsapp` deleted (WAHA)
+- `tests/test_launcher_whatsapp_more.py::TestSessionStatus::test_none_on_http_error` — module `launcher.whatsapp` deleted (WAHA)
+- `tests/test_launcher_cli.py::test_whatsapp_requires_subcommand` — the `whatsapp` subcommand was removed
+- `tests/test_launcher_main.py::TestBuildParser::test_parses_whatsapp_start_with_no_docker_limits` — the `whatsapp` subcommand and `--no-docker-limits` were removed
+- `tests/test_launcher_main.py::TestMainDispatch::test_whatsapp_start_dispatches_with_docker_limits` — the `whatsapp` subcommand was removed
+- `tests/test_launcher_main.py::TestMainDispatch::test_whatsapp_start_no_docker_limits_flag` — the `whatsapp` subcommand and `--no-docker-limits` were removed
+- `tests/test_launcher_main.py::TestMainDispatch::test_whatsapp_stop_dispatches` — the `whatsapp` subcommand was removed
+- `tests/test_launcher_main.py::TestMainDispatch::test_server_start_waha_flag` — `server start --waha/--no-whatsapp` were removed
+- `tests/test_launcher_main.py::TestMainDispatch::test_compose_file_flag_reaches_compose_args` — `--compose-file` and `launcher.whatsapp` were removed
+- `tests/test_launcher_misc.py::TestServerHelpers::test_docker_container_running_false_without_docker` — `server._docker_container_running` was removed (WAHA)
+- `tests/test_launcher_aliases.py::TestNoObsoleteKeepWhatsappFlag::test_parser_still_accepts_the_flag` — `server stop --keep-whatsapp` was removed
+- `tests/test_launcher_backend_restart.py::TestRestartWaha::test_dies_without_docker` — `backend._restart_waha` was removed
+- `tests/test_launcher_backend_restart.py::TestRestartWaha::test_dies_without_compose_plugin` — `backend._restart_waha` was removed
+- `tests/test_launcher_backend_restart.py::TestRestartWaha::test_dies_when_compose_file_missing` — `backend._restart_waha` was removed
+- `tests/test_launcher_backend_restart.py::TestRestartWaha::test_dies_when_service_not_defined` — `backend._restart_waha` was removed
+- `tests/test_launcher_backend_restart.py::TestRestartWaha::test_restarts_existing_service_and_waits_for_api` — `backend._restart_waha` was removed
+- `tests/test_launcher_backend_restart.py::TestRestartWaha::test_starts_up_when_service_does_not_exist_yet` — `backend._restart_waha` was removed
+- `tests/test_launcher_backend_restart.py::TestRestartWaha::test_dies_when_up_fails` — `backend._restart_waha` was removed
+- `tests/test_launcher_backend_restart.py::TestRestartWaha::test_dies_on_api_wait_timeout` — `backend._restart_waha` was removed
+- `tests/test_launcher_backend_restart.py::TestRun::test_wires_timeouts_and_docker_limits` — renamed `test_wires_signal_timeout` (WAHA options removed)
+- `tests/test_launcher_backend_restart.py::TestRun::test_reads_custom_timeouts_from_env` — renamed `test_reads_custom_timeout_from_env` (WAHA timeout removed)
+- `tests/test_launcher_backend_restart.py::TestRunWahaSelection::test_megachatd_skips_waha_by_default` — WAHA selection removed
+- `tests/test_launcher_server_more.py::TestDockerContainerRunning::test_true_when_name_listed` — `server._docker_container_running` was removed (WAHA)
+- `tests/test_launcher_server_more.py::TestDockerContainerRunning::test_false_when_name_absent` — `server._docker_container_running` was removed (WAHA)
+- `tests/test_launcher_server_more.py::TestStatus::test_reports_session_state_when_waha_is_active` — WAHA status lines were removed
+- `tests/test_launcher_server_more.py::TestStopAll::test_reports_waha_stopped` — `server stop --waha` was removed
+- `tests/test_launcher_server_more.py::TestStopAll::test_reports_waha_was_not_running` — `server stop --waha` was removed
+- `tests/test_launcher_server_more.py::TestStartAllStuckServer::test_stop_all_keeps_waha_when_server_will_not_stop` — renamed `test_stop_all_raises_when_server_will_not_stop` (WAHA removed)
+- `tests/test_launcher_server_options.py::TestStartWithOptions::test_waha_is_not_started_by_default` — WAHA start branch removed
+- `tests/test_launcher_server_options.py::TestStartWithOptions::test_waha_flag_is_ignored_with_megachatd` — `server start --waha` removed
+- `tests/test_launcher_server_options.py::TestStopWaha::test_default_leaves_waha_alone` — `launcher.whatsapp` removed
+- `tests/test_launcher_server_options.py::TestStopWaha::test_waha_flag_brings_waha_down` — `launcher.whatsapp` removed
+- `tests/test_launcher_serverbin.py::TestServeCommand::test_environment_beats_dotenv` — `serverbin.use_python`/`engine_name` removed
+- `tests/test_launcher_serverbin.py::TestServeCommand::test_default_is_megachatd` — `serverbin.use_python` removed
+- `tests/test_launcher_install.py::TestInstallPythonDeps::test_no_web_flag_skips_web_deps` — `requirements-web.txt` and `--no-web` removed
+- `tests/test_launcher_install.py::TestInstallPythonDeps::test_web_deps_failure_is_soft` — `requirements-web.txt` removed
+- `tests/test_launcher_install_run.py::TestWhatsAppFlags::test_check_whatsapp_calls_setup_without_starting` — `--check-waha` removed
+- `tests/test_launcher_install_run.py::TestWhatsAppFlags::test_whatsapp_flag_calls_setup_and_starts` — `--waha` removed
+- `tests/test_launcher_install_run.py::TestWhatsAppFlags::test_neither_flag_skips_whatsapp_setup` — WAHA flags removed
+- `tests/test_launcher_install_run.py::TestFinalBanner::test_python_fallback_note_points_to_waha_flag` — the Python-server fallback was removed
+- `tests/test_launcher_install_run.py::TestFinalBanner::test_default_install_builds_megachatd_and_never_touches_waha` — renamed `test_default_install_builds_megachatd` (WAHA assertion dropped)
+- `tests/test_launcher_build_megachatd.py::test_without_go_warns_in_italian_and_falls_back` — renamed `test_without_go_and_no_binary_dies` (no Python fallback)
+- `tests/test_launcher_build_megachatd.py::test_too_old_go_falls_back_when_toolchain_download_is_off` — renamed `test_too_old_go_without_toolchain_download_dies`
+- `tests/test_launcher_build_megachatd.py::test_go_before_toolchain_support_falls_back` — renamed `test_go_before_toolchain_support_dies`
+- `tests/test_launcher_build_megachatd.py::test_failed_build_falls_back` — renamed `test_failed_build_dies`
+- `tests/test_launcher_build_megachatd.py::test_successful_build_removes_only_the_fallback_it_wrote` — the Python fallback was removed
+- `tests/test_launcher_build_megachatd.py::test_users_own_setting_is_never_touched` — the Python fallback was removed
+- `tests/test_launcher_build_megachatd.py::test_missing_sources_skip_quietly` — missing sources now use a release binary or fail
+- `tests/test_install_script.py::TestWahaEnv::test_creates_secure_waha_credentials` — `ensure_waha_env` removed from install.sh
+- `tests/test_install_script.py::TestWahaEnv::test_preserves_existing_values_and_is_idempotent` — `ensure_waha_env` removed from install.sh
+- `tests/test_install_script.py::TestWahaEnv::test_recalculates_image_for_current_architecture` — `ensure_waha_env` removed from install.sh
+- `tests/test_install_script.py::TestWahaEnv::test_check_only_does_not_create_env` — `setup_whatsapp` removed from install.sh
+- `tests/test_install_script.py::TestWahaEnv::test_start_uses_api_key_for_readiness_probe` — `setup_whatsapp` removed from install.sh
+- `tests/test_install_script.py::TestWahaEnv::test_start_no_docker_limits_skips_resources_overlay` — `setup_whatsapp` removed from install.sh
+- `tests/test_install_script.py::TestPortCheck::test_lsof_reports_free_port` — `check_port` removed from install.sh (WAHA only)
+- `tests/test_install_script.py::TestPortCheck::test_lsof_reports_occupied_port` — `check_port` removed from install.sh (WAHA only)
+- `tests/test_install_script.py::TestPortCheck::test_lsof_recognizes_macos_python_webhook` — `check_port` removed from install.sh (WAHA only)
+- `tests/test_install_script.py::TestWebDependencies::test_web_deps_installed_by_default` — `requirements-web.txt` removed
+- `tests/test_install_script.py::TestWebDependencies::test_no_web_flag_skips_web_deps` — `requirements-web.txt` and `--no-web` removed
+- `tests/test_install_script.py::TestWebDependencies::test_web_deps_failure_is_soft` — `requirements-web.txt` removed
+- `tests/test_install_script.py::TestWebDependencies::test_help_lists_no_web` — `--no-web` removed
+- `tests/test_install_script.py::TestBuildMegachatd::test_missing_go_warns_in_italian_and_sets_python_fallback` — renamed `test_missing_go_without_binary_dies`
+- `tests/test_install_script.py::TestBuildMegachatd::test_old_go_without_toolchain_download_falls_back` — renamed `test_old_go_without_toolchain_download_dies`
+- `tests/test_install_script.py::TestBuildMegachatd::test_failed_build_falls_back` — renamed `test_failed_build_dies`
+- `tests/test_install_script.py::TestBuildMegachatd::test_build_removes_the_fallback_it_wrote_and_keeps_the_rest` — the Python fallback was removed
+- `tests/test_install_script.py::TestBuildMegachatd::test_users_own_python_choice_is_kept` — `MEGACHAT_SERVER=python` is gone
+- `tests/test_install_script.py::TestWahaIsOptIn::test_help_lists_waha_flags_not_a_default_docker_step` — `--waha`/`--check-waha` removed
+- `tests/test_install_script.py::TestWahaIsOptIn::test_default_run_never_touches_docker` — the WAHA checks it guarded were removed
+- `tests/test_handover_scripts.py::test_start_whatsapp_explains_native_whatsapp_without_waha_flag` — `scripts/start_whatsapp.sh` deleted
+- `tests/test_handover_scripts.py::test_start_whatsapp_stop_needs_waha_flag` — `scripts/start_whatsapp.sh` deleted

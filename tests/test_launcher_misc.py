@@ -79,10 +79,6 @@ class TestServerHelpers:
         monkeypatch.setattr(server, "_kill_tmux_session", lambda name="tui": None)
         assert server.stop_server() is True
 
-    def test_docker_container_running_false_without_docker(self, monkeypatch):
-        monkeypatch.setattr(server, "command_exists", lambda name: False)
-        assert server._docker_container_running("signal-tui-whatsapp") is False
-
     def test_pgrep_false_without_pgrep(self, monkeypatch):
         monkeypatch.setattr(server, "command_exists", lambda name: False)
         assert server._pgrep("anything") is False

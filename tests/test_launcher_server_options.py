@@ -7,7 +7,6 @@ import json
 import pytest
 
 from launcher import aliases, server
-from launcher import whatsapp as whatsapp_mod
 
 ServeOptions = server.ServeOptions
 
@@ -24,12 +23,9 @@ class _FakeProc:
 
 @pytest.fixture
 def env(monkeypatch, tmp_path):
-    """Isolate start_all/stop_all from WAHA, tmux, the real lock and sleeping."""
-    calls = {"waha": [], "spawn": [], "docker": []}
+    """Isolate start_all/stop_all from tmux, the real lock and sleeping."""
+    calls = {"spawn": []}
     monkeypatch.setenv("MEGACHATD_BIN", "/opt/megachatd")
-    monkeypatch.setenv("MEGACHAT_SERVER", "megachatd")
-    monkeypatch.setattr(whatsapp_mod, "start", lambda **k: calls["waha"].append(k) or 0)
-    monkeypatch.setattr(whatsapp_mod, "session_status", lambda timeout=3: "WORKING")
     monkeypatch.setattr(server, "LOCK_FILE", tmp_path / "signal-tui.lock")
     monkeypatch.setattr(server, "_kill_tmux_session", lambda name="tui": None)
     monkeypatch.setattr(server, "SERVER_LOG", tmp_path / "serve.log")
@@ -42,13 +38,6 @@ def env(monkeypatch, tmp_path):
         return _FakeProc()
 
     monkeypatch.setattr(server.subprocess, "Popen", _popen)
-    monkeypatch.setattr(
-        server.subprocess,
-        "run",
-        lambda cmd, **k: (
-            calls["docker"].append(cmd) or type("R", (), {"returncode": 0})()
-        ),
-    )
     return calls
 
 
@@ -136,7 +125,7 @@ class TestStartWithOptions:
             server, "port_listening", lambda port, host="127.0.0.1": True
         )
         opts = ServeOptions(web_host="127.0.0.1", web_port=9000)
-        assert server.start_all(opts=opts, whatsapp=False) == 0
+        assert server.start_all(opts=opts) == 0
         state = json.loads(server._state_file().read_text())
         assert state["pid"] == _FakeProc.pid
         assert state["web_port"] == 9000
@@ -144,7 +133,6 @@ class TestStartWithOptions:
         server.LOCK_FILE.write_text(str(_FakeProc.pid))
         monkeypatch.setattr(server, "_pid_alive", lambda pid: True)
         monkeypatch.setattr(server, "_pgrep", lambda pattern: False)
-        monkeypatch.setattr(server, "_docker_container_running", lambda name: False)
         capsys.readouterr()
         server.status()
         assert "in ascolto su 127.0.0.1:9000" in capsys.readouterr().out
@@ -162,21 +150,6 @@ class TestStartWithOptions:
         monkeypatch.setattr(server, "server_pid", lambda: _FakeProc.pid)
         assert server.start_all(opts=ServeOptions(no_web=True)) == 0
         assert "senza Web UI" in capsys.readouterr().out
-
-    def test_waha_is_not_started_by_default(self, monkeypatch, env):
-        monkeypatch.setattr(
-            server, "port_listening", lambda port, host="127.0.0.1": True
-        )
-        assert server.start_all() == 0
-        assert env["waha"] == []
-
-    def test_waha_flag_is_ignored_with_megachatd(self, monkeypatch, env, capsys):
-        monkeypatch.setattr(
-            server, "port_listening", lambda port, host="127.0.0.1": True
-        )
-        assert server.start_all(whatsapp=True) == 0
-        assert env["waha"] == []
-        assert "WAHA non serve a megachatd" in capsys.readouterr().out
 
     def test_missing_binary_is_reported_in_italian(self, monkeypatch, env, capsys):
         monkeypatch.delenv("MEGACHATD_BIN")
@@ -209,15 +182,7 @@ class TestStartWithOptions:
         assert env["spawn"] == []
 
 
-class TestStopWaha:
-    def test_default_leaves_waha_alone(self, env):
-        assert server.stop_all() == 0
-        assert env["docker"] == []
-
-    def test_waha_flag_brings_waha_down(self, env):
-        assert server.stop_all(whatsapp=True) == 0
-        assert any("down" in cmd for cmd in env["docker"])
-
+class TestStop:
     def test_stop_removes_the_state_file(self, env):
         server._state_file().write_text("{}")
         assert server.stop_server()
@@ -230,4 +195,5 @@ class TestAliasesUseTheLauncher:
         assert 'server start --no-token "$@"' in block
         assert 'launcher.py" server stop;' in block
         assert "--keep-whatsapp" not in block
+        assert "--waha" not in block
         assert "kill -INT" not in block
