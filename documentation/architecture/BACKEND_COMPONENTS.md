@@ -1,124 +1,129 @@
-# Componenti backend
+# Componenti del server e del client
 
-Descrizione dei moduli di `backend/` (layer condiviso) e `backends/` (implementazioni per protocollo), con responsabilità e relazioni. Ricavato dai sorgenti attuali.
+Descrizione dei package che compongono `megachatd` (Go) e dei package Python `client/` e `tui/`. Ricavato dai sorgenti attuali. Per il quadro d'insieme vedere [ARCHITECTURE_OVERVIEW.md](ARCHITECTURE_OVERVIEW.md).
 
-## 1. Package `backend/` — layer condiviso (no Textual)
+## 1. Server — `megachatd/cmd/megachatd`
 
-Il package re-esporta in `backend/__init__.py` l'API storica del vecchio modulo singolo `backend.py`, così `from backend import X` continua a funzionare per UI e test.
+- `main.go`: entry point; sottocomandi `serve`, `version`, `config migrate`.
+- `app.go`: `Build()` collega config, logger, store, bus, manager dei backend, core, registry delle operazioni e servizi (linking, transcription, Gmail, media, download); `Start()`/`Stop()` gestiscono lock, socket, HTTP e segnali.
+- `adapters.go`: monta l'adapter Unix socket (`internal/rpc`) e quello HTTP/WS (`internal/web`).
+- `staging.go` / `download.go`: copia degli allegati inviati e server di download temporaneo (porta 10042).
+- `fakebackend_*.go`: backend finto dietro il build tag `contracttest` per la suite di contratto.
 
-### 1.1 `backend/db.py` — cache messaggi SQLite
+## 2. Server — package interni
 
-Responsabilità: persistenza locale dei messaggi per `(protocol, contact_number)`, migrazioni schema, dedup, receipt, unread.
+### 2.1 `internal/api` — contratto del filo
 
-- File DB: `~/.local/share/signal-tui-client/messages.db`; journal mode WAL; accesso serializzato da `_DB_LOCK` (`threading.RLock`) perché scrivono sia il poll worker sia il thread UI.
-- Tabella `messages`: colonne `id` (autoincrement), `protocol` (default `'signal'`), `contact_number`, `text`, `is_mine`, `sender`, `timestamp`, `quote_text`, `msg_type` (`text|image|sticker|attachment`), `attachment_info`, `attachment_id`, `content_type` (mime dell'allegato, per la thumbnail delle quote media), `read`, `status` (default `'read'`), `msg_id`, `quote_timestamp`, `quote_author`, `reply_to_message_id`, `edited`.
-- Schema versioning: `_SCHEMA_VERSION = 3` via `PRAGMA user_version`; `_migrate_protocol_schema()` aggiunge in modo additivo e idempotente le colonne `protocol`, `msg_id`, `quote_timestamp`, `quote_author`, `reply_to_message_id` (la colonna `edited` è assicurata **fuori** dal gate user_version, perché DB già a v3 possono comunque non averla), ricostruisce l'indice `(protocol, contact_number, timestamp)`.
-- API principale: `_init_db`, `_load_cache(protocol=None)`, `_add_message_to_cache(...)`, `_update_message_id(...)` (aggancia l'id server alla riga ottimistica senza id), `_prune_cache()` (limita alle 200 righe più recenti per `(protocol, contact_number)`; la pruning temporanea è disabilitata nel codice), `_mark_as_read(contact, protocol)`, `_dedup_messages()`, `_dedup_messages_by_id()` (tiene la riga con status rank più alto), `_count_unread()`, e le tre varianti di aggiornamento stato: `_update_message_status` (per timestamp scoped protocollo+contatto+testo), `_update_message_status_by_id`, `_update_message_status_by_text` (riga outgoing più recente; fallback quando l'echo sostituisce il timestamp). Tutte le mutazioni di status applicano un **rank guard** (`pending/failed=0 < sent=1 < delivered=2 < read=3`): mai downgrade.
-- `_update_message_text(...)`: riscrive il testo di una riga (edit) matchando per `msg_id` o `timestamp`, senza mai toccare l'identità temporale; gestisce la flag `edited`.
-- Igiene operativa (limiti noti): ogni funzione chiama `_init_db()` — che apre una connessione, imposta WAL e verifica la migrazione — e apre poi una **seconda** connessione sotto `_DB_LOCK` per il lavoro vero (due acquisizioni di lock per insert/update); `_load_cache` esegue sempre `_dedup_messages_by_id()` (full-scan con window function su tutta la tabella), richiamata una volta per backend al boot (~×3); `_prune_cache` è invocata SOLO dal resync WhatsApp → installazioni Signal-only o Telegram-only non potano mai (DB a crescita illimitata, mai `VACUUM`); `CACHE_RETENTION_DAYS = 3` è una costante morta (policy temporale disattivata). Inoltre `_update_message_id` fa UPDATE multi-riga senza finestra né LIMIT: vedere l'avviso in [../api-contracts/API_OVERVIEW.md](../api-contracts/API_OVERVIEW.md) §4.
+- `opnames.go` / `ops.go`: le **68 operazioni** (`<dominio>.<azione>`) con request/response tipizzate e client ammessi (TUI `T`, web `W`).
+- `models.go`, `requests.go`, `responses.go`: struct JSON con i nomi di campo storici; i tag sono il contratto.
+- `routes.go`: tabella REST completa (metodo, path, operazione, auth, blob) e route WebSocket.
+- `events.go`: tipi e payload degli eventi del bus.
+- `errors.go`: codici neutri, mapping HTTP e JSON-RPC.
+- `rpc.go`: costanti del trasporto socket (`api_version = 1`, limiti, heartbeat, metodi builtin `rpc.hello`, `server.ping`, `events.subscribe`, `events.unsubscribe`) e path di default.
+- `web.go`: costanti di autenticazione e protocolli WebSocket.
 
-### 1.2 `backend/rpc.py` — comunicazione signal-cli
+### 2.2 `internal/ops` — registry
 
-- Costanti: `DAEMON_HTTP_PORT = 8080`, `DAEMON_URL = http://127.0.0.1:8080/api/v1/rpc`, `SSE_URL = .../api/v1/events`, `SIGNAL_CLI_ATTACHMENTS_DIR = ~/.local/share/signal-cli/attachments`.
-- Configurazione numero utente: `_get_user_number()` legge `SIGNAL_USER_NUMBER` poi `config.json["user_number"]` (best-effort, `""` se assente); `_require_user_number()` solleva il `RuntimeError` canonico al punto d'uso. Risoluzione binario: `_find_signal_cli()` scandisce `./bin/signal-cli-*/bin/signal-cli` (non-raising); `find_signal_cli()` è la variante che solleva `FileNotFoundError`.
-- `SignalRPCClient`: client JSON-RPC 2.0 su HTTP POST (timeout 30 s, errori restituiti come `{"error": str}`); metodi `list_contacts()`, `send_message(message, recipient, [timestamp], [quote_*], [edit_timestamp], [quote_attachments])` — `quoteAttachments` è la lista `contentType[:filename[:previewFile]]` che rende visibile la thumbnail di una quote media — , `receive()` (polling legacy), `listen_events(user_number)` generatore SSE che yielda dict con chiave `envelope`, con keep-alive ogni 15 s e timeout socket 30 s (il chiamante riconnette).
-- Parsing envelope condiviso: `_process_typing(envelope)` → `(contact, "STARTED"|"STOPPED") | None`; `_process_receipt(envelope, cache)` → lista messaggi aggiornati, con fuzzy match ±1000 ms sui timestamp e rank guard.
-- Fallback subprocess: `_run_subprocess(args)` (timeout 60 s, errore → `RuntimeError` con stderr), `_send_subprocess(...)` supporta quote (`--quote-timestamp/-author/-message`, ripetuto `--quote-attachment contentType[:filename[:previewFile]]`) ed edit (`--edit-timestamp`).
-- Modello `Contact(number, name, aci)` con `display_name`.
+`Registry` implementa `Call`/`Has`/`Names`: valida i parametri, invoca l'handler e converte gli errori in `*ops.Error` (codice + messaggio utente). Gli adapter dipendono solo da `Dispatcher` ed `EventSource`, mai da `core`.
 
-### 1.3 `backend/webhook.py` — server webhook WAHA (push)
+### 2.3 `internal/core` — chat core
 
-- Server `socketserver.TCPServer` su `0.0.0.0:WEBHOOK_PORT` (`CLIENT_WEBHOOK_PORT`, default 8088), thread daemon, avvio idempotente via `ensure_webhook_server(backend)` (ri-bind del target senza restart del socket).
-- `_WebhookHTTPHandler.do_POST`: accetta solo path che termina con `/webhook` (altrimenti 404); parsa il JSON body (malformato → 400); inoltra il dict al `backend.handle_webhook` registrato; risponde **sempre** `200 {"ok": true}` per confermare la ricezione ed evitare retry WAHA (errori interni del target non bloccano l'ack).
-- Threat model (stato attuale, superficie NON fidata): bind su `0.0.0.0` e nessuna autenticazione/token → chiunque raggiunga la porta può iniettare eventi arbitrari (anche `fromMe: true`, persistiti come autentici); server **single-threaded** senza `settimeout` e senza tetto su `Content-Length` → una connessione aperta senza body blocca l'unico thread e ferma tutta la ricezione WhatsApp; l'ack `200` parte prima della persistenza (evento solo enqueuato in memoria → perdita silenziosa su crash tra ack e drain). Mitigazioni candidate: bind ristretto/route gateway docker, token nel path registrabile via `_configure_webhook`, `ThreadingTCPServer` + `settimeout` + tetto payload. Dettagli anche in [../api-contracts/API_OVERVIEW.md](../api-contracts/API_OVERVIEW.md) §5.
+- `core.go`: struttura `Core`, ciclo di vita dei backend, registrazione delle operazioni.
+- `ingest.go`: ingestione di un messaggio con dedup e upgrade della riga ottimistica; `IngestAdded/Changed/Unchanged`.
+- `ops_*.go`: handler delle operazioni (`contacts`, `chats`, `send`, `edit`, `reactions`, `meta`).
+- `events.go`: costruzione e pubblicazione degli eventi del bus.
+- `contactstate.go`, `addressbook.go`: stato dei contatti, rubrica con TTL e fan-out per protocollo.
+- `retry.go`, `sendregistry.go`, `uploads.go`: invii, retry e upload.
+- `lock.go`, `logbuffer.go`: lock di istanza e buffer dei log esposto da `server.logs`.
 
-### 1.4 `backend/download.py` — server download temporaneo
+Le capability opzionali dei backend sono interfacce dichiarate qui (`MessageIngester`, `ReceiptProcessor`, `ContactRegistrar`, `UnreadReconciler`, …): un backend le implementa se serve, altrimenti il core usa il fallback su store.
 
-- Server HTTP persistente su porta fissa `DOWNLOAD_PORT = 10042`, thread daemon, avviato al primo download (`_ensure_download_server()`).
-- I file sono serviti da `CACHE_DIR/downloads`: symlink al file originale (fallback copia). `serve_text_as_file(text, filename)` e `serve_attachment_for_download(attachment_id)` ritornano l'URL completo o una stringa `ERROR: ...`.
-- `get_local_ip()` privilegia `SSH_CONNECTION` (IP server) con fallback UDP probe.
+### 2.4 `internal/store` — SQLite
 
-## 2. Package `backends/` — implementazioni per protocollo
+- `store.go`: apertura del database condiviso, pool serializzato, transazioni `IMMEDIATE`, migrazioni in-place (`PRAGMA user_version = 5`).
+- `schema.go` / `schema_sql.go`: tabelle `messages`, `reactions`, `transcriptions` e migrazioni additive (`protocol`, `msg_id`, colonne quote/media, `batch_id`/`batch_index`).
+- `messages.go`, `queries.go`, `rowmap.go`: CRUD, finestre/paginazione, mapping riga → wire.
+- `dedup.go`, `survivor.go`, `repair_test.go`: dedup esatta e per id, scelta della riga "sopravvissuta" col rank di stato più alto.
+- `reactions.go`, `transcriptions.go`, `media_quote.go`, `prune_test.go`: reazioni, trascrizioni, riferimenti alle quote media, retention.
+- `models.go`, `models_consts.go`: tipi interni e costanti di stato/protocollo.
 
-Esportazioni pubbliche (`backends/__init__.py`): `ChatBackend`, `BackendManager`, `SignalBackend`, `WhatsAppBackend`, `TelegramBackend`.
+### 2.5 `internal/bus` — eventi
 
-### 2.1 `backends/base.py` — interfaccia astratta `ChatBackend`
+Bus in-process: `seq` monotono, ring di 2000 eventi, coda per sottoscrittore (1000), sottoscrizione con `since`, `gap` (`buffer`/`overflow`), chiusura idempotente.
 
-Contratto che la UI conosce (dettaglio completo in [../api-contracts/API_OVERVIEW.md](../api-contracts/API_OVERVIEW.md)):
+### 2.6 `internal/rpc` — Unix socket
 
-- Lifecycle: `connect()` / `disconnect()` (abstract, async).
-- Dati: `list_contacts()` (abstract), `send_message(...)` (abstract), `mark_read(contact_id)` (abstract), `receive()` (abstract, async generator).
-- Metodi sincroni opzionali usati dai worker della TUI (pattern `*_sync`): `edit_message_sync`, `list_address_book_sync`, più wrapper async che delegano via `asyncio.to_thread`.
-- `apply_edit(...)`: punto unico di mutazione per gli edit (cache + DB), idempotente.
-- `get_attachment_path(attachment_id)`, `register_contact(contact)`, proprietà `needs_pairing`, `get_pairing_qr()`.
-- Attributo di classe obbligatorio: `protocol` (una delle costanti `models.PROTOCOL_*`).
+Adapter JSON-RPC 2.0 su socket Unix: framing per linea, richieste concorrenti per connessione (max 64), `events.subscribe`/`events.unsubscribe`, notifiche `event` e `heartbeat`, limite di 16 MiB per linea, controllo peer-credential dove disponibile, lock del socket e file runtime.
 
-### 2.2 `backends/config.py` — configurazione WhatsApp/Telegram/picker
+### 2.7 `internal/web` — HTTP e WebSocket
 
-- Sorgenti: i getter generici leggono env var > `config.json` (poi default); il file `.env` (parsato KEY=VALUE best-effort da `_load_dotenv`) è consultato SOLO per `WAHA_API_KEY` e per le credenziali Telegram `TELEGRAM_API_ID`/`TELEGRAM_API_HASH`.
-- WhatsApp: `resolve_whatsapp_api_url()` (configurato oppure `http://127.0.0.1:{WHATSAPP_API_PORT|3005}`), `get_whatsapp_api_key()` (env `WHATSAPP_API_KEY` > config.json > `.env` `WAHA_API_KEY`), session name (default `"default"`), media dir, porta webhook (`CLIENT_WEBHOOK_PORT`, default 8088) e URL webhook (`WAHA_WEBHOOK_URL` esplicito oppure `http://host.docker.internal:{port}/webhook`). `whatsapp_enabled()` = URL configurato OPPURE porta locale raggiungibile (auto-detect).
-- Telegram: `TELEGRAM_API_ID`/`TELEGRAM_API_HASH` (env > config.json > .env), path sessione Telethon in `$XDG_DATA_HOME/signal-tui-client/telegram.session`, `telegram_enabled()`.
-- Knob tuning: TTL rubrica (300 s), TTL cache `@lid` WhatsApp (30 giorni), max risultati picker (50), backend preferito.
+Router chi con le route di `api.Routes`, autenticazione Bearer (tranne `/health`, `/gmail-image` e la SPA), upload multipart con guardie per tipo/dimensione, blob, SPA statica, `/ws` legacy e `/ws/v2` tipizzato con resume. Le route sono traduzioni sottili verso le operazioni.
 
-### 2.3 `backends/manager.py` — `BackendManager`
+### 2.8 `internal/proto` — backend di protocollo
 
-- Registry `protocol → ChatBackend` (`register/get/all/protocols`); `KeyError` per protocolli sconosciuti nelle operazioni async (`send_message`, `mark_read`).
-- `connect_all()/disconnect_all()` (disconnect best-effort).
-- `list_contacts()`: concatena gli attributi `contacts` già caricati dei backend (sync, niente rete).
-- `list_address_book_sync(protocols, force)`: fan-out parallelo con `ThreadPoolExecutor(max_workers=3)` e `future.result(timeout=25)`; errori per-protocollo registrati in `address_book_errors` e il risultato parziale viene comunque restituito.
-- Routing: `send_message`, `mark_read`, `get_attachment_path`, `edit_message_sync` (ritorna `False` se assente/non supportato).
+- `backend.go`: contratto `Backend` (`Protocol`, `Connect`, `Disconnect`, `IsConnected`, `ListContacts`, `SendMessage`, …) e interfacce capability.
+- `manager.go`: registry per protocollo, stati (`idle/connecting/connected/failed/stopped`), connessioni concorrenti, restart per protocollo, fan-out rubrica (3 worker, timeout 25 s).
+- `types.go`: `Contact`, `Message`, risultati di ingest e capability.
+- `signal/`: daemon `signal-cli` JSON-RPC/SSE (`rpc.go`), parsing envelope (`envelope.go`), ingest (`ingest.go`), invio/edit/reaction (`send.go`), quote (`quote_thumb_webp_test.go`), coda eventi.
+- `whatsapp/`: client whatsmeow, pairing QR, conversione eventi (`convert.go`), ingest e history sync, app-state, unread, media, quote, reazioni, guardie di sessione, resolver `@lid`.
+- `telegram/`: gotd/MTProto, import della sessione Telethon (`session.go`), conversione update, contatti, cronologia, media, invio, reazioni, migrazione degli id grezzi → marcati.
+- `fake/`: backend deterministico per test di core e contratto.
 
-### 2.4 `backends/signal.py` — `SignalBackend` (protocol `"signal"`)
+### 2.9 Altri servizi
 
-- Connessione (`_connect_sync`): carica la cache SQLite del protocollo; se il daemon non gira avvia `signal-cli daemon --http 127.0.0.1:{port} --receive-mode on-connection` come subprocess e subito dopo il listener SSE (retry interno); probe `listContacts` fino a ~15 s, altrimenti fallback subprocess per i contatti.
-- Ricezione: thread `_sse_listener` → `SignalRPCClient.listen_events()` → `envelope_to_event()` classifica l'envelope in eventi normalizzati:
-  - `editMessage` (top-level o dentro `syncMessage.sentMessage`) → evento `message_edit` con `payload["timestamp"]` = ts ORIGINALE (`targetSentTimestamp`); gli edit envelope non cadono mai nel parsing normale;
-  - `typingMessage` → evento `typing`;
-  - `receiptMessage` → evento `receipt` (payload `{"receipt": {...}}`);
-  - `dataMessage`/`syncMessage.sentMessage` → uno o più eventi `message` (uno per attachment), con `id = str(timestamp)` per gli outgoing sync.
-- Ingestion: `ingest_message(contact_id, data, ts, persist=True)` dedup con finestre (`_SEND_DEDUP_WINDOW_MS = 5000` outgoing, `_INCOMING_DEDUP_WINDOW_MS = 2000` incoming) e branch di upgrade che aggancia il vero id server all'ottimistico senza cambiare timestamp.
-- Invio: `send_message_sync` via RPC `send` (legge `result.timestamp` reale) o `_send_subprocess`; accetta il kwarg extra `quote_attachments` (solo Signal: thumbnail della quote media — vedi [../api-contracts/CONTRACTS.md](../api-contracts/CONTRACTS.md#11-quote-media-reply-con-immagine) §11); `edit_message_sync(contact_id, message_id=ts_originale, new_text)` usa `editTimestamp`.
-- Receipt: `process_receipt(envelope)` (delega a `backend._process_receipt` sul proprio cache).
-- Rubrica: `list_address_book_sync(force)` con cache + TTL da `get_address_book_ttl_s()`.
+- `internal/gmail/`: IMAP/SMTP, parsing MIME, sanitizzazione HTML e CSS, proxy immagini (prefetch, token firmati), watcher unread.
+- `internal/media/`: risoluzione allegati, thumbnail (immagini e video via ffmpeg), upload, link preview SSRF-guardata, avatar.
+- `internal/messages/`: viste dei messaggi per TUI/SPA (paginazione, finestre, grouping, cleanup delle caption, campi quote).
+- `internal/linking/`: macchina a stati del pairing QR (`link.start/poll/finalize/cancel/submit_2fa`), sessioni abbandonate dopo 900 s, refresh QR dopo 60 s.
+- `internal/transcribe/`: provider OpenAI/OpenRouter/Gemini, validazione impostazioni, coda di trascrizione, auto-trascrizione per chat.
+- `internal/config/`: lettura `config.json` + variabili `<DOMAIN>_<SETTING>`, schema e default, path del progetto, migrazione dal formato piatto, validazione delle integrazioni all'avvio.
 
-### 2.5 `backends/whatsapp.py` + `whatsapp_events.py` + `whatsapp_rest.py` — `WhatsAppBackend` (protocol `"whatsapp"`)
+## 3. Client — package Python `client/`
 
-- `WhatsAppRESTClient` (`whatsapp_rest.py`): thin client REST verso WAHA — sessioni (`create/start/status/reset`, QR pairing), chat/contatti (`GET /api/{session}/chats` usato da `list_contacts` e da `_discover_active_chats`, `/api/contacts/all`, `/api/{session}/contacts/{jid}`, `check-exists`), invio (`POST /api/sendText` con `chatId`, `text`, opzionale `reply_to`), edit (`PUT /api/{session}/chats/{chatId}/messages/{messageId}`, path percent-encoded), storico (`GET /api/messages?...&limit=N`, timeout 30 s), mark-read (`POST /api/chats/{id}/read`, best-effort), presence subscribe (`POST /api/{session}/presence/{jid}/subscribe`), media download multi-strategia (URL diretto con riscrittura porta container → `/api/{session}/{id}/download` → redirect JSON `/api/messages/{id}/download` → `/api/files/default/{id}`; path sempre percent-encoded per i `@` dei JID). Tutti i metodi sono non-raising: `None`/`[]` su errore.
-- Connessione (`connect_sync`): `_wait_session_ready(timeout=40.0)` interroga lo stato sessione finché non è `WORKING` (poll ogni 0,5 s, uscita immediata sugli stati morti tipo failed/stopped); `_configure_webhook()` registra/aggiorna il webhook push sulla sessione via `PUT /api/sessions/{name}` a OGNI avvio — il solo env `WAHA_WEBHOOK_URL` non fa emettere eventi a WAHA — saltando il PUT se URL ed eventi sono già configurati (evita restart inutili); eventi desiderati: `message`, `message.any`, `message.ack`, `message.ack.group`, `presence.update`. Best-effort, mai eccezioni.
-- Normalizzazione (`whatsapp_events.py`): funzioni pure `_event_from_raw/_event_from_message/_event_from_receipt/_event_from_ack/_event_from_typing`, costanti ack ufficiali WAHA (`WAHA_ACK_ERROR=-1 … WAHA_ACK_PLAYED=4`), helper JID (`_jid_string`), `canonical_msg_id()` che riduce gli id Baileys (`true_{jid}_{hex}`, forma gruppo, hex puro) a un token confrontabile per i receipt.
-- `handle_webhook(raw)`: gestisce `message` e `message.ack`. Per gli ack outgoing costruisce un evento sintetico `message` (l'ack può arrivare INVECE dell'evento, anche con status < 2), rileva gli edit (stesso id + body nuovo → evento `message_edit`) e applica una guardia anti-retry per `(contact, id, testo normalizzato)`. Trigger lazy della presence subscription al primo messaggio di un contatto — subordinato al flag descritto sotto.
-- Coda eventi: `_enqueue_event` (coda illimitata con guardia drop-oldest difensiva — mai innescata in pratica, la `queue.Queue` è creata senza `maxsize`) + `poll_once()` che svuota la coda per il poll worker della TUI.
-- Cache/storico: `fetch_history(contact_id, limit)` scarica lo storico remoto e popola il backend cache (dedup interna via `ingest_message`); `resync_history(limit)` ri-sincronizza all'avvio unread ∪ chat presenti nel DB; ordinamento deterministico `_msg_sort_key = (timestamp, id|testo)`; `_message_already_cached` con identità id-first e fuzzy window (incoming ±5 s testo+ts, outgoing echo ±10 min con id).
-- Presence subscription (typing) OFF di default: gated da `_PRESENCE_SUBSCRIBE_ENABLED`, attributo di classe valutato **a import-time** leggendo solo `os.environ` (`WAHA_PRESENCE_SUBSCRIBE=1`/`true`/`yes`/`on`) → NON riattivabile via `.env`, né `config.json`, né a runtime senza reimport del modulo. Motivo: su WAHA 2026.8.1 engine WEBJS `subscribePresence` risponde 500 (WON'T FIX), quindi sweep e lazy subscribe sarebbero lavoro inutile. Di conseguenza il typing WhatsApp oggi NON funziona nella configurazione standard; il parser `_event_from_typing` resta attivo e invariato. Incoerenza residua: finché il flag è OFF, `presence.update` continua comunque a essere richiesto tra gli eventi (in `docker-compose.yml` e negli eventi configurati da `_configure_webhook`). Nessun segnale in UI segnala la disattivazione.
-- Extra thread: resolver asincrono `@lid → numero` (cache persistente JSON con TTL); presence subscribe sweep in background e lazy subscribe per messaggio/ack, entrambi subordinati al flag `WAHA_PRESENCE_SUBSCRIBE=1` (no-op quando OFF).
-- Flag residui: `_polling_active` e `_connected` esistono ma non governano nulla (la ricezione è push via webhook) — resti del precedente modello a polling.
-- Pipeline at-most-once: l'handler webhook risponde `200` PRIMA che l'evento sia persistito (enqueue volatile in memoria): un crash tra ack e drain perde gli eventi accodati senza che WAHA li rispedisca. I set anti-retry (`_seen_message_keys`; analogo `_seen_msg_ids` su Telegram) crescono senza bound per tutta la sessione (leak lento).
-- Edit: `edit_message_sync` via REST PUT; `apply_edit` aggiorna cache+DB (specchio di Signal).
-- Media: `get_attachment_path` risolve nella `media_dir` configurata (download on-demand dove previsto).
+- `client.py`: interfacce astratte `ChatClient` e `ClientSubscription` (operazioni + eventi), indipendenti dal trasporto.
+- `socket_client.py`: trasporto Unix socket; thread supervisore con riconnessione e backoff, heartbeat, match richiesta/risposta per id, `ServerUnavailable`/`OperationTimeout`/`IncompatibleServer`, ripresa con `since`, evento sintetico `client_connection`.
+- `bus.py`: envelope `Event(seq, type, payload, ts)`, `GAP`.
+- `events_api.py`: schemi wire degli eventi, conversione `ContactWire` ↔ `ChatContact`.
+- `attach.py`: find-or-spawn del server; `lock.py`, `paths.py`: lock, socket, file runtime.
+- `config.py`: impostazioni del client (protocollo immagini, opzioni web passate a un server avviato); `domain.py`: helper di ricerca/raggruppamento; `errors.py`, `version.py`.
 
-### 2.6 `backends/telegram.py` — `TelegramBackend` (protocol `"telegram"`)
+`client/` non importa Textual, `tui/` né `web/`.
 
-- Architettura: event loop asyncio dedicato in thread daemon (`_run_event_loop`); `TelegramClient` Telethon con sessione file persistente. `_connect_sync` avvia loop+client, registra handler (`NewMessage`, `MessageEdited`, raw update) e carica contatti/dialoghi.
-- Login: QR `tg://login?token=...` tramite `get_pairing_qr()`; supporto 2FA (flag `_needs_2fa`, password gestita dalla schermata device link).
-- Eventi in arrivo: handler convertono in `ChatEvent` e li mettono in `self._events` (consumati da `poll_once()`): messaggi (`_message_to_chat_event`), edit, read receipt (raw update → `process_receipt` per message-id), typing (`_handle_typing_update`).
-- Dedup: set `_seen_msg_ids` + finestra incoming 2000 ms; cache per contatto limitata a `_MAX_CACHE_PER_CONTACT = 50`.
-- Reply: `send_message_sync` accetta `reply_to_message_id` validato come intero server (`_validated_reply_to_message_id`); le reply Telegram devono usare l'id server, non il timestamp.
-- Media: attachment id sintetico `tgref:<chat_id>:<msg_id>` per il download lazy via Telethon in `get_attachment_path` (file in temp dir).
-- Read state: `_reconcile_read_state()` e `fetch_recent_history(limit)` per la sync iniziale.
-- Lifecycle (limite noto): `_run_event_loop` è `run_forever()` puro e `disconnect_sync` non chiama mai `loop.stop()` — imposta i flag, disconnette il client e fa `join(timeout=5)`, che scade: il thread resta vivo con un loop orfano. Ogni `_connect_sync` crea un nuovo event loop/thread (il teardown precedente rimuove client e riferimenti, non il thread) → accumulo di thread a ogni reconnect (es. ripetuti Ctrl+L). Inoltre `get_pairing_qr` è override **sync** della firma async della base e gestisce loop propri con `_loop` condiviso tra QR-wait thread e completamento 2FA.
+## 4. Client — package Python `tui/`
 
-## 3. Relazioni tra componenti (sintesi)
+Mixin composti in `SignalTUI(App)` (`tui/app.py`): `ChatViewMixin`, `EventHandlingMixin`, `ContactListMixin`, `BackendConnectMixin`, `PollingMixin`, `SendMixin`, `EditMessageMixin`, `UnreadReplyMixin`, `DownloadModeMixin`, `PickerMixin`, `ClientCallsMixin`, `ExitFlowMixin`.
+
+| Modulo | Responsabilità |
+|---|---|
+| `client_calls.py` | `_call_op` in worker, timeout espliciti, mapping degli errori di trasporto, risincronizzazione |
+| `polling.py` | consumatore unico della sottoscrizione eventi (batch + dispatch) |
+| `events.py` | aggiorna cache di vista, lista contatti e widget dai payload wire |
+| `backend_connect.py` | a backend pronto: `messages.snapshot` + `contacts.for_protocol`, merge add-only |
+| `chat_view.py` | finestra di chat, mount atomico, load-more, immagini |
+| `contacts.py` | ordinamento, grouping, filtri, open-or-create, picker |
+| `send.py` / `edit.py` | invio ed edit ottimistici con rollback (`messages.send`, `messages.edit`) |
+| `unread_reply.py` | badge unread e reply bar |
+| `download.py`, `blobs.py` | download mode e risoluzione blob/thumbnail tramite il server |
+| `exit_flow.py` | dialog Detach/Quit e `server.shutdown` |
+| `images/` | rilevamento terminale, celle, renderer kitty |
+| `css.py` | foglio di stile Textual |
+
+## 5. Relazioni (sintesi)
 
 ```
-TUI (tui/) ──usa──► BackendManager ──► ChatBackend implementations
-      │                    │                     │
-      │                    │              ┌──────┴────────┐
-      ▼                    ▼              ▼               ▼
-backend/db.py        backends/config.py  backend/rpc.py   whatsapp_rest.py /
-(SQLite condivisa)   (env/json/.env)     (signal-cli)     telegram (Telethon)
-      ▲                                     ▲               ▲
-      └────── scritture incrementali ───────┘               │
-                                             backend/webhook.py (riceve WAHA push)
+tui/ ──► client/ ──► Unix socket ──► rpc adapter ─┐
+SPA  ──► HTTP/WS ─────────────────► web adapter ──┤
+                                                  ▼
+                                          ops.Registry
+                                                  │
+                                          core.Core ──► bus.Bus
+                                             │  ▲
+                                             ▼  │
+                                        store.Store
+                                             ▲
+                                        proto.Manager ──► signal / whatsapp / telegram / fake
+                                                  │
+                                        gmail / media / messages / linking / transcribe
 ```
 
-Ogni backend possiede: la propria `queue.Queue` eventi, la propria cache in memoria (`cache: {contact_id: [msg_dict]}`), la lista `contacts` normalizzata e la rubrica cache+TTL. La UI non accede direttamente ai servizi esterni: tutto passa dall'interfaccia `ChatBackend`/`BackendManager` o dalle funzioni re-esportate da `backend/`.
+Ogni backend possiede la propria coda eventi e la propria connessione; la UI non accede mai direttamente a un servizio esterno o al database.

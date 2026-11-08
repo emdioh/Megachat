@@ -1,193 +1,167 @@
 # Test suite — panoramica e mappa
 
-Stato ricavato dai sorgenti dei test (`tests/`, `Telegram/`) e dalla configurazione (`pyproject.toml`, `Makefile`, `.github/workflows/ci.yml`). Numeri verificati sul repository alla data di aggiornamento di questa documentazione: **66 file di test** (64 in `tests/` + 2 in `Telegram/`), ~1.44k funzioni di test prima di eventuali parametrizzazioni; l'ultima run registrata in `docs/TEST_REPORT.md` (2026-08-24) riporta **1389/1389 superati** più 7 test live opzionali, con coverage ~80% (gate minimo 68%). La fonte aggiornata per gli esiti resta la pipeline CI.
+Stato attuale del repository. Il server Python e i suoi test sono stati eliminati il 2026-11-08 (mc-zao.4.4): l'elenco completo dei file e delle funzioni rimosse è in [DELETED_TESTS.md](DELETED_TESTS.md). La ricostruzione dei flussi TUI che giravano sul core in-process è tracciata dal bead **mc-gux**.
+
+**Conteggi attuali** (casi raccolti, parametrizzazioni incluse): **~921 test unit/UI Python** in `tests/` (987 con `pytest --collect-only` in questo worktree, 98 dei quali test Python della SPA) e **226 test di contratto** in `tests/contract/` (black-box contro il binario `megachatd`). Il server ha inoltre la propria suite Go (`go test ./...`) e i test con `-race`.
 
 ## 1. Come eseguire i test
 
-### Configurazione unica (`pyproject.toml`)
+### Configurazione (`pyproject.toml`)
 
-- `testpaths = ["tests", "Telegram"]` — una semplice `pytest` copre entrambe le radici.
-- `pythonpath = ["."]` — i test importano i moduli dalla root del progetto.
-- `addopts = "-ra --tb=short --strict-markers"`; marker registrati: `integration` (test che lanciano la TUI headless, più lenti), `live` (filo reale contro i backend, richiede `LIVE_TESTS=1`), `live-manual` (richiede inoltre intervento manuale sul device, `LIVE_MANUAL=1`).
-- `asyncio_mode = "auto"` (pytest-asyncio).
-- Coverage: `source = "."`, branch on, gate `fail_under = 68`.
+- `testpaths = ["tests"]` — `pytest` parte dalla root del repo.
+- `pythonpath = ["."]`.
+- `addopts = "-ra --tb=short --strict-markers --basetemp=/tmp/t -m \"not smoke\""` — la smoke test della TUI è esclusa dal run default.
+- Marker registrati: `integration` (TUI headless, più lento), `live`/`live-manual` (storici; oggi non ci sono test live), `allow_unserializable_events`, `smoke`.
+- `asyncio_mode = "auto"`.
+- Coverage: `source = ["."]`, branch on, gate `fail_under = 68`.
 
 ### Comandi
 
 ```bash
-# venv dedicato ai test
-source .venv-test/bin/activate        # creato da run_regression_tests.sh / installazione
+# sola suite unit/UI (nessun server, nessun demone)
+.venv/bin/python -m pytest --ignore=tests/contract
 
-make test          # pytest completo (tests/ + Telegram/)
-make coverage      # pytest --cov (term-missing + coverage.xml per Codecov)
-make lint          # ruff check .
-make format-check  # ruff format --check .
-make check         # lint + test (gate locale rapido)
+# intera suite Python definita da testpaths: include anche tests/contract
+make test PYTHON=.venv-test/bin/python     # oppure: source .venv-test/bin/activate && make test
+make lint                                  # ruff check
+make format-check                          # ruff format --check
+make typecheck                             # basedpyright
+make coverage                              # pytest --cov + coverage.xml
 
-# equivalente senza attivare il venv:
-make test PYTHON=.venv-test/bin/python
+# sola suite di contratto (richiede Go; costruisce il binario con -tags contracttest)
+make contract-test
 
-# test live opzionali (bug #37 quote media su filo reale) — NON fanno parte della CI:
-make live-test             # LIVE_TESTS=1 pytest tests/test_live_quote_media.py -v
-make live-test-manual      # richiede anche LIVE_MANUAL=1 (ingresso manuale E4)
-
-# script legacy (soppiantato dal Makefile, ancora funzionante):
-./tests/run_regression_tests.sh    # crea .venv-test se manca, installa dipendenze, pytest -v su tests/
+# suite Go del server
+cd megachatd && go vet ./... && go test ./...
+cd megachatd && go test -race ./...
 ```
 
-Note:
+La smoke test headless (`tests/test_smoke.py`) è esclusa dal default:
 
-- `run_regression_tests.sh` esegue solo `tests/` (non la cartella `Telegram/`) ed è marcato come legacy nel README del progetto; il Makefile è la via canonica.
-- I test standard sono offline/in-memory: nessun demone signal-cli, nessuna chiamata WAHA/Telegram reale (fixture mock in `conftest.py`). I test `live` sono l'unica eccezione: inviano messaggi REALI a un account di test e restano **sempre skippati** senza `LIVE_TESTS=1`.
+```bash
+python -m pytest tests/test_smoke.py -m smoke
+```
 
 ### CI (`.github/workflows/ci.yml`)
 
-- Job `lint`: `ruff check` + `ruff format --check` su Python 3.13, fail-fast per il job `test`.
-- Job `test`: matrice Python **3.12/3.13/3.14/3.15** (`fail-fast: false`) — la gamba 3.13 è quella "canonica" (`make coverage` con gate `fail_under = 68` + upload `coverage.xml` su Codecov via OIDC), le gambe 3.12 (floor), 3.14 e 3.15 eseguono solo `make test` (verifica cross-versione senza overhead di coverage).
-- Trigger: push su `master` + ogni pull request; concorrenza con cancel-in-progress.
+- job `lint`: `ruff check` + `ruff format --check`;
+- job `typecheck`: `basedpyright`;
+- job `test`: matrice Python **3.12/3.13/3.14/3.15**; la gamba 3.13 esegue `make coverage` con gate 68 e carica `coverage.xml` su Codecov, le altre eseguono `make test`;
+- trigger: push su `master` e pull request; `cancel-in-progress` sullo stesso ref.
 
-## 2. Mappa dei test per area
+`make contract-test` e i test Go non fanno parte di questa workflow: vanno eseguiti esplicitamente (e sono il gate delle modifiche a `megachatd/`).
 
-I numeri indicano le funzioni `test_*` definite nel file (prima di parametrizzazioni).
+## 2. Mappa dei test Python (`tests/`)
 
-### 2.1 Backend condiviso — RPC, cache SQLite, download, webhook
+I numeri indicano le funzioni `test_*` definite nel file (prima delle parametrizzazioni).
 
-| File | N. | Cosa copre |
-|---|---|---|
-| `tests/test_backend_rpc.py` | 14 | client JSON-RPC, parsing typing/receipt, fallback subprocess |
-| `tests/test_backend_cache.py` | 21 | scritture incrementali SQLite, dedup, unread |
-| `tests/test_backend_download.py` | 15 | server download HTTP, serve text/attachment |
-| `tests/test_backend_webhook.py` | 11 | handler webhook (200 sempre, 404/400, forward) |
-| `tests/test_backend_connect.py` | 13 | connessione Signal daemon/subprocess, merge backend ready |
-| `tests/test_backend_contacts.py` | 4 | parsing contatti RPC/subprocess |
-| `tests/test_backend_attachments.py` | 5 | risoluzione path attachment |
-| `tests/test_backend_send.py` | 6 | send via RPC/subprocess |
-| `tests/test_backend_lazy_config.py` | 5 | risoluzione lazy di numero utente/binario all'uso |
-| `tests/test_signal_tui_lock.py` | 6 | lock istanza singola `/tmp/signal-tui.lock` |
-
-### 2.2 DB e migrazioni cache
+### 2.1 Client, trasporto e avvio della TUI
 
 | File | N. | Cosa copre |
 |---|---|---|
-| `tests/test_db_edit.py` | 17 | `_update_message_text` (edit persistito) |
-| `tests/test_db_schema_versioning.py` | 6 | `PRAGMA user_version`, migrazioni additive |
-| `tests/test_migrate_sqlite.py` | 5 | migrazione JSON → SQLite |
-| `tests/test_migrate_protocol.py` | 12 | colonna `protocol` |
-| `tests/test_migrate_status.py` | 6 | colonna `status` |
-| `tests/test_open_or_create.py` | 11 | apertura chat/open-or-create ghost WhatsApp |
-| `tests/test_cache_debounce.py` | 10 | comportamento "debounce" post-SQLite, unread incrementale |
+| `tests/test_client_import_rules.py` | 3 | `client/` non importa Textual/`tui/`; dipendenze del trasporto |
+| `tests/test_backend_connect.py` | 3 | merge a backend pronto: `messages.snapshot` + `contacts.for_protocol`, dedup per id+attachment |
+| `tests/test_backend_ready_prefetch.py` | 3 | prefetch delle anteprime quando il backend diventa pronto |
+| `tests/test_signal_tui_cli.py` | 3 | parsing dei flag della TUI (`--connect`, `--web-*`) |
+| `tests/test_signal_tui_startup.py` | 10 | avvio/attach, spawn del server, errori di connessione |
+| `tests/test_megachat_entry.py` | 7 | entry point `megachat serve` / TUI / exec di `megachatd` |
+| `tests/test_tui_integration.py` | 18 | app headless con client stub |
+| `tests/test_tui_no_backend_access.py` | 2 | la TUI non tocca backend/servizi esterni |
+| `tests/test_tui_send_ops.py` | 11 | invio ottimistico via `messages.send` (esiti, timeout, rollback) |
+| `tests/test_tui_edit_ops.py` | 3 | edit via `messages.edit` (rollback, esito ignoto) |
+| `tests/test_tui_sigint_loop.py` | 2 | SIGINT/loop di polling |
+| `tests/test_smoke.py` | 1 | boot + render + exit headless (marker `smoke`) |
 
-### 2.3 Multi-backend e manager
-
-| File | N. | Cosa copre |
-|---|---|---|
-| `tests/test_backends.py` | 53 | `BackendManager` (routing, registry), contratti cross-backend |
-| `tests/test_address_book.py` | 82 | rubrica completa: base defaults, fan-out manager, TTL, per-backend |
-| `tests/test_config.py` | 18 | config env/config.json/.env WhatsApp+Telegram |
-
-### 2.4 WhatsApp
+### 2.2 Contatti, lista e filtri
 
 | File | N. | Cosa copre |
 |---|---|---|
-| `tests/test_whatsapp_backend.py` | 126 | suite principale: webhook ingest, contatti, media, presence, storico |
-| `tests/test_whatsapp_fix_40_41.py` | 26 | fix webhook ack/edit (bug 40/41) |
-| `tests/test_whatsapp_read_receipt_fix.py` | 14 | read receipt WAHA (id Baileys, reconciliazione storico) |
-| `tests/test_whatsapp_receipt_id_match.py` | 20 | `canonical_msg_id` e matching receipt per id |
-| `tests/test_wa_startup_resync.py` | 15 | resync storico all'avvio, attesa sync contatti |
-
-### 2.5 Telegram (in `Telegram/` e `tests/`)
-
-| File | N. | Cosa copre |
-|---|---|---|
-| `Telegram/test_telegram_backend.py` | 35 | suite backend Telethon |
-| `Telegram/test_regression.py` | 39 | regressione generale Telegram |
-| `tests/test_telegram.py` | 40 | backend Telegram (eventi, entità, QR) |
-| `tests/test_telegram_read_receipt_fix.py` | 20 | read receipt per message-id, dedup, reconcile |
-| `tests/test_telegram_send_reorder.py` | 1 | riordino immediato della lista dopo il submit ottimistico |
-
-Note: `Telegram/conftest.py` ha una fixture autouse che patcha le scritture SQLite (`backend._add_message_to_cache`, `backend._update_message_id`) per evitare contaminazioni del DB reale. `tests/test_telegram_edit.py` è censito una sola volta in §2.8 (Edit messaggi cross-protocollo).
-
-### 2.6 TUI / UI
-
-| File | N. | Cosa copre |
-|---|---|---|
-| `tests/test_ui_protocol.py` | 55 | protocollo UI eventi/receipt/status (suite larga) |
-| `tests/test_ui_components.py` | 37 | widget custom (MessageWidget status/stili/edit marker, MessageTextArea multi-riga, ecc.) |
-| `tests/test_tui_integration.py` | 18 | integrazione app headless (`app_for_test`) |
-| `tests/test_typing_indicator.py` | 29 | ✍️/💭, timeout, label riga |
-| `tests/test_refresh_chat.py` | 24 | finestra 20 msg, dedup stessa-secondo |
-| `tests/test_unread_filter.py` | 65 | filtro Ctrl+U/Ctrl+W/A, pinning selezione, auto-selezione |
-| `tests/test_contact_grouping.py` | 66 | grouping per persona, header/member, collapse |
+| `tests/test_contact_grouping.py` | 58 | grouping per persona, header/member, collapse |
 | `tests/test_contact_grouping_integration.py` | 5 | grouping integrato nella lista reale |
-| `tests/test_contact_picker.py` | 49 | picker Ctrl+S, ricerca, BackendChoiceScreen |
-| `tests/test_device_link_screen.py` | 32 | flusso Ctrl+L QR (Signal/WA/TG, 2FA) |
-| `tests/test_emoji_picker.py` | 23 | picker emoji, categorie, completamento alias |
-| `tests/test_image_async_download.py` | 9 | risoluzione attachment async (ramo CATIMG) |
-| `tests/test_image_caption.py` | 19 | caption foto per protocollo |
-| `tests/test_download_mode.py` | 10 | modalità Ctrl+D |
+| `tests/test_contact_picker.py` | 49 | picker Ctrl+S, ricerca, `BackendChoiceScreen` |
+| `tests/test_unread_filter.py` | 59 | filtro Ctrl+U/Ctrl+W/A, pinning, auto-selezione |
 | `tests/test_status_backend_unread.py` | 14 | status bar per-backend clickabile |
+| `tests/test_refresh_chat.py` | 31 | finestra 20 messaggi, dedup stessa-secondo, merge |
 
-### 2.7 Immagini native kitty (PR images)
-
-| File | N. | Cosa copre |
-|---|---|---|
-| `tests/test_kitty_renderer.py` | 48 | formato DCS (`a=t` chunked `q=2/m`, `a=p` source rect, delete/clear), cell size, `compute_source_rect` |
-| `tests/test_image_detect.py` | 30 | `detect_image_support()` (override config, isatty, guardia tmux/screen, query TGP, fallback catimg/OFF) + getter config immagini |
-| `tests/test_image_modal.py` | 11 | `ImageModalScreen` strategia nativa + semantica OFF |
-| `tests/test_chat_view_images.py` | 15 | ramo KITTY della risoluzione attachment in chat (`_resolve_attachment_worker`, `_finish_native_thumbnail`, `_resolve_mounted_image_paths`) |
-
-### 2.8 Edit messaggi (cross-protocollo)
+### 2.3 Chat, messaggi e media
 
 | File | N. | Cosa copre |
 |---|---|---|
-| `tests/test_edit_contract.py` | 10 | contratto opzionale di edit (default, routing manager) |
-| `tests/test_edit_flow.py` | 12 | flusso UI edit con rollback |
-| `tests/test_edit_signal.py` | 27 | edit Signal (editTimestamp) |
-| `tests/test_edit_whatsapp.py` | 33 | edit WhatsApp (REST PUT) |
-| `tests/test_telegram_edit.py` | 27 | edit Telegram |
-| `tests/test_merge_cache_edit.py` | 9 | riconciliazione edit nel merge cache |
+| `tests/test_models.py` | 22 | modelli condivisi, placeholder quote media, predicati |
+| `tests/test_quote_widget.py` | 34 | rendering delle quote, modalità display/filo |
+| `tests/test_reply_media.py` | 8 | reply a un'immagine: cattura target, reply bar, mutua esclusione con edit |
+| `tests/test_ui_components.py` | 39 | widget custom (`MessageWidget`, `MessageTextArea`, status) |
+| `tests/test_pick_survivor_and_merge.py` | 16 | scelta della riga sopravvissuta e merge add-only |
+| `tests/test_chat_view_images.py` | 9 | ramo nativo delle immagini in chat |
+| `tests/test_image_modal.py` | 11 | `ImageModalScreen`, strategia nativa e OFF |
+| `tests/test_kitty_renderer.py` | 52 | protocollo kitty: DCS, chunk, source rect, cell size |
+| `tests/test_native_architect_fix.py` / `test_native_radical_fix.py` / `test_native_shutdown_safety.py` | 5 / 5 / 3 | regressioni del rendering nativo e dello shutdown |
 
-### 2.9 Quote media (reply con immagine, bug #37)
-
-| File | N. | Cosa copre |
-|---|---|---|
-| `tests/test_models.py` | 7 | segnaposto media canonici, `media_quote_placeholder`, `is_media_quote_placeholder` |
-| `tests/test_reply_media.py` | 7 | flusso Alt+click/Alt+R su immagine: `_reply_to` con `quote_wire_body`, reply bar, toggle/annullamento, mutua esclusione edit, download mode |
-| `tests/test_live_quote_media.py` | 7 | verifica empirica su filo reale dei tre protocolli — **gated**: skippati senza `LIVE_TESTS=1` (E4 richiede `LIVE_MANUAL=1`); target/account configurabili via env |
-
-### 2.10 Invio e stato outgoing
+### 2.4 Picker e device link
 
 | File | N. | Cosa copre |
 |---|---|---|
-| `tests/test_send_persist_offthread.py` | 26 | persistenza ottimistica nel worker, transizioni/fallback |
-| `tests/test_send_timing.py` | 3 | timing/durata send |
-| `tests/test_failed_send_status.py` | 15 | transizione failed, retry e guardie |
-| `tests/test_outgoing_status_fallback.py` | 7 | fallback by-text pending→sent |
-| `tests/test_signal_real_timestamp.py` | 14 | vero timestamp server Signal/echo |
-
-### 2.11 Infrastruttura e utility
-
-| File | N. | Cosa copre |
-|---|---|---|
-| `tests/test_install_script.py` | 17 | `install.sh` (opzioni, download signal-cli) |
-| `tests/test_launcher_cli.py` | 8 | `launcher.py` argparse (help, subcomandi, flag mancanti) |
-| `tests/test_launcher_install.py` | 22 | `launcher/install.py`, l'equivalente Python opzionale di `install.sh` |
-| `tests/test_launcher_whatsapp.py` | 16 | `launcher/whatsapp.py`, equivalente di `scripts/start_whatsapp.sh` |
-| `tests/test_launcher_aliases.py` | 15 | `launcher/aliases.py` (stesso blocco alias scritto da `install.sh`) |
-| `tests/test_launcher_misc.py` | 17 | `launcher/{backend,server,handover}.py`, equivalenti di `scripts/*.sh` |
-| `tests/test_docker_compose_extra_hosts.py` | 2 | `host.docker.internal` in docker-compose |
+| `tests/test_device_link_screen.py` | 68 | flusso Ctrl+L QR (Signal/WhatsApp/Telegram, 2FA) |
+| `tests/test_emoji_picker.py` | 23 | picker emoji, categorie, completamento alias |
 | `tests/test_qr_ascii.py` | 4 | rendering QR ASCII (`qr_utils.py`) |
+| `tests/test_link_whatsapp.py` | 6 | script di linking WhatsApp |
 
-## 3. Fixture condivise (`tests/conftest.py`)
+### 2.5 SPA web (test Python sul JavaScript)
 
-Due famiglie:
+| File | N. | Cosa copre |
+|---|---|---|
+| `tests/test_web_account_link_signal.py` / `test_web_account_link_ui.py` | 6 / 19 | flusso di linking dal web |
+| `tests/test_web_multi_attachment_ui.py` | 14 | allegati multipli nella SPA |
+| `tests/test_web_reactions_ui.py` / `test_web_status_edit.py` | 14 / 4 | reazioni e stato/edit nella UI |
+| `tests/test_web_voice_record_ui.py` | 16 | registrazione vocale |
+| `tests/test_web_message_cache.py`, `test_web_reconcile_server_id.py`, `test_web_relative_urls.py`, `test_web_linkify.py`, `test_web_contact_search_dedup.py` | 4 / 4 / 3 / 2 / 1 | cache, riconciliazione id, URL relativi, linkify, ricerca contatti |
 
-- **dati di esempio** per i backend Signal/cache: `tmp_cache_dir`, `tmp_cache_file`, `sample_messages`, `sample_envelope_text`, `sample_envelope_image`, `sample_envelope_receipt`, `sample_contacts_rpc_output`, `sample_contacts_subprocess_output`;
-- **app headless**: `app_for_test` (SignalTUI con backends mockati e worker neutralizzati) e `app_for_test_with_mocks` (restituisce anche il backend mockato per le asserzioni).
+### 2.6 Installazione, launcher e servizio
 
-Il dettaglio completo e lo stile d'uso sono in [TEST_GUIDELINES.md](TEST_GUIDELINES.md).
+| File | N. | Cosa copre |
+|---|---|---|
+| `tests/test_install_script.py` | 33 | `install.sh`: opzioni, download signal-cli, build |
+| `tests/test_launcher_*.py` (15 file) | 197 | CLI, install, alias, server start/stop/status, build di megachatd, handover, profilo, test runner |
+| `tests/test_handover_scripts.py` | 11 | handover locale ↔ server |
+| `tests/test_service_script.py` | 19 | `scripts/megachat-service.sh` (systemd/OpenRC) |
+| `tests/test_gmail_setup.py` / `test_gmail_refresh_wiring.py` | 14 / 3 | setup Gmail e refresh del tab |
+
+## 3. Suite di contratto (`tests/contract/`)
+
+Black-box: fanno parte di `tests/` e girano anche con `make test`; il binario `megachatd` viene guidato solo dal filo (socket via `SocketClient`, HTTP, WebSocket), su un database SQLite seminato con lo schema reale. Richiede Go; il binario è costruito con `-tags contracttest` per abilitare l'hook del backend finto usato dai test di invio.
+
+| File | N. | Cosa copre |
+|---|---|---|
+| `tests/contract/test_socket_ops.py` | 44 | handshake, operazioni sul socket, errori, eventi |
+| `tests/contract/test_http_routes.py` | 21 | route REST, auth, blob, upload |
+| `tests/contract/test_websocket.py` | 10 | `/ws` e `/ws/v2`, subscribe/resume, auth |
+| `tests/contract/test_send_message_ids.py` | 6 | id dei messaggi inviati e echo |
+| `tests/contract/test_startup_validation.py` | 1 | validazione delle integrazioni all'avvio |
+
+Supporto: `conftest.py` (build/seeding), `harness.py` (avvio server, `SocketClient`, HTTP), `routes_table.py`, `seed_db.py`.
+
+## 4. Fixture condivise
+
+`tests/conftest.py`:
+
+- autouse `fail_on_unclosed_sqlite`: ogni connessione SQLite aperta nel test deve essere chiusa (altrimenti il test fallisce);
+- autouse `isolate_server_socket`, `isolate_instance_lock`, `isolate_environment`: socket, lock e `SIGNAL_TUI_WEB_TOKEN` non toccano mai il sistema reale;
+- `sample_messages` e altre fixture di dati per i test di vista.
+
+`tests/client_harness.py`:
+
+- `StubClient`: registra `call` e risponde da una sequenza (valore o eccezione);
+- `view_app`: `SignalTUI` con le parti DOM stub-ate e un client iniettato;
+- `inline_client_calls`: `_offload`/`_ui`/`_call_op` eseguiti inline per testare i mixin senza thread.
+
+## 5. Test eliminati e da ricostruire
+
+- [DELETED_TESTS.md](DELETED_TESTS.md) elenca **187 file di test** eliminati e le funzioni rimosse da 15 file mantenuti (3685 funzioni in totale). Comprende i test del server Python (`server/`, `protocols/`, `web/*.py`, `transcription/`), i test di parità Go↔Python e i test live.
+- I flussi TUI che giravano sul core in-process (invio, edit, eventi, lista contatti, chat view) sono coperti solo in parte: **mc-gux** li ricostruisce su uno stub `ChatClient`.
+- I marker `live`/`live-manual` restano registrati per compatibilità, ma oggi non esistono test live nel repository.
 
 ## Documenti collegati
 
 - [TEST_COVERAGE.md](TEST_COVERAGE.md) — aree coperte vs lacune.
 - [TEST_GUIDELINES.md](TEST_GUIDELINES.md) — convenzioni per scrivere nuovi test.
+- [DELETED_TESTS.md](DELETED_TESTS.md) — inventario dei test eliminati.

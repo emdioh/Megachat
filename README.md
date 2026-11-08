@@ -8,8 +8,8 @@ A terminal-based (TUI) multi-protocol messaging client built with [Textual](http
   fallback to subprocess if the daemon is unavailable.
 - **WhatsApp**: native backend in the Go server `megachatd` (whatsmeow) — no Docker, no external
   daemon; link the device with a QR code.
-- **Telegram**: optional backend using [Telethon](https://docs.telethon.dev/) (MTProto) —
-  native Python, no external daemon required. QR login with 2FA support.
+- **Telegram**: native backend in the Go server `megachatd` (gotd/MTProto) — no external daemon
+  required; an existing Telethon session is imported. QR login with 2FA support.
 
 ![Main interface](assets/screenshots/screenshot.png)
 *Main chat interface*
@@ -278,13 +278,14 @@ media download dir.
 > **Coming from WAHA?** The WAHA session cannot be migrated. The first time `megachatd` starts with
 > WhatsApp enabled and no `whatsmeow.db`, it prints (once, in Italian) that WhatsApp must be linked
 > again with a QR; `launcher.py server start` shows the notice. Telegram needs no re-link: the
-> existing Telethon session is reused as soon as `TELEGRAM_ENABLED=1` (plus the API credentials) is
-> set.
+> existing Telethon session is imported as soon as `TELEGRAM_ENABLED=1` (plus the API
+> credentials) is set.
 
 ### Enabling the Telegram backend (optional)
 
-The Telegram backend uses [Telethon](https://docs.telethon.dev/) and requires
-**no external daemon** — everything runs in-process.
+The Telegram backend is native in `megachatd` (gotd/MTProto) and requires
+**no external daemon**. An existing Telethon session is imported on first start;
+link a new device with a QR code from the TUI.
 
 #### Get API credentials
 
@@ -519,7 +520,6 @@ password after scanning. A backend that is off is shown disabled with the `<X>_E
 python3 megachat.py                  # the TUI: attach to a running server, or start one (see below)
 python3 signal_tui.py                # same thing
 python3 megachat.py --connect PATH   # attach to the server on this Unix socket; never start one
-python3 megachat.py --in-process     # debugging/tests: the chat core runs inside the TUI (no server)
 python3 megachat.py serve            # the headless server only (web UI, no TUI): execs megachatd
 megachatd/bin/megachatd serve        # the same, directly
 ```
@@ -552,7 +552,6 @@ The default button is Quit when this TUI started the server and Detach when it a
 that was already running. If other clients are connected the dialog says so ("Altri N client
 connessi") and Quit asks for a second confirmation. `Ctrl+C` (SIGINT) never opens the dialog and
 never stops a server: it always detaches. If the server cannot be reached, `Ctrl+Q` just exits.
-`megachat --in-process` has no dialog (it owns the core and quits as before).
 
 <a id="tips"></a>
 
@@ -708,9 +707,9 @@ WhatsApp):
 - Press **`Alt+E`** (or **Alt+click**) on one of your own text messages: the text is loaded into the
   message input and the bubble is highlighted. Replying and editing are mutually exclusive —
   starting one cancels the other.
-- **`Enter`** submits the edit **optimistically**: the bubble, in-memory cache, and database are
-  updated immediately, then the network call runs in a worker thread. On failure or rejection the
-  original text is restored automatically.
+- **`Enter`** submits the edit **optimistically**: the bubble and in-memory cache are updated
+  immediately, then `messages.edit` runs in a worker thread and the server applies the change to
+  the backend and SQLite. On failure or rejection the original text is restored automatically.
 - The edited bubble keeps its original timestamp and gains a persistent `(modificato)` marker.
 - **Incoming edits** from other people update the existing bubble **in place** — no duplicated
   messages, no unread bump. Edits you make from another linked device are applied to this session
@@ -719,7 +718,8 @@ WhatsApp):
 Limitations: only text messages can be edited (not media or captions); messages still *pending* or
 *failed* cannot be edited; there is no edit history — the latest text wins.
 
-Implementation: `tui/edit.py`; design notes in `docs/DESIGN_EDIT_MESSAGES.md`.
+Implementation: `tui/edit.py`; design notes in
+[documentation/design/DESIGN_EDIT_MESSAGES.md](documentation/design/DESIGN_EDIT_MESSAGES.md).
 
 ![Editing a sent message](assets/screenshots/message-editing.png)
 
@@ -871,15 +871,15 @@ works for running the bare server by hand (it execs megachatd). `megachatd` writ
 file and Unix socket + runtime file, so `status`, `stop` and the TUI's attach work unchanged.
 
 The server holds the single-instance lock (`/tmp/signal-tui.lock`, override with
-`$MEGACHAT_LOCK_FILE`); attached TUIs never take it, only `megachat --in-process` does (so it
-cannot run next to a server). `megachat.py` with any other arguments starts the TUI as before
-(`python3 signal_tui.py` keeps working). Stopping the server disconnects every attached TUI; they
-show a reconnect message and resync if a new server appears.
+`$MEGACHAT_LOCK_FILE`); attached TUIs never take it, so any number of them can share one server.
+`megachat.py` with any other arguments starts the TUI (`python3 signal_tui.py` keeps working).
+Stopping the server disconnects every attached TUI; they show a reconnect message and resync if a
+new server appears.
 
 ### Run as a system service (systemd / OpenRC)
 
 `scripts/megachat-service.sh` installs `megachatd` as a system service that runs as the owning user,
-so `config.json` and the existing data dirs (signal-cli, whatsmeow, the Telethon session) are reused.
+so `config.json` and the existing data dirs (signal-cli, whatsmeow, the imported Telegram session) are reused.
 The service uses the fixed socket `~/.local/state/megachat/server.sock` (a system service has no
 login session, so `$XDG_RUNTIME_DIR` is not available).
 
@@ -940,10 +940,9 @@ to the internet.
 
 ### Web UI
 
-The optional web reader gives read-only access to conversations and attachments from a browser:
+The optional web UI gives browser access to conversations, attachments, sending/editing and the Gmail tab:
 Emoji reactions from Signal, WhatsApp, and Telegram are shown on message bubbles and update live over
-WebSocket. Legacy empty reaction bubbles can be removed with `migrate_reactions_cleanup.py` (dry-run by
-default; pass `--apply` to apply the cleanup).
+WebSocket. Legacy empty reaction bubbles from the Python-server era are left in the database as-is.
 
 ![Web UI — contact list](assets/screenshots/web-contacts.png)
 
@@ -1021,12 +1020,13 @@ Automatic install — detects bash/zsh/ash and writes the real project path:
 ./install.sh --aliases
 ```
 
-Or manually copy the alias block from [docs/ALIASES.md](docs/ALIASES.md) into `~/.bashrc` (bash),
-`~/.zshrc` (zsh), or `~/.ashrc` (ash — make sure `$ENV` points there), then reload the file (or
-reopen the shell).
+Or run `python3 launcher.py aliases`, which writes the same block from
+[launcher/aliases.py](launcher/aliases.py) into `~/.bashrc` (bash), `~/.zshrc` (zsh), or
+`~/.ashrc` (ash — make sure `$ENV` points there), then reload the file (or reopen the shell).
 
-> **Compatibility:** bash, zsh, and ash are supported; other shells (fish, dash/sh) are not — see
-> [docs/ALIASES.md](docs/ALIASES.md).
+> **Compatibility:** bash, zsh, and ash are supported; other shells (fish, dash/sh) are not.
+> The historical description in [docs/ALIASES.md](docs/ALIASES.md) still mentions the deleted
+> Python server; use `launcher/aliases.py` as the current source.
 
 ## Native inline images (kitty graphics protocol)
 
@@ -1128,118 +1128,62 @@ This suite also runs in CI (`.github/workflows/ci.yml`, Python 3.12/3.13/3.14/3.
 The Go server has its own checks:
 
 ```bash
-make contract-test                          # 583 black-box tests of megachatd (socket, HTTP, WebSocket)
+make contract-test                          # 226 black-box tests of megachatd (socket, HTTP, WebSocket)
 cd megachatd && go vet ./... && go test ./...
 ```
 
-### Optional "live" integration tests (real accounts)
+### Deleted suites
 
-The tests in `tests/test_live_quote_media.py` (E1–E7) verify end-to-end behavior **against a real
-test account** (present on all three protocols) and **send real messages**. They never run in CI:
-without `LIVE_TESTS=1` they are always skipped.
-
-**Prerequisites:**
-
-- Signal: `SIGNAL_ENABLED=1` (megachatd) plus a signal-cli daemon and `config.json` with
-  `signal.user_number`;
-- WhatsApp: `WHATSAPP_ENABLED=1` (megachatd) with a linked device;
-- Telegram: `TELEGRAM_ENABLED=1` (megachatd) and `TELEGRAM_API_ID`/`TELEGRAM_API_HASH` + an
-  authorized Telethon session;
-- the test contact present on all three protocols, or explicit ID overrides with
-  `LIVE_TARGET_SIGNAL` / `LIVE_TARGET_WHATSAPP` / `LIVE_TARGET_TELEGRAM`.
-
-**Run them:**
-
-```bash
-make live-test PYTHON=.venv-test/bin/python
-# equivalent to: LIVE_TESTS=1 .venv-test/bin/python -m pytest tests/test_live_quote_media.py -v
-```
-
-Coverage (criteria §10.2 of `docs/DESIGN_QUOTE_MEDIA_37_V2.md`):
-
-- **E1/E2/E3/E7** — Signal: media quote with/without caption (`quoteMessage`/`quoteAttachments`
-  verified on the wire), plain text reply unchanged, retry after failure;
-- **E5** — WhatsApp: photo quote (`reply_to` = Baileys ID);
-- **E6** — Telegram: photo quote (`reply_to` = numeric ID).
-
-If the chat has no fresh media with a persisted `content_type` (legacy media predating plan B is
-not auto-backfilled — use `migrate_content_type.py`), the Signal tests print a reminder to send a
-new image and wait up to 90 seconds: just send a photo from the official client of the test contact
-and the test proceeds on its own.
-
-**E4 (ingress, manual):** requires quoting an image from the official client of the test contact
-while the test waits:
-
-```bash
-make live-test-manual PYTHON=.venv-test/bin/python
-```
-
-**Notes:** every test sends messages tagged `[live-test]` (recognizable on the device). Tests skip
-with clear messages when a backend is unconfigured, the contact cannot be resolved, or no suitable
-media exists — they never fail the suite.
-
-### Database cleanup runbook (known test rows)
-
-`purge_test_rows.py` removes the known regression-test rows from the local message cache
-(`~/.local/share/signal-tui-client/messages.db`). It is **dry-run by default** and, with `--apply`,
-creates a WAL-safe timestamped backup (`messages.db.bak-<timestamp>`) and runs an integrity check
-before deleting. Run it only in a maintenance window, with the app stopped:
-
-```bash
-# 1. Stop the server/TUI (SIGINT to the pid in the lock file; the web server is embedded)
-signal-tui-stop        # or: kill -INT "$(cat /tmp/signal-tui.lock)"
-
-# 2. Gate: no process must hold the DB (the output must be empty)
-lsof ~/.local/share/signal-tui-client/messages.db
-
-# 3. Dry-run — inspect the rows that would be removed
-.venv/bin/python purge_test_rows.py --db ~/.local/share/signal-tui-client/messages.db
-
-# 4. Apply (backup first, then delete)
-.venv/bin/python purge_test_rows.py --db ~/.local/share/signal-tui-client/messages.db --apply
-
-# 5. Restart from the project root with the usual web options
-cd /home/rob/signal-tui-client
-python3 launcher.py server start
-```
-
-The script aborts (`-1`) if more rows than expected match, and is idempotent (a second run finds
-zero rows). Never instantiate a backend outside `pytest`/the conftest: the autouse fixtures in
-`tests/conftest.py` redirect the DB, cache and media paths to `tmp_path`.
+The Python server's tests — including the live quote-media suite (`test_live_quote_media.py`)
+and the `purge_test_rows.py` cleanup helper — were deleted together with the server in
+mc-zao.4.4. Every deleted file and test is listed in
+[documentation/test-suite/DELETED_TESTS.md](documentation/test-suite/DELETED_TESTS.md); the TUI
+flows that used to run on the in-process core are tracked for rebuild in mc-gux. The retained
+Python suite is unit/UI only, and megachatd is covered by its Go tests plus the black-box contract
+suite.
 
 ## Project structure
 
 ```
 signal-tui-client/
 ├── megachat.py                # Entry point — `megachat serve` (execs megachatd) or the TUI
-├── megachatd/                 # Go server (whatsmeow, Telethon-session reuse): `make megachatd`
-├── signal_tui.py              # TUI entry point — main TUI application (Textual App), multi-protocol
-├── server/                    # Headless core (ChatCore, EventBus, lock) + `serve` mode (main.py)
-├── backend/                   # Shared backend: SQLite persistence, signal-cli RPC/subprocess,
-│                              #   webhook/HTTP server, receipts
-├── backends/                  # Per-protocol backend implementations
-│   ├── base.py                #   Abstract ChatBackend interface (+ address book, edit contracts)
-│   ├── manager.py             #   Multi-backend registry and routing
-│   ├── signal.py              #   Signal backend (signal-cli daemon / subprocess, envelope parsing)
-│   ├── whatsapp.py            #   WhatsApp backend facade
-│   ├── whatsapp_events.py     #   WhatsApp webhook event ingestion
-│   ├── whatsapp_rest.py       #   WhatsApp REST calls (WAHA)
-│   ├── telegram.py            #   Telegram backend (Telethon MTProto, QR login, read receipts)
-│   └── config.py              #   WhatsApp + Telegram configuration helpers
+├── signal_tui.py              # TUI entry point — attaches to a server or spawns `megachatd serve`
+├── client/                    # Client side, transport-agnostic, no Textual: ChatClient, SocketClient,
+│                              #   events, attach/find-or-spawn, lock, paths, config, errors
 ├── tui/                       # TUI composition: mixins split by concern
 │   ├── app.py                 #   App wiring, bindings, layout
+│   ├── client_calls.py        #   Workers, timeouts, error mapping, resync
 │   ├── contacts.py            #   Contact list logic (grouping, filters, open-or-create)
 │   ├── chat_view.py           #   Chat rendering (bubbles, images, thumbnails)
-│   ├── events.py              #   Event handling (messages, receipts, typing, edits)
-│   ├── send.py                #   Optimistic send flow + retries
+│   ├── events.py              #   Core-event handling (messages, receipts, typing, edits)
+│   ├── send.py                #   Optimistic send flow + retries (`messages.send`)
 │   ├── edit.py                #   Message editing flow (optimistic submit, rollback)
-│   ├── unread_reply.py        #   Reply/edit bars and handlers
-│   ├── download.py            #   Download mode HTTP server glue
+│   ├── unread_reply.py        #   Reply/edit bars and unread counts
+│   ├── download.py            #   Download mode glue (blob URLs from the server)
 │   ├── pickers.py             #   Modal screens (emoji/contact/device-link launching)
-│   ├── polling.py             #   Timed refreshes
-│   ├── backend_connect.py     #   Backend startup/connection
+│   ├── polling.py             #   Core-event consumer worker
+│   ├── backend_connect.py     #   Backend-ready merge (snapshot + contacts)
+│   ├── exit_flow.py           #   Detach/quit dialog and `server.shutdown`
+│   ├── blobs.py               #   Attachment/thumbnail fetchers
 │   ├── css.py                 #   TUI stylesheet
 │   └── images/                #   Native kitty rendering: detect.py, cellsize.py, kitty_renderer.py
+├── megachatd/                 # Go server: `make megachatd` (Go version in go.mod)
+│   ├── cmd/megachatd/         #   `serve`, `version`, `config migrate`; startup and adapter wiring
+│   ├── internal/api/          #   Wire contract: 68 operations, REST routes, event types, errors
+│   ├── internal/ops/          #   Operation registry and dispatcher
+│   ├── internal/core/         #   Chat core: operation handlers, ingest, read state, sends, lock
+│   ├── internal/store/        #   SQLite store (messages, reactions, transcriptions) + dedup/schema
+│   ├── internal/bus/          #   Event bus (ring buffer + per-subscriber queues)
+│   ├── internal/rpc/          #   Unix-socket JSON-RPC adapter
+│   ├── internal/web/          #   HTTP REST + WebSocket adapters, SPA mount
+│   ├── internal/proto/        #   Backend contract + manager; signal/, whatsapp/, telegram/, fake/
+│   ├── internal/gmail/        #   IMAP/SMTP, HTML sanitizer, image proxy, unread watcher
+│   ├── internal/media/        #   Attachments, uploads, thumbnails, link previews
+│   ├── internal/messages/     #   Message views, paging, grouping
+│   ├── internal/linking/      #   QR pairing flows
+│   ├── internal/transcribe/   #   Transcription providers + auto-transcribe
+│   └── internal/config/       #   config.json/env, schema, migrations, startup validation
+├── web/static/                # Web SPA (vanilla JS/CSS) served by megachatd
 ├── models.py                  # Shared data models (ChatContact, ChatMessage, ChatEvent)
 ├── ui_components.py           # Custom Textual widgets (MessageWidget, ImageWidget, StatusBar,
 │                              #   ImageModalScreen, MessageTextArea, …)
@@ -1250,40 +1194,35 @@ signal-tui-client/
 ├── qr_utils.py                # QR code renderer (ASCII / PNG-to-ASCII)
 ├── link_account.py            # Signal device linking script (QR code — or use Ctrl+L in TUI)
 ├── link_whatsapp.py           # WhatsApp device linking script (QR code — or use Ctrl+L in TUI)
-├── migrate_cache_sqlite.py    # One-shot migration: JSON cache → SQLite
-├── migrate_cache_protocol.py  # One-shot migration: add protocol field to cache
-├── migrate_cache_status.py    # One-shot migration: add status field to cache
-├── migrate_content_type.py    # Backfill MIME type for legacy cached media (quote media plan B)
-├── purge_whatsapp_cache.py    # Utility: purge WhatsApp messages from cache
-├── tests/                     # Test suite (pytest; unit, UI pilot, integration, live-gated)
+├── tests/                     # Python unit/UI suite + tests/contract/ (black-box megachatd)
 │   ├── conftest.py
-│   ├── protocols/telegram/    # Telegram backend and regression tests
-│   ├── test_live_quote_media.py   # Live E2E tests (opt-in via LIVE_TESTS=1)
-│   └── …                      # Backend, UI, grouping, filters, edit flow, quote media, …
+│   ├── contract/              #   socket, HTTP, WebSocket and startup-validation contract tests
+│   └── …                      #   Client, TUI widgets/pickers, startup/attach, launcher
 ├── profiling/                 # Performance profiling tools (CPU, RAM, I/O)
-├── scripts/                   # Helper scripts (start_on_server.sh, tui_handover.sh, …)
-├── documentation/             # Generated technical docs (architecture, design, API contracts,
-│                              #   test suite, review)
-├── docs/                      # Working docs: BUGS.md, TEST_REPORT.md, PERF_ANALYSIS.md,
-│                              #   DESIGN_*.md, PLAN_*.md
+├── scripts/                   # Helper scripts (megachat-service.sh, start_on_server.sh, …)
+├── documentation/             # Technical docs: architecture, design, API contracts, test suite
+├── docs/                      # Historical design notes (see docs/README.md)
 ├── assets/screenshots/        # README screenshots (main UI, image viewer)
 ├── config.example.json        # Nested config.json schema: one object per domain
 ├── install.sh                 # Automatic installation script
 ├── launcher.py                # Optional Python alternative to the shell scripts
 ├── launcher/                  # launcher.py's command implementations
-├── Makefile                   # Shared commands: make test / lint / coverage / live-test
+├── Makefile                   # make test / lint / coverage / contract-test / megachatd
 ├── pyproject.toml             # Shared pytest / coverage / ruff config
-├── .github/workflows/ci.yml   # CI: lint + test (3.12/3.13/3.14/3.15 matrix) + coverage gate + Codecov
-├── requirements.txt           # Python dependencies (textual, websockets, qrcode, ...)
-├── requirements-dev.txt       # Development dependencies (pytest, pytest-cov, coverage, ruff)
+├── .github/workflows/ci.yml   # CI: lint + typecheck + test (3.12/3.13/3.14/3.15) + Codecov
+├── requirements.txt           # Python dependencies (textual, pydantic, qrcode, ...)
+├── requirements-dev.txt       # Development dependencies (pytest, coverage, ruff, basedpyright)
 ├── config.json                # Local configuration (not committed)
 ├── README.md                  # This file
 ├── bin/                       # signal-cli binaries (not committed)
 └── LICENSE                    # GPLv3
 ```
 
-Current test-suite status is tracked in [docs/TEST_REPORT.md](docs/TEST_REPORT.md); known bugs and
-limitations in [docs/BUGS.md](docs/BUGS.md).
+The current test-suite map and counts are in
+[documentation/test-suite/TEST_OVERVIEW.md](documentation/test-suite/TEST_OVERVIEW.md), with the
+deleted Python-server tests listed in
+[documentation/test-suite/DELETED_TESTS.md](documentation/test-suite/DELETED_TESTS.md). Known bugs
+and limitations from the Python-server era are in [docs/BUGS.md](docs/BUGS.md).
 
 ## License
 

@@ -1,7 +1,7 @@
 # megachatd
 
-Go port of the Megachat headless server (`megachat serve`). The Python TUI and the web SPA are
-unchanged clients: the wire contract is in `CONTRACTS.md`, the Go twin in `internal/api`.
+Go server for Megachat (`megachat serve`). The Python TUI and the web SPA are
+clients: the wire contract is in `CONTRACTS.md`, the implementation in `internal/api`.
 
 ## Build
 
@@ -9,11 +9,11 @@ unchanged clients: the wire contract is in `CONTRACTS.md`, the Go twin in `inter
 make megachatd                            # from the repo root: -> megachatd/bin/megachatd (git-ignored)
 # = cd megachatd && go build -o bin/megachatd ./cmd/megachatd     (Go 1.26, see go.mod)
 cd megachatd && go vet ./... && go test -race ./...
-make contract-test                        # 583 black-box tests against the real binary
+make contract-test                        # 226 black-box tests against the real binary
 ```
 
-`./install.sh` runs the build when Go is available (and otherwise falls back to the Python server,
-see below).
+`./install.sh` runs the build when Go is available; without Go it uses an
+already-installed binary and fails clearly when neither is available.
 
 ### Alpine / musl
 
@@ -46,9 +46,7 @@ megachatd/bin/megachatd version
 You normally don't run it by hand: `python3 launcher.py server start|stop|status`, `python3
 megachat.py serve` and the TUI's find-or-spawn all start `megachatd serve <flags> --project-dir
 <repo>`. Binary lookup: `$MEGACHATD_BIN`, else `<repo>/megachatd/bin/megachatd`, else `megachatd` on
-`PATH` (`launcher/serverbin.py`). Escape hatch: `MEGACHAT_SERVER=python` (environment, or the
-launcher's `.env` runtime file where `install.sh` writes it when Go is missing) runs the old Python
-server instead.
+`PATH` (`launcher/serverbin.py`). There is no Python server fallback.
 
 `serve` takes the flags of `megachat serve`, plus `--project-dir`:
 
@@ -103,7 +101,7 @@ Edge, Opera, Safari, IE, Desktop, Android; unknown names warn and keep Chrome),
 `whatsapp.browser_os` (`WHATSAPP_BROWSER_OS`, default `Linux`). The identity is fixed server-side at
 registration, so it applies to the next pairing; restart the server after editing config.json.
 
-Files shared with the Python server, so the launcher's `status`/`stop`/`start` and the TUI's attach
+Files shared with the launcher and the TUI, so `status`/`stop`/`start` and attach
 work unchanged: the instance lock (`$MEGACHAT_LOCK_FILE`, default `/tmp/signal-tui.lock`, holds the
 pid; SIGINT = clean stop), the Unix socket and the runtime file `server.json` next to it (pid), and the
 log `/tmp/signal-tui.log`.
@@ -211,7 +209,7 @@ HOME=$T/home XDG_RUNTIME_DIR=$T/run MEGACHAT_LOCK_FILE=$T/lock MEGACHAT_LOG_FILE
 sleep 1.5
 HOME=$T/home XDG_RUNTIME_DIR=$T/run python3 -I -c "
 import sys; sys.path.insert(0, '.')
-from server.socket_client import SocketClient
+from client.socket_client import SocketClient
 c = SocketClient.connect(None, timeout=5, reconnect=False)
 print(c.call('server.status'))   # {'signal': False, 'telegram': False, 'whatsapp': False}
 c.call('server.shutdown')
@@ -221,8 +219,8 @@ curl -s localhost:47321/health   # while it runs
 
 ## Telegram: raw vs marked contact ids (mc-zao.4.3, offline part)
 
-The Python backend listed Telegram groups/channels with the **raw positive id**
-(`str(entity.id)` in `protocols/telegram.py::_entity_to_contact`), while messages,
+The legacy Python backend (deleted with the server on 2026-11-08) listed Telegram
+groups/channels with the **raw positive id** (`str(entity.id)`), while messages,
 reactions, receipts and `tgref:` media refs used Telethon's **marked id**
 (`str(msg.chat_id)`: `-id` for groups, `-100<id>` for channels). megachatd uses
 marked ids for both. Where a contact id is persisted outside `messages`:
@@ -271,16 +269,16 @@ The Go backend does the same from whatsmeow's protobufs
 (and its media prefetch) skip it. WAHA's separate `message.ack` synthetic-message path has no whatsmeow equivalent:
 whatsmeow delivers the real message events, so there is nothing else to guard.
 
-`purge_wa_hd_children.py` (repo root, Python) is **not ported**. It repairs a DB written by
-the old WAHA backend by fetching each "suspect" row from WAHA
-(`GET /api/{session}/chats/{chat}/messages/{id}?downloadMedia=false`) and deleting only the
-ones WAHA confirms as HD children. whatsmeow has no fetch-message-by-id call and megachatd's
-`messages` table does not store `associationType`/`pairedMediaType`, so that verification
-cannot be reproduced in Go; an unverified "same chat, same type, same caption, ±3 s"
-heuristic would also match legitimate album photos. A DB that already contains WAHA-era HD
-children must be cleaned with the Python script (it operates on the shared `messages.db`)
-while the WAHA API is still reachable; after the cutover the Go backend cannot tell those old
-rows apart. New traffic never stores the child.
+The old WAHA-era cleanup helper (`purge_wa_hd_children.py`) is **not part of this repository** and
+was not ported. It repaired a DB written by the old WAHA backend by fetching each "suspect" row
+from WAHA (`GET /api/{session}/chats/{chat}/messages/{id}?downloadMedia=false`) and deleting only
+the ones WAHA confirmed as HD children. whatsmeow has no fetch-message-by-id call and megachatd's
+`messages` table does not store `associationType`/`pairedMediaType`, so that verification cannot be
+reproduced in Go; an unverified "same chat, same type, same caption, ±3 s" heuristic would also
+match legitimate album photos. A DB that already contains WAHA-era HD children had to be cleaned
+with that helper (it operates on the shared `messages.db`) while the WAHA API was still reachable;
+after the cutover the Go backend cannot tell those old rows apart. New traffic never stores the
+child.
 
 ## WhatsApp: per-chat unread and the best-effort history heal (mc-zao.3.5.2)
 

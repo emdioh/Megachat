@@ -1,85 +1,75 @@
 # Design — protocollo di stato dei messaggi in uscita
 
-Come una bolla inviata passa da `pending` a `sent`/`delivered`/`read` (o `failed`), su quali chiavi avvengono le transizioni e come si evitano downgrade e doppioni. Ricavato da `tui/send.py`, `tui/events.py`, `tui/unread_reply.py`, `backend/db.py`, `backends/signal.py`, `backends/whatsapp_events.py`, `ui_components.py::MessageWidget`.
+Come una bolla inviata passa da `pending` a `sent`/`delivered`/`read` (o `failed`), su quali chiavi avvengono le transizioni e come si evitano downgrade e doppioni. Ricavato da `tui/send.py`, `tui/events.py`, `tui/chat_view.py`, `tui/backend_connect.py`, `megachatd/internal/core/ops_send.go`, `megachatd/internal/store` e `ui_components.py::MessageWidget`.
 
 ## 1. Macchina a stati
 
 ```
-            send submit                    worker OK                 receipt delivery        receipt read
- (UI thread) ────────►  PENDING  ─────────►  SENT  ────────────►  DELIVERED  ────────────►  READ
+            send submit                 server OK                 receipt delivery        receipt read
+ (UI thread) ────────►  PENDING  ─────►  SENT  ───────────►  DELIVERED  ───────────►  READ
                             │
-                            └── errore backend / no backend / eccezione ──►  FAILED
+                            └── errore server / rifiuto / backend assente ──►  FAILED
 ```
 
-- Valori ammessi (vedi `models.ChatMessage.status`): `"pending"`, `"failed"`, `"sent"`, `"delivered"`, `"read"` (default `"sent"`).
-- Rank canonico, definito identicamente in più punti (`chat_view._STATUS_RANK`, `db._update_message_status*`, `rpc._process_receipt`, dedup DB):
-
-  ```
-  pending=0  failed=0  sent=1  delivered=2  read=3     # mai in downgrade
-  ```
-
-  Attenzione: la tabella è **duplicata in 7 punti** (3 volte come SQL `CASE` in `backend/db.py`, 4 come dict in `backends/whatsapp.py`, `telegram.py`, `backend/rpc.py`, `tui/chat_view.py`, `tui/backend_connect.py`): qualsiasi modifica agli stati va fatta in tutti — rischio drift concreto. Mitigazione proposta: costante unica in `models.py` importata ovunque.
-
+- Valori ammessi (`models.ChatMessage.status`): `"pending"`, `"failed"`, `"sent"`, `"delivered"`, `"read"` (default `"sent"`).
+- Rank canonico: `pending=0 failed=0 sent=1 delivered=2 read=3`; nessun downgrade. Il rank è applicato dallo store Go (`internal/store`) e, lato vista, dai merge in `tui/chat_view.py` e `tui/backend_connect.py` (`_STATUS_RANK`). La costante è duplicata in pochi punti del client: se si aggiunge uno stato, aggiornarli tutti.
 - Rendering (`MessageWidget._apply_status_style`, solo per `is_mine=True`):
   - `pending` → dim + classe `msg-pending`;
-  - `failed` → bold + classe `msg-failed` (la bolla è cliccabile per il retry);
+  - `failed` → bold + classe `msg-failed` (bolla cliccabile per il retry);
   - `sent` → *italic*;
   - `delivered` → **bold**;
   - `read` → stile normale.
 
-## 2. Flusso ottimistico (tui/send.py)
+## 2. Flusso ottimistico (tui/send.py + server)
 
-1. **Submit** (UI thread): timestamp client `ts = int(time.time()*1000)`; il messaggio viene ingerito nel backend corretto con `status="pending"` e `ingest_message(..., persist=False)` (cache senza DB) e specchiato nella cache UI; la bolla nasce subito grigia.
-2. **Riordino immediato della chat**: `_promote_contact_after_send(contact, ts)` avanza `last_message_ts` e ri-renderizza la lista SUBITO dopo il submit ottimistico, senza aspettare l'eco del backend (contratto fissato da `test_telegram_send_reorder.py`).
-3. **Persist off-thread**: il worker `_send_message_worker` riceve `(backend, contact_id, data, ts)` e chiama `_persist_message(...)` PRIMA dell'invio di rete: così l'echo (spesso più veloce del worker) trova sempre la riga da aggiornare (`test_send_persist_offthread.py`).
-4. **Invio sincrono**: `backend.send_message_sync(contact_id, text, quote_*, reply_to_message_id[, quote_attachments])` — bloccante ma in worker thread; la durata è loggata a debug e a warning sopra i 1000 ms (backoff/degrado del backend).
-5. **Transizione a `sent`**: `_transition_outgoing_status(protocol, contact_id, ts, text, "sent", ("pending",))` aggiorna atomicamente tutti i layer.
-6. **Ingest echo**: l'id server restituito dal backend viene ingerito (`ingest_message`) e scritto via `_update_message_id`: la riga ottimistica (senza id) acquisisce l'id reale senza duplicati e senza cambiare il proprio timestamp; mirror dell'id anche nella cache UI e sul widget (`_update_outgoing_message_id`) così i receipt successivi matchano per id.
+1. **Submit** (UI thread): `ts = int(time.time()*1000)`; la bolla nasce subito `pending` nella cache di vista; `_promote_contact_after_send(contact, ts)` avanza `last_message_ts` e riordina la lista immediatamente, senza aspettare il server.
+2. **Worker**: `messages.send` con `{protocol, contact_id, text, client_msg_id, quote_*, reply_to_message_id, optimistic: {timestamp, resend, …}}` (`resend=false` al primo invio). Il **core** semina e persiste la riga pending, invoca il backend e la porta a `sent`/`failed`: nessuna scrittura di backend/DB sul thread UI.
+3. **Risposta**: se `status_applied` è true la vista porta la bolla a `sent` (expected `pending`); `message_id` restituito viene specchiato nella cache e sul widget (`_update_outgoing_message_id`) così i receipt matchano per id. L'echo arriva anche come evento `message` (`added=false`, `changed=true` per l'upgrade dell'id).
+4. **Timeout/connessione persa** (`OperationTimeout`, `ServerUnavailable`): l'esito è **ignoto**. La bolla resta `pending` (mai `failed`: un retry potrebbe inviare due volte), la status bar avvisa e la risincronizzazione decide: la riga del server comanda; una bolla di cui il server non ha traccia viene marcata `failed`.
+5. **Errore certo**: la bolla va a `failed` (expected `pending`), il messaggio d'errore va in status bar e il dettaglio nel log.
 
 ## 3. Chiavi delle transizioni e fallback
 
-`_transition_outgoing_status` (e le controparti DB) provano in ordine:
+Lo store identifica la riga per `(protocol, contact_number, timestamp)` e, dove serve, per testo o `msg_id`:
 
-1. **`(protocol, contact_number, timestamp, [text])`** — via `_update_message_status`; il match è sempre scoped per protocollo+contatto perché millisecondi diversi possono coincidere tra chat diverse;
-2. **by-text**: `_update_message_status_by_text` — riga outgoing più recente con lo stesso testo (stesso expected-status e rank guard); serve quando l'echo ha già sostituito il timestamp ottimistico con quello server;
-3. **by-id**: `_update_message_status_by_id(msg_id, ...)` — usata soprattutto dai receipt Telegram/WhatsApp che identificano i messaggi per id server.
+1. **timestamp** — identità della riga ottimistica;
+2. **by-text** — riga outgoing più recente con lo stesso testo (fallback quando l'echo ha già sostituito il timestamp ottimistico con quello server);
+3. **by-id** — `msg_id` per i receipt che identificano i messaggi per id server.
 
-Se anche il fallback fallisce, viene loggato un warning diagnostico con i conteggi righe-per-testo/righe-per-timestamp (visibile in `send.py`).
+Il rank guard rifiuta i downgrade. Lato vista `_apply_outgoing_status`/`_update_message_widgets_status` usano la stessa cascata (by-id → (ts,text) → fuzzy legato al testo entro ±2000 ms) per aggiornare le bolle senza toccare righe di altre chat.
 
-### Limiti noti della macchina a stati
+### Limiti noti
 
-1. **`sent` → `failed` è impossibile col rank guard**: `sent=1 > failed=0` e la guardia `<=` rifiuta il downgrade; inoltre il ramo di fallimento di `_transition_outgoing_status` usa `expected_statuses=("pending",)`. Se l'echo arriva prima dell'errore, la bolla resta "sent" per sempre. Permettere la transizione richiederebbe una decisione esplicita (es. `expected_statuses=("pending","sent")` nel path fallimento).
-2. **Fallback by-text ambiguo su testi ripetuti**: `_update_message_status_by_text` aggiorna "la riga outgoing più recente con quel testo": con testi ripetuti ("ok") può avanzare la bolla sbagliata lasciandone un'altra `pending`. Servirebbe anche un vincolo temporale (finestra attorno al timestamp atteso).
-3. **Aggiornamento a 4 store non atomico**: `_transition_outgoing_status` aggiorna in sequenza DB → backend cache → UI cache → widget (via `call_from_thread`): nessuna atomicità; un crash a metà lascia stati divergenti fino al reload della chat.
-4. **Fallback id-less dei receipt WhatsApp**: quando manca lo scope del contatto, la ricerca si estende ad altre chat — con una sola chat pending l'upgrade può colpire la chat sbagliata; con più chat il receipt va perso (safe ma silenzioso).
+1. **`sent` → `failed`**: il rank guard non lo consente. Se il server risponde OK e poi l'invio fallisce internamente, la riga può restare `sent`; una decisione esplicita (per esempio consentire `sent→failed` solo dal server) sarebbe necessaria per cambiarlo.
+2. **Fallback by-text ambiguo su testi ripetuti**: con più "ok" inviati può essere aggiornata la riga sbagliata.
+3. **Aggiornamento non atomico lato vista**: cache UI → widget sono passi sequenziali; un crash a metà lascia stati divergenti fino al reload.
+4. **Esito ignoto**: dopo un timeout la bolla resta `pending` finché la risincronizzazione non la riconcilia; non c'è retry automatico.
 
 ## 4. Receipt in arrivo
 
-- **Signal**: envelope `receiptMessage` con `isDelivery`/`isRead` e lista `timestamps`; matching fuzzy `±1000 ms` (signal-cli può perturbare leggermente il timestamp passato a `send`), rank guard, ritorna la lista dei messaggi aggiornati (`backend/rpc.py::_process_receipt`).
-- **WhatsApp**: eventi `message.ack` tradotti in receipt con l'enum ufficiale WAHA (`WAHA_ACK_DEVICE = 2 → delivered`, `WAHA_ACK_READ = 3 → read`); gli id sono confrontati tramite `canonical_msg_id()` che riduce le forme `true_{jid}_{hex}` / `{hex}` a un unico token (`backends/whatsapp_events.py`). Il matching per id è coperto dai test `test_whatsapp_receipt_id_match.py`.
-- **Telegram**: read/delivery receipt per message-id server (`process_receipt` + `_update_message_status_by_id`).
+Il server applica il receipt allo store e pubblica `receipt` con `updated: [CacheMessage]` (le righe il cui status è avanzato).
 
-La UI applica gli aggiornamenti (`events.py::_handle_receipt_event`):
-1. mirror dello status nella cache UI (match per id, poi per ts, poi fuzzy per testo entro ±2000 ms con self-heal dell'id);
-2. aggiornamento visuale dei widget aperti con indici O(M) (`_update_message_widgets_status`: by_id → (ts,text) → fuzzy bound-to-text).
+- **Signal**: envelope `receiptMessage` con `isDelivery`/`isRead` e lista `timestamps`; matching fuzzy `±1000 ms` sui timestamp propri, rank guard (`internal/proto/signal`).
+- **WhatsApp**: eventi whatsmeow (ack/read) matchati per id del messaggio, con fallback per timestamp/testo; rank guard (`internal/proto/whatsapp`).
+- **Telegram**: update di lettura per `msg_id` del messaggio (`internal/proto/telegram`).
 
-## 5. Fallimenti
+La UI (`tui/events.py::_view_receipt`) specchia gli status nella cache di vista (match per id, poi timestamp, poi fuzzy per testo entro ±2000 ms con self-heal dell'id) e, se la chat è aperta, aggiorna i widget con `_update_message_widgets_status`.
+
+## 5. Fallimenti e retry
 
 - Backend assente per il protocollo → `failed` immediato + status bar persistente.
-- Eccezione durante `send_message_sync` → `failed` + status bar con l'errore.
+- Eccezione del server → `failed` + status bar con l'errore.
 - Reply Telegram senza `reply_to_message_id` valido e reply WhatsApp senza id → rifiuto PRIMA di creare la bolla (nessun pending orfano).
-- Click su bolla `failed` → `_retry_failed_message(timestamp, text)` (re-invio senza nuova riga/bolla), con guardie:
+- Click su bolla `failed` → `_retry_failed_message(timestamp, text)`: la bolla torna subito `pending` (expected `failed`) e il worker richiama `messages.send` con `optimistic.resend=true`; il core ri-arma la propria riga. Guardie:
   - reply Telegram il cui id originale non è più disponibile → rifiuto esplicito;
   - reply il cui metadata di quote è andato perso dopo un reload (`quote_text` senza `quote_timestamp`) → rifiuto;
-  - la transizione `failed → pending` deve riuscire, altrimenti il messaggio resta failed;
+  - se il server rifiuta il re-send, la bolla torna `failed` e non sembra "in corso";
   - una reply media ricostruisce i metadati dell'allegato (`content_type`/`attachment_id` persistiti) così il Signal quote viene ricomposto identico al primo invio (vedi [CONTRACTS.md §11](../api-contracts/CONTRACTS.md#11-quote-media-reply-con-immagine)).
 
 ## Test che documentano questo design
 
-- `tests/test_failed_send_status.py` — transizione a failed, retry e guardie.
-- `tests/test_outgoing_status_fallback.py` — fallback by-text della transizione pending→sent.
-- `tests/test_send_persist_offthread.py` — persistenza ottimistica nel worker prima della rete.
-- `tests/test_telegram_send_reorder.py` — riordino immediato della lista dopo il submit ottimistico.
-- `tests/test_send_timing.py`, `tests/test_signal_real_timestamp.py` — timing/echo del vero timestamp server.
-- `tests/test_whatsapp_receipt_id_match.py`, `tests/test_telegram_read_receipt_fix.py`, `tests/test_whatsapp_read_receipt_fix.py` — receipt per id/canonicalizzazione.
-- `tests/test_ui_components.py`, `tests/test_ui_protocol.py` — stili visuali per status.
+- `tests/test_tui_send_ops.py` — invio via `messages.send`, esiti, timeout, rollback.
+- `tests/test_refresh_chat.py` — merge dello status e nessun downgrade nella vista.
+- `tests/test_backend_connect.py` — merge dello snapshot con rank guard.
+- `tests/test_ui_components.py` — stili visuali per status.
+- `megachatd/internal/core/ops_send_test.go`, `internal/store/messages_test.go` e i test di protocollo — transizioni, dedup e receipt lato server.

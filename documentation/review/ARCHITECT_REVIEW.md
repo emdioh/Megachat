@@ -1,5 +1,7 @@
 # Architect Review — signal-tui-client
 
+> **Nota storica:** snapshot datato 2026-08-23, precedente a `megachatd`; descrive il server Python (`server/`, `protocols/`, `backend/`, WAHA) eliminato il 2026-11-08 (mc-zao.4.4). Il documento non è aggiornato allo stato attuale.
+
 > Autore: agente Architect
 > Data: 2026-08-23
 > Scope: codebase su `master` (commit `89cdf24`, documentazione inclusa) — `backend/`, `backends/`, `tui/`, `models.py`, `signal_tui.py`, `device_link_screen.py`, `docker-compose.yml`, `.env.example`

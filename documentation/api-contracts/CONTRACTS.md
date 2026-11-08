@@ -1,24 +1,26 @@
 # Contratti di dati
 
-Contratti concreti ricavati dal codice e fissati dai test. Ogni sezione cita i test che la documentano. Tipi Python; timestamp in millisecondi Unix salvo indicazione diversa.
+Contratti concreti ricavati dal codice attuale e fissati dai test. Tipi Go/Python; timestamp in millisecondi Unix salvo indicazione diversa. Il contratto del filo completo (operazioni, route, codici) è in [`megachatd/CONTRACTS.md`](../../megachatd/CONTRACTS.md).
 
 Indice:
 
 1. [Modelli condivisi (`models.py`)](#1-modelli-condivisi-modelspy)
-2. [Dizionario messaggio (cache entry)](#2-dizionario-messaggio-cache-entry)
+2. [Messaggio sul filo (`CacheMessage`)](#2-messaggio-sul-filo-cachemessage)
 3. [Persistenza SQLite](#3-persistenza-sqlite)
-4. [Eventi `ChatEvent`](#4-eventi-chatevent)
+4. [Eventi del bus](#4-eventi-del-bus)
 5. [Stato dei messaggi inviati](#5-stato-dei-messaggi-inviati)
 6. [Contratto di edit dei messaggi](#6-contratto-di-edit-dei-messaggi)
 7. [Receipt per protocollo](#7-receipt-per-protocollo)
 8. [Contatti, raggruppamento e unread](#8-contatti-raggruppamento-e-unread)
-9. [Payload webhook WAHA](#9-payload-webhook-waha)
+9. [Ingresso lato server](#9-ingresso-lato-server)
 10. [Errori e convenzioni di ritorno](#10-errori-e-convenzioni-di-ritorno)
 11. [Quote media (reply con immagine)](#11-quote-media-reply-con-immagine)
 
 ---
 
 ## 1. Modelli condivisi (`models.py`)
+
+Sono i modelli del client Python (nessuna dipendenza Textual). Il server usa le proprie struct (`internal/api`: `ContactWire`, `CacheMessage`); la conversione avviene in `client/events_api.py` e nei mapper dello store.
 
 ### 1.1 `ChatContact`
 
@@ -27,230 +29,234 @@ Indice:
 | `id` | `str` | identificativo unico nello scope del protocollo (numero Signal, JID WhatsApp, id Telegram) |
 | `display_name` | `str` | nome mostrato (fallback: `id`) |
 | `protocol` | `str` | `"signal"` \| `"whatsapp"` \| `"telegram"` |
-| `extras` | `dict[str, Any]` | metadati protocollo: `phone` (E.164 senza `+`, chiave di grouping cross-backend), `last_message_ts` (ms), `address_book` (marker rubrica), `ghost`, ecc. |
+| `extras` | `dict[str, Any]` | metadati: `phone` (E.164 senza `+`, chiave di grouping cross-backend), `last_message_ts` (ms), `address_book` (marker rubrica), `ghost`, `lid`, ecc. |
 
 Derivati: `cache_key = f"{protocol}:{id}"`; property `phone`, `last_message_ts`.
-
-Test: `tests/test_contact_grouping.py`, `tests/test_address_book.py`.
+Sul filo (`ContactWire`): `{id, display_name, protocol, cache_key, last_message_ts, extras}`; `ContactOut` (web) sostituisce `cache_key` con `unread`.
 
 ### 1.2 `ChatMessage`
 
 | Campo | Tipo | Default | Semantica |
 |---|---|---|---|
-| `id` | `str` | — | id messaggio scope-protocollo (ts per Signal, id server Telegram, Baileys id WhatsApp) |
+| `id` | `str` | — | id messaggio scope-protocollo (timestamp per Signal, id server Telegram, id WhatsApp) |
 | `contact_id` / `protocol` | `str` | — | appartenenza |
 | `text` | `str` | — | corpo (vuoto per media puri) |
 | `is_mine` | `bool` | — | direzione |
-| `sender` | `str` | — | autore visualizzato |
+| `sender` | `str` | — | autore visualizzato (`"You"` per gli outgoing) |
 | `timestamp` | `int` | — | ms |
-| `quote_text` | `str \| None` | `None` | testo citato |
-| `msg_type` | `str` | `"text"` | `text` \| `image` \| `sticker` \| `attachment` |
+| `quote_text` | `str \| None` | `None` | testo citato (display) |
+| `msg_type` | `str` | `"text"` | `text` \| `image` \| `sticker` \| `attachment` \| `system` |
 | `attachment_info` / `attachment_id` | `str \| None` | `None` | dettagli/id attachment |
-| `content_type` | `str \| None` | `None` | mime dell'attachment (es. `"image/png"`); persistito per ricostruire la thumbnail di una quote media Signal (vedi §11); `None` per testo/sticker e righe legacy pre-migrazione |
+| `content_type` | `str \| None` | `None` | mime dell'attachment |
+| `media_kind` | `str \| None` | `None` | classificazione media (`image`, `video`, `audio`, …) |
 | `status` | `str` | `"sent"` | vedi §5 |
-| `reply_to_message_id` | `str \| None` | `None` | id server del messaggio a cui si risponde |
-
-Nota d'uso: nel codice reale i messaggi viaggiano prevalentemente come **dict** (vedi §2); il dataclass è il contratto nominale.
+| `reply_to_message_id` | `str \| None` | `None` | id server del messaggio citato |
+| `quote_attachment_id` / `quote_content_type` | `str \| None` | `None` | metadati della thumbnail citata, persistiti dal server |
+| `quote_attachment_path` | `str \| None` | `None` | path risolto lato UI, **non** persistito |
 
 ### 1.3 Costanti di protocollo
 
 `PROTOCOL_SIGNAL="signal"`, `PROTOCOL_WHATSAPP="whatsapp"`, `PROTOCOL_TELEGRAM="telegram"`; mappe `PROTOCOL_EMOJI` (`📱 💬 📨`) e `PROTOCOL_NAMES`; `protocol_emoji()` fallback `"💬"`.
 
-## 2. Dizionario messaggio (cache entry)
+## 2. Messaggio sul filo (`CacheMessage`)
 
-Forma usata da backend cache, cache UI e mirror eventi (`tui/events.py::_handle_message_event`, fixture `sample_messages` in `tests/conftest.py`). Chiavi osservate:
+Forma usata dagli eventi, da `messages.*` e dalla cache di vista (`internal/api/models.go::CacheMessage`, mappata in dict dalla TUI). Le chiavi note:
 
 ```python
 {
-    "id": str | None,  # id server/stabile (None nelle righe ottimistiche)
+    "id": str | None,               # id server/stabile (None nelle righe ottimistiche)
     "text": str,
     "is_mine": bool,
-    "sender": str,  # "You" per gli outgoing
-    "timestamp": int,  # ms
+    "sender": str,                  # "You" per gli outgoing
+    "timestamp": int,               # ms
     "quote_text": str | None,
-    "msg_type": "text" | "image" | "sticker" | "attachment",
+    "msg_type": "text" | "image" | "sticker" | "attachment" | "system",
     "attachment_info": str | None,
-    "attachment_id": str | None,  # per Telegram anche "tgref:<chat_id>:<msg_id>"
-    "content_type": str | None,  # mime attachment (quote media, vedi §11)
-    "read": bool,  # incoming letti (outgoing sempre True)
+    "attachment_id": str | None,    # per Telegram anche "tgref:<chat_id>:<msg_id>"
+    "content_type": str | None,
+    "media_kind": str | None,
+    "read": bool,                   # incoming letti (outgoing sempre True)
     "status": "pending" | "failed" | "sent" | "delivered" | "read",
     # opzionali:
     "quote_timestamp": int | None,
-    "quote_author": str | None,  # contact id, non display name
+    "quote_author": str | None,     # contact id, non display name
     "reply_to_message_id": str | None,
-    "edited": bool,  # flag "(modificato)"
-    "protocol": str,  # presente nelle righe caricate dal DB
+    "edited": bool,                 # flag "(modificato)"
+    "batch_id": str | None,         # messaggi multi-allegato
+    "batch_index": int | None,
+    "quote_attachment_id": str | None,
+    "quote_attachment_path": str | None,
+    "quote_content_type": str | None,
+    "is_group": bool,               # solo alcuni eventi WhatsApp
+    "protocol": str,                # presente nelle righe caricate dal DB
+    "contact": ContactWire | None,  # presente negli eventi
 }
 ```
 
-Vincoli semantici verificati nei test:
+I membri sconosciuti vengono conservati (`Extra`) e rimandati indietro invariati; i membri non impostati dal produttore sono assenti (`omitempty`/`exclude_unset`).
 
-- l'ingest è idempotente (`ingest_message` ritorna `True` solo se nuovo);
+Vincoli verificati:
+
+- l'ingest è idempotente: un messaggio identico non produce una seconda riga (`added=false`);
 - le righe ottimistiche nascono `status="pending"`, `id=None`;
-- `sender_color`: nei gruppi WhatsApp (`@g.us`) il prefisso `<nome:>` usa `#DAA520` (`test_image_caption.py`, `test_ui_components.py`);
-- placeholder quote media: `quote_text` di un messaggio che cita media senza caption è uno dei 5 valori canonici di `MEDIA_QUOTE_PLACEHOLDERS` (`models.py`) — valori **display-only** che non devono mai viaggiare sul filo Signal (vedi §11); test `tests/test_models.py`.
+- placeholder quote media: `quote_text` di un messaggio che cita media senza caption è uno dei 5 valori canonici di `MEDIA_QUOTE_PLACEHOLDERS` (`models.py`), display-only, mai inviati sul filo (vedi §11).
 
 ## 3. Persistenza SQLite
 
-### 3.1 Tabella `messages`
+### 3.1 Schema
+
+`internal/store/schema.go`, `PRAGMA user_version = 5`.
 
 ```
-id INTEGER PK AUTOINCREMENT
-protocol        TEXT NOT NULL DEFAULT 'signal'
-contact_number  TEXT NOT NULL          -- id grezzo del contatto (senza prefisso protocollo)
-text TEXT · is_mine INTEGER · sender TEXT · timestamp INTEGER NOT NULL
-quote_text TEXT · msg_type TEXT DEFAULT 'text' · attachment_info TEXT · attachment_id TEXT
-content_type TEXT               -- mime attachment (backfill: migrate_content_type.py)
-read INTEGER DEFAULT 0 · status TEXT DEFAULT 'read'
-msg_id TEXT · quote_timestamp INTEGER · quote_author TEXT · reply_to_message_id TEXT
-edited INTEGER NOT NULL DEFAULT 0
--- indice: idx_messages_contact (protocol, contact_number, timestamp)
+messages
+  id INTEGER PK AUTOINCREMENT
+  protocol TEXT NOT NULL DEFAULT 'signal'
+  contact_number TEXT NOT NULL       -- id del contatto senza prefisso protocollo
+  text TEXT · is_mine INTEGER NOT NULL DEFAULT 0 · sender TEXT · timestamp INTEGER NOT NULL
+  quote_text TEXT · msg_type TEXT DEFAULT 'text'
+  attachment_info TEXT · attachment_id TEXT · content_type TEXT · media_kind TEXT
+  quote_attachment_id TEXT · quote_attachment_path TEXT · quote_content_type TEXT
+  read INTEGER DEFAULT 0 · status TEXT DEFAULT 'read'
+  msg_id TEXT · quote_timestamp INTEGER · quote_author TEXT · reply_to_message_id TEXT
+  edited INTEGER NOT NULL DEFAULT 0
+  batch_id TEXT · batch_index INTEGER
+  -- indice (protocol, contact_number, timestamp)
+
+reactions
+  id INTEGER PK AUTOINCREMENT · protocol · contact_number
+  target_msg_id TEXT · target_timestamp INTEGER
+  emoji TEXT NOT NULL · author_key TEXT NOT NULL DEFAULT ''
+  author TEXT NOT NULL DEFAULT '' · is_mine INTEGER · count INTEGER DEFAULT 1
+  timestamp INTEGER NOT NULL
+  -- unique (protocol, contact_number, IFNULL(target_msg_id,''), IFNULL(target_timestamp,0), author_key)
+  -- index (protocol, contact_number)
+
+transcriptions
+  protocol TEXT · attachment_id TEXT · status TEXT DEFAULT 'pending'
+  text TEXT · error TEXT · model TEXT · updated_at REAL NOT NULL
+  -- PRIMARY KEY (protocol, attachment_id)
 ```
 
-Migrazioni additive idempotenti gate-ate da `PRAGMA user_version=3`; la colonna `edited` è aggiunta **sempre** se manca (anche oltre v3). Test: `tests/test_db_schema_versioning.py`, `tests/test_migrate_sqlite.py`, `tests/test_migrate_protocol.py`, `tests/test_migrate_status.py`.
+Migrazioni additive e idempotenti: le colonne attese sono aggiunte se mancano; la parte legacy (`protocol`/`msg_id`, ricostruzione indice, backfill `media_kind`) è gate-ata da `user_version >= 4`.
 
 ### 3.2 Regole transazionali
 
 - default status all'INSERT: `"sent"` se `is_mine` else `"read"`; `read = is_mine`.
 - rank guard su ogni update di status: `pending=0 failed=0 < sent=1 < delivered=2 < read=3` (mai downgrade).
-- **Invariante attesa sul `msg_id`**: un `msg_id` dovrebbe appartenere a una sola riga per `(protocol, contact_number)`. L'enforcement MANCA oggi: `_update_message_id` può assegnare lo stesso id a piu' righe id-less (UPDATE multi-riga senza finestra né LIMIT) e `_dedup_messages_by_id` — eseguita dentro `_load_cache` a ogni boot — riduce la partizione a una riga sola. Con messaggi ripetuti (es. retry con stesso testo) questo può **cancellare righe legittime** al riavvio: vedere l'avviso su `_update_message_id` in [API_OVERVIEW.md](API_OVERVIEW.md) §4 prima di considerare la dedup "idempotente e sicura".
-- pruning: 200 righe più recenti per `(protocol, contact_number)` — applicata solo dal resync WhatsApp (unico call site di `_prune_cache`).
+- echo: una riga senza `msg_id` può assorbire l'id reale di un echo entro `EchoMatchWindowMs = 600000`; `UpdateMessageID` aggiorna solo la riga id-less corrispondente (protocollo, contatto, testo, direzione, timestamp).
+- dedup esatta: `(protocol, contact, timestamp, text, is_mine)`, tiene la rowid più bassa.
+- dedup per id: `(protocol, contact, msg_id, text, attachment_id)`; sopravvive la riga col rank di stato più alto (poi rowid più bassa), assorbendo i campi quote/media mancanti; partizioni con timestamp divergenti oltre la finestra echo vengono lasciate intatte e loggate.
+- pruning: `messages.retention_per_contact` righe più recenti per `(protocol, contact_number)`, con minimo `MinPruneLimit = 100`.
 
-Test: `tests/test_backend_cache.py`, `tests/test_db_edit.py`, `tests/test_merge_cache_edit.py`.
+Test: suite Go `internal/store/*_test.go` (`schema_test.go`, `dedup_test.go`, `messages_test.go`, `prune_test.go`).
 
-## 4. Eventi `ChatEvent`
+## 4. Eventi del bus
 
-```python
-ChatEvent(type: str, protocol: str, contact_id: str, payload: dict)
-```
+Envelope: `{seq: int, type: str, payload: dict, ts: float}` (`internal/bus`). `seq` monotono; il client riprende da `since` e riceve `gap` se il replay non è possibile. I payload (`internal/api/events.go`) sono:
 
-| type | Payload (campi e tipi) | Note |
+| type | Payload | Note |
 |---|---|---|
-| `message` | come §2 + `contact: ChatContact \| None`; WhatsApp ack sintetici aggiungono `is_group: bool` | ingest via `backend.ingest_message(contact_id, payload, ts)` |
-| `message_edit` | `{edit_message_id: str, text: str, timestamp: int (ts ORIGINALE), edit_timestamp: int\|None, is_mine: bool, sender: str, contact: ChatContact\|None, msg_type: "text"}` | consumato da `_handle_edit_event`; chiama `backend.apply_edit(...)` |
-| `typing` | `{action: "STARTED"\|"STOPPED"}` | effimero: mai in cache/chat log |
-| `receipt` | Signal `{receipt: {isDelivery: bool, isRead: bool, timestamps: [int]}}`; WA/TG `{message_ids: [str], is_read: bool}` | vedi §7 |
-| `contact_update` | `{phone: str, display_name: str\|None, contact: ChatContact}` | dispatchato da `tui/events.py::_handle_contact_update_event`; emesso da WhatsApp su risoluzione dinamica di un `@lid` |
+| `message` | `{protocol, contact_id, contact: ContactWire, was_placeholder: bool, message: CacheMessage, timestamp, added: bool, changed: bool}` | emesso per ogni messaggio ingerito, anche se invariato |
+| `message_edit` | `{protocol, contact_id, contact: ContactWire, info: EditInfo, text}` dove `EditInfo = {message_id, timestamp (ORIGINALE), old_text, text, is_mine}` | update in place |
+| `reaction_update` | `{protocol, contact_id, info: {message_id, timestamp, reactions: [Reaction]}}` | `reactions` è `[]`, mai null |
+| `receipt` | `{protocol, contact_id, updated: [CacheMessage]}` | righe il cui status è avanzato; `updated` è `[]`, mai null |
+| `typing` | `{protocol, contact_id, action: "STARTED"\|"STOPPED"}` | effimero |
+| `contact_update` | `{protocol, contact_id, contact, display_name, phone, merged_into?}` | `display_name`/`phone` sempre presenti (null se ignoti) |
+| `sent_mirror` | `{protocol, contact_id, contact, id, timestamp, batch_id}` | invio multiplo; le righe sono già nello store |
+| `lid_warmup_done` | `{protocol, contact_id: ""}` | WhatsApp |
+| `backend_connecting` / `backend_ready` / `backend_done` / `backend_status` | stato dei backend | `backend_status` è persistente finché non viene sostituito |
+| `web_push` | `{event: WebFrame}` | frame legacy della SPA |
+| `gap` | `{reason: "buffer"\|"overflow", since?}` | il client deve risincronizzare |
 
-Il dispatch UI (`tui/events.py::_handle_event`) gestisce nell'ordine: typing → receipt → message_edit → message → sent-mirror → contact_update; tipi ignoti → ignorati.
-
-Test trasversali: `tests/test_ui_protocol.py`, `tests/test_backends.py`, fixture envelope in `tests/conftest.py` (`sample_envelope_text/image/receipt`).
+Il client aggiunge `client_connection` (`lost`/`restored`), sintetico, con il `seq` dell'ultimo evento visto.
 
 ## 5. Stato dei messaggi inviati
 
-Valori e ordine (rank): `pending`(0) · `failed`(0) · `sent`(1) · `delivered`(2) · `read`(3). Transizioni ammesse solo in avanti (rank guard).
+Valori e ordine (rank): `pending`(0) · `failed`(0) · `sent`(1) · `delivered`(2) · `read`(3). Transizioni solo in avanti (rank guard).
 
 - bolla ottimistica: `pending` alla submit;
-- worker OK → `sent` (+ echo id ingest);
-- errore/no-backend → `failed` (bolla cliccabile per retry);
+- il server crea e persiste la riga, invia, risponde; la TUI porta la bolla a `sent` e aggancia l'id server;
+- errore o backend assente → `failed` (bolla cliccabile per retry);
 - receipt delivery/read → `delivered`/`read`.
 
 Rendering (`MessageWidget`): pending dim, failed bold+classe `msg-failed`, sent italic, delivered bold, read normale.
 
-Dettaglio completo del flusso: [../design/DESIGN_OUTGOING_MESSAGE_STATUS.md](../design/DESIGN_OUTGOING_MESSAGE_STATUS.md).
-Test: `tests/test_failed_send_status.py`, `tests/test_outgoing_status_fallback.py`, `tests/test_send_persist_offthread.py`.
+Dettaglio: [../design/DESIGN_OUTGOING_MESSAGE_STATUS.md](../design/DESIGN_OUTGOING_MESSAGE_STATUS.md).
 
 ## 6. Contratto di edit dei messaggi
 
-Fissato da `tests/test_edit_contract.py` e implementato in `backends/base.py` + `apply_edit` dei tre backend:
+Lato server l'operazione è `messages.edit`; lato TUI il gate e il rollback sono in `tui/edit.py`.
 
-- `edit_message_sync(contact_id, message_id, new_text) -> bool`
-  - default base: **`False`** (nessuna eccezione);
-  - semantica di `message_id` per protocollo:
-    - **signal**: timestamp (ms) del messaggio originale, come stringa;
-    - **telegram**: id server (int come stringa);
-    - **whatsapp**: Baileys message id (es. `true_39...@c.us_ABC`);
-  - `BackendManager.edit_message_sync(protocol, ...)`: `False` per protocollo sconosciuto o backend senza supporto, altrimenti propaga il risultato del backend.
-- `async edit_message(...)`: wrapper che delega a `edit_message_sync` via `asyncio.to_thread` (default `False`).
-- `apply_edit(contact_id, message_id, new_text, *, is_mine=None, edit_timestamp=None) -> dict | None`
-  - default base: **`None`**; firma keyword-only per `is_mine`/`edit_timestamp`;
-  - punto UNICO di mutazione (cache backend + SQLite via `_update_message_text`);
-  - ritorna `None` quando: target ignoto, `msg_type != "text"` (mai riscrivere label media), testo identico (idempotente, es. eco del proprio edit);
-  - ritorna in caso di modifica:
+- `messages.edit` request: `{protocol, contact_id, message_id, text}` (la semantica di `message_id` dipende dal protocollo: Signal = timestamp originale come stringa, Telegram = id server, WhatsApp = id messaggio).
+- Il server risponde con il messaggio aggiornato e pubblica `message_edit`; un target inesistente/non testuale/non proprio è un errore dell'operazione.
+- `apply_edit`/`EditInfo` (`internal/api/events.go`) ritorna:
+  ```python
+  {
+      "message_id": str,
+      "timestamp": int,  # ts della entry, MAI modificato
+      "old_text": str,
+      "text": str,
+      "is_mine": bool,
+  }
+  ```
+- `timestamp` non cambia mai: cambia solo il testo (e `edited`).
+- Vincoli UI: solo messaggi propri, non `pending`/`failed`, solo testo; rollback completo (testo, flag `edited`, identità di render, widget) se il server rifiuta.
 
-    ```python
-    {
-        "message_id": str,
-        "timestamp": int,  # ts della entry, MAI modificato
-        "old_text": str,
-        "text": str,
-        "is_mine": bool,
-    }
-    ```
+### 6.1 Edit riferito a un messaggio mai visto
 
-- Vincoli UI: solo messaggi propri, non `pending`/`failed`, solo testo; rollback completo (testo, flag edited, identity sets, widget) se il server rifiuta.
+Comportamento attuale:
 
-### 6.1 Uso duale di `apply_edit` ed edit su messaggio mai visto
-
-- `apply_edit` è dichiarato come punto unico di mutazione per gli edit **ricevuti** (inbound), ma la UI lo usa anche per l'edit **locale ottimistico** (`tui/edit.py::_apply_local_edit`), eseguendo la scrittura SQLite sul thread UI. Il doppio uso rende il contratto ambiguo per chi implementa un nuovo backend: separare nominalmente i due casi (es. `apply_local_edit`) è la direzione consigliata.
-- Edit riferito a un messaggio MAI visto (target non in cache): comportamento diverso per protocollo:
-  - **Signal / Telegram**: l'evento `message_edit` viene emesso incondizionatamente; `apply_edit` ritorna `None` e l'handler UI scarta silenziosamente l'evento (`if not info: return False`) → nessuna bolla finché un fetch storico non porta il messaggio (già editato);
-  - **WhatsApp**: `handle_webhook` rileva l'edit solo se il target è in cache (`_detect_edit`); se assente, il pacchetto degrada a evento `message` sintetico → la bolla viene creata col testo GIÀ editato (visibile, ma come messaggio nuovo).
-
-Test correlati: `tests/test_edit_flow.py`, `tests/test_edit_signal.py`, `tests/test_edit_whatsapp.py`, `tests/test_telegram_edit.py`, `tests/test_db_edit.py`, `tests/test_merge_cache_edit.py`.
+- **Signal / Telegram**: l'evento `message_edit` arriva; se il target non è nella cache di vista la TUI scarta l'evento e non crea bolle finché un fetch storico non porta il messaggio già editato; il server ha comunque applicato la modifica alla riga se presente.
+- **WhatsApp**: il server emette l'edit quando riconosce il target; l'evento porta comunque il testo aggiornato e la vista lo applica se la riga esiste.
 
 ## 7. Receipt per protocollo
 
-| Protocollo | Payload evento | Matching verso i messaggi | Test |
+| Protocollo | Origine | Matching verso i messaggi | Test |
 |---|---|---|---|
-| Signal | `{receipt: {"isDelivery": bool, "isRead": bool, "timestamps": [int ms]}}` | fuzzy `±1000 ms` sui timestamp propri (`is_mine=True`), rank guard | `tests/conftest.py::sample_envelope_receipt`, `tests/test_ui_protocol.py` |
-| WhatsApp | `{message_ids: [...], is_read: bool}`; due path di ingresso: evento `receipt` raw (`receiptType` `"read"`/`"read-receipt"`) e `message.ack` con enum WAHA `-1..4` (`DEVICE=2 → delivered`, `READ=3 → read`, `PLAYED=4 → read`); gli ack `< 2` non sono receipt | confronto tramite `canonical_msg_id()` (applicata già nel payload): riduce `true_{jid}_{hex}` / hex puro allo stesso token upper-case; forme ambigue restano raw (log mismatch); solo `fromMe: true` | `tests/test_whatsapp_receipt_id_match.py`, `tests/test_whatsapp_read_receipt_fix.py` |
-| Telegram | `{message_ids: [...], is_read: bool}` (raw update) | update DB per `_update_message_status_by_id(msg_id)` | `tests/test_telegram_read_receipt_fix.py` |
+| Signal | envelope `receiptMessage` (`isDelivery`/`isRead`, lista `timestamps`) | fuzzy `±1000 ms` sui timestamp propri, rank guard; il server pubblica le righe aggiornate | `internal/proto/signal/*_test.go`, `tests/contract/test_socket_ops.py` |
+| WhatsApp | eventi whatsmeow di ack/read | confronto per id del messaggio (id stabile whatsmeow) e fallback per timestamp/testo; rank guard | `internal/proto/whatsapp/*_test.go` |
+| Telegram | update di lettura / `readHistoryInbox` | update per `msg_id` del messaggio | `internal/proto/telegram/*_test.go` |
 
-Effetti comuni: upgrade status in cache backend/UI/DB + refresh widget se la chat è aperta.
+Effetti comuni: upgrade dello status nello store e pubblicazione dell'evento `receipt` con le righe aggiornate; la UI aggiorna i widget se la chat è aperta.
 
 ## 8. Contatti, raggruppamento e unread
 
-- **Grouping**: `group_by_person(contacts)` (`contact_picker.py`) raggruppa i contatti per persona usando `extras["phone"]` (E.164 senza `+`); `PickerEntry.key` identifica il gruppo (`phone:<numero>` oppure `raw:<protocol>:<id>` — gruppi/canali, `@lid` irrisolti e id Telegram non sono mai chiavi di phone-grouping); ordine gruppi = recency del membro default (`entry_default_contact` + `contact_sort_key`, con override `picker_preferred_backend`); membri in ordine fisso Signal→WhatsApp→Telegram (`_protocol_priority`).
-  Test: `tests/test_contact_grouping.py`, `tests/test_contact_grouping_integration.py`, `tests/test_contact_picker.py`.
-- **Rubrica completa e picker (Ctrl+S)**: apertura in due fasi — la picker mostra subito le chat attive (`loading=True`) mentre un worker thread chiama `manager.list_address_book_sync(protocols=filtro)` (fan-out parallelo, errori parziali segnalati in status bar) e aggiorna la lista via `screen.set_contacts(...)`; il token `_address_book_token` invalida i worker in volo a chiusura picker. La ricerca filtra per nome/id/phone su qualunque membro dell'entry; selezione multi-backend senza filtro → `BackendChoiceScreen` (default = membro più recente). **Open-or-create**: selezionare un contatto sconosciuto lo crea come "ghost" (`extras["ghost"]`), lo registra nel backend (`register_contact`) e — per WhatsApp — verifica in background l'esistenza del numero (`check_number_exists`; `False` esplicito → warning non bloccante).
-  Test: `tests/test_contact_picker.py`, `tests/test_address_book.py`, `tests/test_open_or_create.py`.
-- **Unread**: conteggio sui dati della cache UI: `not is_mine AND not read`, dedup per `(timestamp, text)`; chiave `cache_key`; badge `*N` sull'header aggregato (vista All) o sul membro filtrato; il contatto selezionato non mostra badge ed è "pinned" sotto filtro unread; totali per backend nella status bar (`📱 N 💬 N 📨 N`, `-` se 0).
-  Test: `tests/test_unread_filter.py`, `tests/test_status_backend_unread.py`, `tests/test_typing_indicator.py` (label riga).
-- **Status bar clickabile**: click su un segmento di protocollo (`StatusSegment.Pressed`) → filtro protocollo + vista unread **solo se** quel backend ha unread > 0, altrimenti filtro semplice senza unread; ri-click sul segmento attivo in modalità unread disattiva la vista unread (mantenendo il filtro protocollo). Nessun effetto mentre uno screen modale è aperto.
-  Test: `tests/test_status_backend_unread.py`.
-- **Ordinamento e auto-selezione**: ordine contatti = `contact_sort_key` (con messaggi per `last_message_ts` desc → con nome alfabetici → solo numero); l'invio ottimistico avanza subito `last_message_ts` e ri-renderizza la lista (`_promote_contact_after_send`, prima ancora dell'eco — test `tests/test_telegram_send_reorder.py`); a ogni cambio filtro viene aperto automaticamente il primo contatto visibile della nuova vista; al boot l'auto-selezione parte quando tutti i backend attesi hanno riportato esito (`_pending_backends`).
-  Test: `tests/test_telegram_send_reorder.py`, `tests/test_unread_filter.py`.
-- **Typing**: `✍️` mentre `STARTED` attivo (auto-expire 10 s → stato mumbling `💭` per 60 s); un messaggio reale del contatto sposta in mumbling; `STOPPED` → mumbling.
-  Test: `tests/test_typing_indicator.py`.
+- **Grouping**: `group_by_person(contacts)` (`contact_picker.py`) raggruppa per persona usando `extras["phone"]` (E.164 senza `+`); `PickerEntry.key` identifica il gruppo (`phone:<numero>` oppure `raw:<protocol>:<id>` — gruppi/canali, `@lid` irrisolti e id Telegram non sono chiavi di phone-grouping); ordine gruppi = recency del membro di default, membri in ordine fisso Signal→WhatsApp→Telegram.
+- **Rubrica e picker (Ctrl+S)**: la picker mostra subito le chat attive mentre un worker chiama `contacts.address_book` (fan-out server-side, errori parziali in status bar); il token `_address_book_token` invalida i worker in volo. La ricerca filtra per nome/id/phone su qualunque membro; selezione multi-backend senza filtro → `BackendChoiceScreen`. **Open-or-create**: un contatto sconosciuto diventa un "ghost" (`extras["ghost"]`), viene registrato (`contacts.register`) e — per WhatsApp — verificato (`contacts.check_number`).
+- **Unread**: la SPA legge i conteggi da `contacts.list`; la TUI li ricalcola dai propri dati di vista (`not is_mine AND not read`, dedup per `(timestamp, text)`, chiave `cache_key`), aggiornati dagli eventi. Badge `*N` sull'header aggregato (vista All) o sul membro filtrato; il contatto selezionato non mostra badge ed è "pinned" sotto filtro unread; totali per backend nella status bar (`📱 N 💬 N 📨 N`, `-` se 0).
+- **Status bar clickabile**: click su un segmento di protocollo → filtro protocollo + vista unread **solo se** quel backend ha unread > 0, altrimenti filtro semplice; ri-click sul segmento attivo in modalità unread disattiva la vista unread (mantenendo il filtro). Nessun effetto mentre uno screen modale è aperto.
+- **Ordinamento e auto-selezione**: `contact_sort_key` (messaggi per `last_message_ts` desc → con nome alfabetici → solo numero); l'invio ottimistico avanza subito `last_message_ts` e ri-renderizza la lista; al boot l'auto-selezione parte quando tutti i backend attesi hanno riportato esito (`backend_status`/`backend_ready`/`backend_done`).
+- **Typing**: `✍️` mentre `STARTED` è attivo (auto-expire 10 s → `💭` per 60 s); un messaggio reale del contatto sposta in mumbling; `STOPPED` → mumbling.
 
-## 9. Payload webhook WAHA
+## 9. Ingresso lato server
 
-Envelope ricevuto su `POST .../webhook`:
+Non esiste più un webhook HTTP in ingresso: i backend sono interni al server.
 
-```json
-{"event": "message", "session": "...", "payload": { ... }}
-```
-
-- `event` riconosciuti: `message`, `message.ack` (anche varianti con suffisso), presence/typing, receipt (`receipt`/`receipts.update` con `receiptType`, e ack ≥ 2).
-- Campi `payload` consumati (via `_jid_string` tollerante alle forme stringa/dict): `from`, `to`/`chatId`/`remoteJid` (o `key.remoteJid`), `body`/`text`, `fromMe`, `timestamp` (**secondi** → convertiti in ms), `id`, `hasMedia`/`media{mimetype,url,caption,filename}`, `ack`/`ackName`, `type`/`messageType`.
-- Contratto risposta: sempre `200 {"ok": true}` dopo l'inoltro; `404 {"ok": false}` path errato; `400` JSON malformato.
-
-Ack enum (`whatsapp_events.py`): `ERROR=-1, PENDING=0, SERVER=1, DEVICE=2, READ=3, PLAYED=4`.
-Test: `tests/test_backend_webhook.py`, `tests/test_whatsapp_backend.py`.
+- **Signal**: daemon `signal-cli` → SSE (`GET /api/v1/events`); ogni envelope viene classificato da `internal/proto/signal/envelope.go` in `message`, `message_edit`, `typing`, `receipt`.
+- **WhatsApp**: whatsmeow consegna gli eventi (messaggi, ack, presenza, app-state); `internal/proto/whatsapp/convert.go` li normalizza, `ingest.go` applica dedup e history sync.
+- **Telegram**: gotd consegna update (nuovi messaggi, edit, letture, typing); `convert.go` li normalizza.
+- **Gmail**: polling IMAP (`gmail.unread_poll_s`, default 60) con `SELECT` read-only e `SEARCH UNSEEN` sulla finestra mostrata; apertura/cancellazione ricontrollano subito.
 
 ## 10. Errori e convenzioni di ritorno
 
 | Superficie | Convenzione |
 |---|---|
-| `SignalRPCClient._call` | mai eccezioni: `{"error": "<msg>"}`; i wrapper convertono in `[]`/`RuntimeError` |
-| Client REST WAHA (`_request`) | non-raising: `None`/`[]` su errore (401 senza API key incluso) |
-| Download (`serve_*`) | URL stringa oppure messaggio `ERROR:` prefixato |
-| `BackendManager.send_message/mark_read` | `KeyError` per protocollo non registrato |
-| `find_signal_cli()` / `_require_user_number()` | eccezioni canoniche (`FileNotFoundError`, `RuntimeError`) solo al punto d'uso; varianti `_find_signal_cli()` / `_get_user_number()` non-raising |
-| `list_address_book_sync` | mai eccezioni verso il chiamante: errori in `manager.address_book_errors[protocol]`, risultato parziale |
-| Dedup by-id al boot (`_load_cache` → `_dedup_messages_by_id`) | riduce le partizioni `(protocol, contact_number, msg_id, text)` alla riga col rank status più alto; NON è safe se lo stesso `msg_id` è stato assegnato a più righe (vedi §3.2, invariante non ancora enforcement) |
-| Config (`config.py`) | fallback a default (`""`/3005/8088/…) senza raise |
-
-Test: `tests/test_backend_rpc.py`, `tests/test_config.py`, `tests/test_backend_download.py`, `tests/test_address_book.py`.
+| Operazioni | `*ops.Error{Code, Message, Details}`; il messaggio è il testo utente (a volte italiano) e va mantenuto verbatim |
+| HTTP | `{"detail": "<message>"}`; validazione richiesta/JSON non-oggetto → 422 con detail a lista |
+| JSON-RPC | codici fissi per `ApiError.code` (vedi `megachatd/CONTRACTS.md` §2) |
+| `SocketClient.call` | `ApiError` per errori del server; `ServerUnavailable`/`OperationTimeout`/`IncompatibleServer` per il trasporto |
+| Allegati/blob | `BlobOut{path, content_type, size, version, immutable}`; path assoluto lato server |
+| Download temporaneo | URL completo oppure errore; porta 10042 |
+| `contacts.address_book` | risultato parziale ammesso, errori per protocollo nel payload |
+| Config | default senza raise; le integrazioni abilitate ma incomplete fermano l'avvio con codice 1 |
 
 ## 11. Quote media (reply con immagine)
 
-Contratto della reply a un messaggio media (bug #37, fix V2 + piano B). Fissato da `tests/test_models.py`, `tests/test_reply_media.py` e dai test live gated `tests/test_live_quote_media.py`.
+Contratto della reply a un messaggio media (bug #37, fix V2 + piano B).
 
 ### 11.1 Display vs filo
 
-- **Display** (bolla quote, reply bar): per un media senza caption la `quote_text` è un segnaposto tipizzato canonico — `MEDIA_QUOTE_PLACEHOLDERS = {image: "🖼️ Immagine", sticker: "🎨 Sticker", attachment: "📎 File", audio: "🎵 Audio", video: "🎬 Video"}`; con caption/filename reale vince il dettaglio (`media_quote_placeholder(msg_type, detail)`); forma composta `"filename — placeholder"` solo su path di display. I segnaposto sono **display-only**: non devono mai viaggiare come `quoteMessage` Signal (il destinatario risponderebbe "Original message not found").
+- **Display** (bolla quote, reply bar): per un media senza caption la `quote_text` è un segnaposto tipizzato canonico — `MEDIA_QUOTE_PLACEHOLDERS = {image: "🖼️ Immagine", sticker: "🎨 Sticker", attachment: "📎 File", audio: "🎵 Audio", video: "🎬 Video"}`; con caption/filename reale vince il dettaglio (`media_quote_placeholder(msg_type, detail)`). I segnaposto sono **display-only**: non devono mai viaggiare come `quoteMessage` Signal.
 - **Filo**: il body fedele viaggia nella chiave separata `quote_wire_body` di `_reply_to` (caption reale o `""`) e — per Signal — nei parametri `quoteTimestamp`/`quoteAuthor`/`quoteMessage` + `quoteAttachments`.
 - Predicato `is_media_quote_placeholder(text)`: riconosce SOLO i 5 valori canonici (mai la forma composta); usato dal retry.
 
@@ -258,17 +264,17 @@ Contratto della reply a un messaggio media (bug #37, fix V2 + piano B). Fissato 
 
 | Protocollo | Come arriva la quote |
 |---|---|
-| Signal | `dataMessage.quote`: testo reale se presente; altrimenti placeholder tipizzato da `quote.attachments[0].contentType` (`_signal_quote_text`), con prefisso filename se noto |
-| WhatsApp / Telegram | quote nativa lato server via `reply_to` (Baileys id / id numerico); il testo citato locale è letto dalla cache |
+| Signal | `dataMessage.quote`: testo reale se presente; altrimenti placeholder tipizzato da `quote.attachments[0].contentType`, con prefisso filename se noto |
+| WhatsApp / Telegram | quote nativa lato server via `reply_to` (id del messaggio); il testo citato locale è letto dallo store |
 
 Rendering locale: bolla `▎ <testo>` sopra il messaggio (classi `msg-quote` / `msg-quote-right`).
 
 ### 11.3 Uscita (creazione dalla TUI)
 
-1. **Cattura target**: Alt+click o Alt+R su un'immagine → `ImageWidget.ReplyRequested(text=<caption o placeholder>, caption=<caption reale o None>, timestamp, sender, is_mine, message_id, attachment_id, content_type)` → `_reply_to` con `quote_wire_body` (= caption), `attachment_id`, `content_type`. La reply bar mostra il display text.
-2. **Guardie pre-bolla** (nessun pending orfano): WhatsApp senza `reply_to_message_id` → rifiuto; Telegram con id assente/non intero positivo → rifiuto.
-3. **Invio Signal** (`tui/send.py::_send_message_worker`): `quoteMessage = quote_wire_body or ""` (mai il segnaposto, mai omesso); se la riga porta un mime noto (`content_type` persistito) viene costruito `quoteAttachments = ["contentType:filename:previewFile"]` risolvendo l'allegato locale via `get_attachment_path(attachment_id)` — è ciò che rende VISIBILE la thumbnail sul destinatario; file locale assente → descrittore `"contentType"` alone (quote senza thumbnail). Parametro passato solo a `send_message_sync` del backend Signal (RPC `quoteAttachments` / subprocess ripetuti `--quote-attachment`).
-4. **WhatsApp / Telegram**: nessun testo di quote sul filo — solo `reply_to` (id server validato).
-5. **Persistenza e retry**: la riga del messaggio inviato salva `attachment_id` + `content_type`; il retry di una reply fallita ricostruisce `reply_data` dalla riga (mime marker → `quote_wire_body` = caption o `""`) così il piano B viene ricomposto identico al vivo. Righe legacy senza mime (`content_type NULL`) degradano al comportamento V2: quote testuale corretta, senza thumbnail.
+1. **Cattura target**: Alt+click o Alt+R su un'immagine → `ImageWidget.ReplyRequested(...)` → `_reply_to` con `quote_wire_body` (caption), `attachment_id`, `content_type`. La reply bar mostra il testo di display.
+2. **Guardie pre-bolla**: WhatsApp senza `reply_to_message_id` → rifiuto; Telegram con id assente/non intero positivo → rifiuto.
+3. **Invio Signal**: `messages.send` porta `quote_message = quote_wire_body or ""` (mai il segnaposto, mai omesso); se la riga ha un mime noto (`content_type` persistito) il server costruisce `quoteAttachments` risolvendo l'allegato locale — è ciò che rende VISIBILE la thumbnail sul destinatario. File locale assente → descrittore `"contentType"` da solo (quote senza thumbnail).
+4. **WhatsApp / Telegram**: nessun testo di quote sul filo — solo `reply_to`.
+5. **Persistenza e retry**: la riga inviata salva `attachment_id` + `content_type` (e i campi `quote_attachment_*`); il retry di una reply fallita ricostruisce `reply_data` dalla riga (mime marker → `quote_wire_body` = caption o `""`). Righe legacy senza mime (`content_type NULL`) degradano al comportamento V2: quote testuale corretta, senza thumbnail.
 
-Test: `tests/test_reply_media.py` (flusso UI headless), `tests/test_models.py` (placeholder/predicato), `tests/test_live_quote_media.py` (verifica empirica sul filo, gated `LIVE_TESTS=1`).
+Test: `internal/proto/signal/*quote*_test.go`, `internal/store/media_quote.go`, test di vista della TUI (`tests/test_quote_widget.py`, `tests/test_reply_media.py` dove ancora presenti).

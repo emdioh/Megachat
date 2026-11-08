@@ -4,8 +4,8 @@
 protocol con fallback catimg`). Il documento conserva l'analisi di design e la
 POC che hanno motivato le scelte; dove testo e codice divergono, fa fede il
 codice (`tui/images/`, `tui/app.py`, `ui_components.py::ImageWidget`,
-`tui/chat_view.py`, `backends/config.py`; test `test_kitty_renderer`,
-`test_image_detect`, `test_image_modal`, `test_chat_view_images`).
+`tui/chat_view.py`, `client/config.py`; test `test_kitty_renderer`,
+`test_image_modal`, `test_chat_view_images`, `test_native_*`).
 **Data:** 2026-08-24 · **Vincoli:** Python 3.10+ · nessuna modifica a backend
 messaggistica/database · unica dipendenza nuova: Pillow
 
@@ -120,7 +120,7 @@ contact picker, `ImageModalScreen` stesso).
 ### 5.1 Rilevamento (prima di `app.run()`)
 La query TGP **non basta** (iTerm2 risponde `OK` ma non renderizza). Sequenza
 (correzione R7):
-1. **Override config** (`IMAGE_PROTOCOL` in `backends/config.py`): `auto | kitty | catimg | off`.
+1. **Override config** (`IMAGE_PROTOCOL` env o `image.protocol` in `config.json`, letti da `client/config.py::image_protocol`): `auto | kitty | catimg | off`.
 2. `isatty`? no → CATIMG (headless/CI-safe).
 3. Guardia **tmux/screen**: `TMUX` senza `allow-passthrough` (≥3.3) o
    `TERM=screen*` → CATIMG.
@@ -153,7 +153,8 @@ stato `native_renderer/native_image_id/native_*_px`).
 |---|---|
 | `signal_tui.py` | detect **dopo** `_acquire_lock()` con try/except → CATIMG; passaggio a `SignalTUI(image_support=...)` + cell size pre-run (`get_cell_size`); cleanup kitty all'exit via `on_unmount` → `renderer.clear_all()` |
 | `tui/app.py` | costruttore `image_support`, override `post_display_hook` + gate screen-stack |
-| `backends/config.py` | getter `image_protocol()`, `thumbnail_max_lines()` (12), `thumbnail_max_cols()` (~60) |
+| `client/config.py` | getter `image_protocol()` (`IMAGE_PROTOCOL` / `image.protocol`) |
+| `server.config` (`megachatd`) | `thumbnail_max_lines` (12) e `thumbnail_max_cols` (~60), letti dalla TUI all'avvio |
 | `ui_components.py` | **`ImageWidget` esteso** (metodo `show_native_thumbnail()` + renderer iniettato) — niente widget parallelo (C3); `ImageModalScreen` a strategia (kitty hi-res o catimg) con gestione placement locale + resize |
 | `tui/chat_view.py` | `_finish_attachment_resolve` usa `show_native_thumbnail`; **risoluzione path anche per `_mount_window`/`_load_all_messages`** con semaforo 2-4 (C4); `_clear_chat` → cleanup |
 | `tui/download.py` | passa renderer al modal |
