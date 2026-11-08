@@ -1696,11 +1696,22 @@ function fileAttachment(attachment, protocol, direction) {
           return;
         }
 
-        const statusPath = `api/transcribe/${encodeURIComponent(protocol)}/${attachmentId.split("/").map(encodeURIComponent).join("/")}`;
+        // Query string, not path: WhatsApp ids are URLs whose "//" proxies merge.
+        const statusPath = `api/transcribe/status?${new URLSearchParams({ protocol, attachment_id: attachmentId })}`;
         for (let attempt = 0; attempt < 150; attempt += 1) {
           await new Promise((resolve) => setTimeout(resolve, 2000));
           const statusResponse = await apiFetch(statusPath);
-          const status = await statusResponse.json();
+          let status = await statusResponse.json();
+          if (status.status === "unknown") {
+            // Record missing (lookup mismatch or store reset): ask again.
+            const retry = await apiFetch("api/transcribe", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ protocol, attachment_id: attachmentId }),
+            });
+            const retryData = await retry.json();
+            status = retryData.status === "done" ? { status: "ok", text: retryData.text } : retryData;
+          }
           if (status.status === "ok") {
             const text = status.text || "";
             state.transcriptions.set(key, text);
