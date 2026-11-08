@@ -13,7 +13,7 @@
 
 PYTHON ?= python
 
-.PHONY: test lint typecheck coverage format-check check live-test live-test-manual smoke contract-test megachatd megachatd-static
+.PHONY: test lint typecheck coverage format-check check live-test live-test-manual contract-test megachatd megachatd-static
 
 # Esegue l'intera suite in tests/ — radice definita da testpaths.
 test:
@@ -43,8 +43,8 @@ check: lint test
 # Test di integrazione "live" (su filo reale) — RUN OPZIONALE, NON in CI.
 # Verificano il comportamento end-to-end contro un account di test reale
 # (es. "Roberto BMW" sui 3 protocolli) e inviano messaggi REALI, quindi
-# richiedono i servizi locali attivi (daemon signal-cli, WAHA docker, sessione
-# Telethon autorizzata) e le credenziali configurate. Senza LIVE_TESTS=1 i test
+# richiedono i servizi locali attivi (daemon signal-cli, dispositivo WhatsApp
+# collegato, sessione Telethon autorizzata) e le credenziali configurate. Senza LIVE_TESTS=1 i test
 # restano sempre skippati (vedi tests/test_live_quote_media.py). Runbook nel README.
 live-test:
 	LIVE_TESTS=1 $(PYTHON) -m pytest tests/test_live_quote_media.py -v
@@ -54,16 +54,9 @@ live-test:
 live-test-manual:
 	LIVE_TESTS=1 LIVE_MANUAL=1 $(PYTHON) -m pytest tests/test_live_quote_media.py::test_e4_ingest_manual -v
 
-# Smoke end-to-end client/server (serve, socket, attach-or-spawn, Detach/Quit):
-# processi reali in un HOME/lock/socket temporanei, nessun backend. ~1 minuto.
-# Richiede `script` (util-linux) e curl. Vedi scripts/smoke_e2e.sh.
-smoke:
-	PY=$(PYTHON) bash scripts/smoke_e2e.sh
-
-# Black-box contract + parity tests of the Go server (megachatd): the binary is
-# driven only through its Unix socket (SocketClient), HTTP and WebSocket, and,
-# when fastapi/uvicorn are installed, diffed against `python -m server` on the
-# same seeded SQLite DB. Needs Go; ~1 minute (heartbeat tests wait 5 s each).
+# Black-box contract tests of the Go server (megachatd): the binary is driven
+# only through its Unix socket (SocketClient), HTTP and WebSocket, on a seeded
+# SQLite DB. Needs Go; ~1 minute (heartbeat tests wait 5 s each).
 #
 # The binary is built with -tags contracttest: that build alone carries the
 # MEGACHAT_FAKE_BACKEND hook the send tests drive. Release targets

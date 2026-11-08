@@ -28,6 +28,7 @@ from textual.containers import Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Input, Label, ListItem, ListView, Static
 
+from client.domain import search_contacts  # noqa: F401  (moved; re-exported)
 from models import (
     PROTOCOL_SIGNAL,
     PROTOCOL_TELEGRAM,
@@ -35,7 +36,6 @@ from models import (
     ChatContact,
     protocol_emoji,
 )
-from client.domain import search_contacts  # noqa: F401  (moved; re-exported)
 
 logger = logging.getLogger(__name__)
 

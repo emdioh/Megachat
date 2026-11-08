@@ -2,17 +2,15 @@
 #
 # tui_handover.sh — Passa il server headless da una macchina all'altra.
 #
-# Gli account Signal/WhatsApp/Telegram sono condivisi: il server (e, con il
-# server Python, la sessione WAHA e il daemon signal-cli) NON devono essere
-# attivi su due macchine contemporaneamente. Questo script è un wrapper sottile
-# di `launcher.py handover`, che ferma/avvia il server con il motore giusto
-# (megachatd di default; MEGACHAT_SERVER=python per il vecchio server Python)
-# e centralizza il passaggio pulito.
+# Gli account Signal/WhatsApp/Telegram sono condivisi: il server e il daemon
+# signal-cli NON devono essere attivi su due macchine contemporaneamente.
+# Questo script è un wrapper sottile di `launcher.py handover`, che ferma/avvia
+# megachatd e centralizza il passaggio pulito.
 #
 # Uso:
-#   ./scripts/tui_handover.sh to-server [--no-docker-limits]  # spegni locale → accendi il server Hetzner
-#   ./scripts/tui_handover.sh to-local  [--no-docker-limits]  # spegni il server → accendi il locale
-#   ./scripts/tui_handover.sh status                          # stato server/daemon su entrambe
+#   ./scripts/tui_handover.sh to-server   # spegni locale → accendi il server Hetzner
+#   ./scripts/tui_handover.sh to-local    # spegni il server → accendi il locale
+#   ./scripts/tui_handover.sh status      # stato server/daemon su entrambe
 #
 # Configurazione (letta da launcher/handover.py):
 #   HZ_HOST — IP del server Hetzner (default 167.233.140.207)
@@ -36,11 +34,11 @@ fi
 die() { echo "❌ $*" >&2; exit 1; }
 
 case "${2:-}" in
-    --no-docker-limits|"") ;;
+    "") ;;
     *) die "Opzione sconosciuta: $2" ;;
 esac
 
 case "${1:-}" in
     to-server|to-local|status) exec "$PY" "$PROJECT_DIR/launcher.py" handover "$@" ;;
-    *) die "uso: $0 {to-server|to-local|status} [--no-docker-limits]" ;;
+    *) die "uso: $0 {to-server|to-local|status}" ;;
 esac

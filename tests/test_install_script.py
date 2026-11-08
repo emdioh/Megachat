@@ -4,7 +4,8 @@ Regression tests for install.sh — the automatic installation script.
 The script is a bash script, so these tests execute it as a subprocess in an
 isolated temporary directory (tmp_path). Network calls (curl/wget) and system
 commands (python3, java, pip) are mocked with stub executables placed in a fake
-PATH, so no real downloads or installs happen.
+PATH, so no real downloads or installs happen. A stub ``megachatd`` stands in
+for an already-installed release binary.
 """
 
 from __future__ import annotations
@@ -198,6 +199,10 @@ exit 0
     _write_stub(fake_bin_dir / "pip", pip_stub)
     _write_stub(fake_bin_dir / "pip3", pip_stub)
 
+    # megachatd stub: a release binary is already installed, so the installer
+    # does not need Go (the tmp copy has no megachatd sources).
+    _write_stub(fake_bin_dir / "megachatd", "#!/bin/sh\nexit 0\n")
+
     # tar is real (needed to extract the fake tarball).
     monkeypatch.setenv("PIP_ARGS_LOG", str(tmp_path / "pip_args.log"))
     monkeypatch.setenv("PATH", f"{fake_bin_dir}:{os.environ['PATH']}")
@@ -238,7 +243,12 @@ def _run_install(tmp_path: Path, *args: str) -> subprocess.CompletedProcess:
         capture_output=True,
         text=True,
         cwd=str(tmp_path),
-        env={**os.environ, "HOME": str(fake_home), "SHELL": "/bin/bash"},
+        env={
+            **os.environ,
+            "HOME": str(fake_home),
+            "SHELL": "/bin/bash",
+            "MEGACHATD_BIN": "",
+        },
         timeout=60,
     )
 
@@ -464,293 +474,6 @@ exit 0
         assert "richiede Java 25" in result.stdout
 
 
-class TestWahaEnv:
-    def _run_ensure_waha_env(self, tmp_path: Path, architecture: str | None = None):
-        func = _extract_function(INSTALL_SCRIPT, "ensure_waha_env")
-        script = tmp_path / "ensure-waha-env.sh"
-        script.write_text(
-            "set -euo pipefail\n"
-            "ok() { :; }\n"
-            f"PROJECT_DIR={str(tmp_path)!r}\n"
-            f"{func}\n"
-            "ensure_waha_env\n",
-            encoding="utf-8",
-        )
-        env = os.environ.copy()
-        if architecture:
-            fake_bin = tmp_path / "waha-fakebin"
-            fake_bin.mkdir(exist_ok=True)
-            _write_stub(fake_bin / "uname", f"#!/bin/sh\necho {architecture}\n")
-            env["PATH"] = f"{fake_bin}:{env['PATH']}"
-        return subprocess.run(
-            ["bash", str(script)],
-            capture_output=True,
-            text=True,
-            env=env,
-            timeout=30,
-            check=False,
-        )
-
-    def test_creates_secure_waha_credentials(self, tmp_path: Path):
-        result = self._run_ensure_waha_env(tmp_path)
-
-        assert result.returncode == 0, result.stderr
-        env_file = tmp_path / ".env"
-        values = dict(
-            line.split("=", 1)
-            for line in env_file.read_text(encoding="utf-8").splitlines()
-            if line and not line.startswith("#")
-        )
-        expected_image = (
-            "devlikeapro/waha:arm"
-            if os.uname().machine.lower() in ("arm64", "aarch64")
-            else "devlikeapro/waha:latest"
-        )
-        assert values["WAHA_IMAGE"] == expected_image
-        assert len(values["WAHA_API_KEY"]) >= 32
-        assert values["WAHA_DASHBOARD_USERNAME"] == "admin"
-        assert len(values["WAHA_DASHBOARD_PASSWORD"]) >= 32
-        assert values["WHATSAPP_SWAGGER_USERNAME"] == "admin"
-        assert len(values["WHATSAPP_SWAGGER_PASSWORD"]) >= 32
-        assert stat.S_IMODE(env_file.stat().st_mode) == 0o600
-
-    def test_preserves_existing_values_and_is_idempotent(self, tmp_path: Path):
-        env_file = tmp_path / ".env"
-        env_file.write_text(
-            "TELEGRAM_API_ID=12345\n"
-            "WAHA_API_KEY=existing-key\n"
-            "WAHA_DASHBOARD_PASSWORD=\n",
-            encoding="utf-8",
-        )
-
-        first = self._run_ensure_waha_env(tmp_path)
-        first_content = env_file.read_text(encoding="utf-8")
-        second = self._run_ensure_waha_env(tmp_path)
-
-        assert first.returncode == 0, first.stderr
-        assert second.returncode == 0, second.stderr
-        assert env_file.read_text(encoding="utf-8") == first_content
-        assert "TELEGRAM_API_ID=12345" in first_content
-        assert "WAHA_API_KEY=existing-key" in first_content
-
-    @pytest.mark.parametrize(
-        ("architecture", "expected"),
-        [
-            ("arm64", "devlikeapro/waha:arm"),
-            ("aarch64", "devlikeapro/waha:arm"),
-            ("x86_64", "devlikeapro/waha:latest"),
-            ("amd64", "devlikeapro/waha:latest"),
-        ],
-    )
-    def test_recalculates_image_for_current_architecture(
-        self, tmp_path: Path, architecture: str, expected: str
-    ):
-        env_file = tmp_path / ".env"
-        env_file.write_text(
-            "WAHA_IMAGE=devlikeapro/waha:opposite-architecture\n",
-            encoding="utf-8",
-        )
-
-        result = self._run_ensure_waha_env(tmp_path, architecture)
-
-        assert result.returncode == 0, result.stderr
-        assert f"WAHA_IMAGE={expected}\n" in env_file.read_text(encoding="utf-8")
-
-    def test_check_only_does_not_create_env(self, tmp_path: Path):
-        fake_bin = tmp_path / "check-fakebin"
-        fake_bin.mkdir()
-        _write_stub(fake_bin / "docker", "#!/bin/sh\nexit 0\n")
-        setup = _extract_function(INSTALL_SCRIPT, "setup_whatsapp")
-        script = tmp_path / "check-whatsapp.sh"
-        script.write_text(
-            "set -euo pipefail\n"
-            "info() { :; }; ok() { :; }; err() { :; }; warn() { :; }\n"
-            "check_port() { return 0; }; check_firewall() { :; }\n"
-            f"PROJECT_DIR={str(tmp_path)!r}\nWA_PORT=3005\nWEBHOOK_PORT=8088\n"
-            'C_BLUE=""\nC_BOLD=""\nC_RESET=""\n'
-            f"{setup}\nsetup_whatsapp 0\n",
-            encoding="utf-8",
-        )
-
-        result = subprocess.run(
-            ["bash", str(script)],
-            capture_output=True,
-            text=True,
-            env={**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}"},
-            timeout=30,
-            check=False,
-        )
-
-        assert result.returncode == 0, result.stderr
-        assert not (tmp_path / ".env").exists()
-
-    def test_start_uses_api_key_for_readiness_probe(self, tmp_path: Path):
-        fake_bin = tmp_path / "start-fakebin"
-        fake_bin.mkdir()
-        docker_log = tmp_path / "docker.log"
-        curl_log = tmp_path / "curl.log"
-        _write_stub(
-            fake_bin / "docker",
-            f"#!/bin/sh\nprintf '%s\\n' \"$*\" >> {str(docker_log)!r}\nexit 0\n",
-        )
-        _write_stub(
-            fake_bin / "curl",
-            f"#!/bin/sh\nprintf '%s\\n' \"$*\" >> {str(curl_log)!r}\nprintf '200'\n",
-        )
-        _write_stub(fake_bin / "uname", "#!/bin/sh\necho x86_64\n")
-        ensure = _extract_function(INSTALL_SCRIPT, "ensure_waha_env")
-        setup = _extract_function(INSTALL_SCRIPT, "setup_whatsapp")
-        script = tmp_path / "start-whatsapp.sh"
-        script.write_text(
-            "set -euo pipefail\n"
-            "info() { :; }; ok() { :; }; err() { :; }; warn() { :; }\n"
-            "check_port() { return 0; }; check_firewall() { :; }\n"
-            f"PROJECT_DIR={str(tmp_path)!r}\nWA_PORT=3005\nWEBHOOK_PORT=8088\n"
-            "DO_DOCKER_LIMITS=1\n"
-            'C_BLUE=""\nC_BOLD=""\nC_RESET=""\n'
-            f"{ensure}\n{setup}\nsetup_whatsapp 1\n",
-            encoding="utf-8",
-        )
-
-        result = subprocess.run(
-            ["bash", str(script)],
-            capture_output=True,
-            text=True,
-            env={**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}"},
-            timeout=30,
-            check=False,
-        )
-
-        assert result.returncode == 0, result.stderr
-        docker_args = docker_log.read_text(encoding="utf-8")
-        assert "compose -f" in docker_args
-        assert "docker-compose.resources.yml" in docker_args
-        curl_args = curl_log.read_text(encoding="utf-8")
-        assert "X-Api-Key:" in curl_args
-        assert "/api/sessions" in curl_args
-
-    def test_start_no_docker_limits_skips_resources_overlay(self, tmp_path: Path):
-        fake_bin = tmp_path / "start-fakebin"
-        fake_bin.mkdir()
-        docker_log = tmp_path / "docker.log"
-        curl_log = tmp_path / "curl.log"
-        _write_stub(
-            fake_bin / "docker",
-            f"#!/bin/sh\nprintf '%s\\n' \"$*\" >> {str(docker_log)!r}\nexit 0\n",
-        )
-        _write_stub(
-            fake_bin / "curl",
-            f"#!/bin/sh\nprintf '%s\\n' \"$*\" >> {str(curl_log)!r}\nprintf '200'\n",
-        )
-        _write_stub(fake_bin / "uname", "#!/bin/sh\necho x86_64\n")
-        ensure = _extract_function(INSTALL_SCRIPT, "ensure_waha_env")
-        setup = _extract_function(INSTALL_SCRIPT, "setup_whatsapp")
-        script = tmp_path / "start-whatsapp.sh"
-        script.write_text(
-            "set -euo pipefail\n"
-            "info() { :; }; ok() { :; }; err() { :; }; warn() { :; }\n"
-            "check_port() { return 0; }; check_firewall() { :; }\n"
-            f"PROJECT_DIR={str(tmp_path)!r}\nWA_PORT=3005\nWEBHOOK_PORT=8088\n"
-            "DO_DOCKER_LIMITS=0\n"
-            'C_BLUE=""\nC_BOLD=""\nC_RESET=""\n'
-            f"{ensure}\n{setup}\nsetup_whatsapp 1\n",
-            encoding="utf-8",
-        )
-
-        result = subprocess.run(
-            ["bash", str(script)],
-            capture_output=True,
-            text=True,
-            env={**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}"},
-            timeout=30,
-            check=False,
-        )
-
-        assert result.returncode == 0, result.stderr
-        docker_args = docker_log.read_text(encoding="utf-8")
-        assert "compose -f" in docker_args
-        assert "docker-compose.resources.yml" not in docker_args
-
-
-class TestPortCheck:
-    def _run_check(self, tmp_path: Path, lsof_output: str, lsof_exit: int = 0):
-        fake_bin = tmp_path / "fakebin"
-        fake_bin.mkdir()
-        _write_stub(
-            fake_bin / "lsof",
-            f"#!/bin/sh\nprintf '%b\\n' '{lsof_output}'\nexit {lsof_exit}\n",
-        )
-        _write_stub(fake_bin / "uname", "#!/bin/sh\necho Darwin\n")
-        func = _extract_function(INSTALL_SCRIPT, "check_port")
-        script = tmp_path / "check-port.sh"
-        script.write_text(
-            "set -euo pipefail\n"
-            "info() { :; }\n"
-            "ok() { printf '%s\\n' \"$*\"; }\n"
-            "warn() { printf '%s\\n' \"$*\"; }\n"
-            "WEBHOOK_PORT=8088\n"
-            f"{func}\n"
-            'check_port 3005 "WAHA API"\n',
-            encoding="utf-8",
-        )
-        return subprocess.run(
-            ["bash", str(script)],
-            capture_output=True,
-            text=True,
-            env={**os.environ, "PATH": f"{fake_bin}:/usr/bin:/bin"},
-            timeout=30,
-            check=False,
-        )
-
-    def test_lsof_reports_free_port(self, tmp_path: Path):
-        result = self._run_check(tmp_path, "", lsof_exit=1)
-
-        assert result.returncode == 0
-        assert "Porta 3005 disponibile" in result.stdout
-
-    def test_lsof_reports_occupied_port(self, tmp_path: Path):
-        result = self._run_check(
-            tmp_path,
-            "COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME\\nnode 4321 user 1u IPv4 0 0t0 TCP *:3005 (LISTEN)",
-        )
-
-        assert result.returncode == 1
-        assert "Porta 3005 gia in uso da pid 4321 (node)" in result.stdout
-
-    def test_lsof_recognizes_macos_python_webhook(self, tmp_path: Path):
-        fake_bin = tmp_path / "fakebin"
-        fake_bin.mkdir()
-        _write_stub(
-            fake_bin / "lsof",
-            "#!/bin/sh\nprintf '%s\\n' 'COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME' 'Python 4321 user 1u IPv4 0 0t0 TCP *:8088 (LISTEN)'\n",
-        )
-        _write_stub(fake_bin / "uname", "#!/bin/sh\necho Darwin\n")
-        func = _extract_function(INSTALL_SCRIPT, "check_port")
-        script = tmp_path / "check-webhook-port.sh"
-        script.write_text(
-            "set -euo pipefail\n"
-            "info() { :; }\n"
-            "ok() { printf '%s\\n' \"$*\"; }\n"
-            "warn() { printf '%s\\n' \"$*\"; }\n"
-            "WEBHOOK_PORT=8088\n"
-            f"{func}\n"
-            'check_port 8088 "webhook"\n',
-            encoding="utf-8",
-        )
-
-        result = subprocess.run(
-            ["bash", str(script)],
-            capture_output=True,
-            text=True,
-            env={**os.environ, "PATH": f"{fake_bin}:/usr/bin:/bin"},
-            timeout=30,
-            check=False,
-        )
-
-        assert result.returncode == 0
-        assert "webhook server" in result.stdout
-
-
 class TestVenv:
     """📦 Gestione virtualenv."""
 
@@ -771,49 +494,6 @@ class TestVenv:
         result = _run_install(tmp_path, "--skip-signal-cli", "--no-venv")
         assert result.returncode == 0
         assert (tmp_path / ".venv").exists() is False
-
-
-class TestWebDependencies:
-    def test_web_deps_installed_by_default(
-        self, tmp_path: Path, fake_path: Path, test_helpers: Path
-    ):
-        result = _run_install(tmp_path, "--skip-signal-cli")
-
-        assert result.returncode == 0
-        pip_args = (tmp_path / "pip_args.log").read_text(encoding="utf-8")
-        assert "requirements.txt" in pip_args
-        assert "requirements-web.txt" in pip_args
-
-    def test_no_web_flag_skips_web_deps(
-        self, tmp_path: Path, fake_path: Path, test_helpers: Path
-    ):
-        result = _run_install(tmp_path, "--skip-signal-cli", "--no-web")
-
-        assert result.returncode == 0
-        pip_args = (tmp_path / "pip_args.log").read_text(encoding="utf-8")
-        assert "requirements.txt" in pip_args
-        assert "requirements-web.txt" not in pip_args
-        assert not (tmp_path / "config.json").exists()
-
-    def test_web_deps_failure_is_soft(
-        self,
-        tmp_path: Path,
-        fake_path: Path,
-        test_helpers: Path,
-        monkeypatch,
-    ):
-        monkeypatch.setenv("PIP_FAIL_WEB", "1")
-
-        result = _run_install(tmp_path, "--skip-signal-cli")
-
-        assert result.returncode == 0
-        assert "[WARN] Dipendenze Web UI non installate" in result.stdout
-
-    def test_help_lists_no_web(self, tmp_path: Path):
-        result = _run_install(tmp_path, "--help")
-
-        assert result.returncode == 0
-        assert "--no-web" in result.stdout
 
 
 class TestWebConfig:
@@ -1015,13 +695,13 @@ class TestAliasIsolation:
 
 
 class TestBuildMegachatd:
-    """install.sh builds megachatd with Go, or falls back to the Python server."""
+    """install.sh builds megachatd with Go, or uses a release binary; no Go and
+    no binary is fatal."""
 
     FUNCS = (
         "go_required_version",
         "version_ge",
-        "use_python_server",
-        "clear_python_fallback",
+        "megachatd_binary",
         "build_megachatd",
     )
 
@@ -1031,16 +711,16 @@ class TestBuildMegachatd:
         *,
         go_version: str | None,
         build_ok: bool = True,
-        env_text: str | None = None,
+        binary: bool = False,
+        sources: bool = True,
         gotoolchain: str | None = None,
     ):
         project = tmp_path / "proj"
-        (project / "megachatd").mkdir(parents=True)
-        (project / "megachatd" / "go.mod").write_text(
-            "module x\n\ngo 1.26.0\n", encoding="utf-8"
-        )
-        if env_text is not None:
-            (project / ".env").write_text(env_text, encoding="utf-8")
+        if sources:
+            (project / "megachatd").mkdir(parents=True)
+            (project / "megachatd" / "go.mod").write_text(
+                "module x\n\ngo 1.26.0\n", encoding="utf-8"
+            )
         stubs = tmp_path / "stubs"
         stubs.mkdir()
         go_log = tmp_path / "go.log"
@@ -1052,18 +732,16 @@ class TestBuildMegachatd:
                 f'echo "$PWD: $*" >> {go_log}\n'
                 f"exit {0 if build_ok else 1}\n",
             )
+        if binary:
+            _write_stub(stubs / "megachatd", "#!/bin/sh\nexit 0\n")
         lines = INSTALL_SCRIPT.read_text(encoding="utf-8").splitlines()
-        assigns = [
-            ln
-            for ln in lines
-            if ln.startswith(("MEGACHATD_DIR=", "MEGACHATD_FALLBACK_MARK="))
-        ]
+        assigns = [ln for ln in lines if ln.startswith("MEGACHATD_DIR=")]
         funcs = "\n".join(_extract_function(INSTALL_SCRIPT, f) for f in self.FUNCS)
         script = tmp_path / "build.sh"
         script.write_text(
             "set -euo pipefail\n"
             'info() { echo "[INFO] $*"; }\nok() { echo "[OK] $*"; }\n'
-            'warn() { echo "[WARN] $*"; }\n'
+            'die() { echo "[ERROR] $*" >&2; exit 1; }\n'
             f"PROJECT_DIR='{project}'\n" + "\n".join(assigns) + f"\n{funcs}\n"
             "build_megachatd\n",
             encoding="utf-8",
@@ -1104,23 +782,25 @@ class TestBuildMegachatd:
         assert go_log.read_text().strip() == (
             f"{project}/megachatd: build -o bin/megachatd ./cmd/megachatd"
         )
-        assert not (project / ".env").exists()
 
-    def test_missing_go_warns_in_italian_and_sets_python_fallback(self, tmp_path: Path):
-        result, project, _ = self._run(tmp_path, go_version=None)
+    def test_missing_go_without_binary_dies(self, tmp_path: Path):
+        result, _, _ = self._run(tmp_path, go_version=None)
+        assert result.returncode != 0
+        assert "Go non trovato" in result.stderr
+
+    def test_missing_go_uses_an_existing_release_binary(self, tmp_path: Path):
+        result, _, go_log = self._run(tmp_path, go_version=None, binary=True)
         assert result.returncode == 0, result.stderr
-        assert "[WARN] Go non trovato" in result.stdout
-        assert "MEGACHAT_SERVER=python" in (project / ".env").read_text()
-        assert (project / ".env").stat().st_mode & 0o777 == 0o600
+        assert "uso il binario megachatd già presente" in result.stdout
+        assert not go_log.exists()
 
-    def test_old_go_without_toolchain_download_falls_back(self, tmp_path: Path):
-        result, project, go_log = self._run(
+    def test_old_go_without_toolchain_download_dies(self, tmp_path: Path):
+        result, _, go_log = self._run(
             tmp_path, go_version="1.24.7", gotoolchain="local"
         )
-        assert result.returncode == 0, result.stderr
-        assert "richiede Go 1.26.0+" in result.stdout
+        assert result.returncode != 0
+        assert "richiede Go 1.26.0+" in result.stderr
         assert not go_log.exists()
-        assert "MEGACHAT_SERVER=python" in (project / ".env").read_text()
 
     def test_old_go_may_download_its_toolchain(self, tmp_path: Path):
         result, _, go_log = self._run(tmp_path, go_version="1.24.7")
@@ -1128,43 +808,17 @@ class TestBuildMegachatd:
         assert "scaricherà la toolchain" in result.stdout
         assert go_log.exists()
 
-    def test_failed_build_falls_back(self, tmp_path: Path):
-        result, project, _ = self._run(tmp_path, go_version="1.26.0", build_ok=False)
+    def test_failed_build_dies(self, tmp_path: Path):
+        result, _, _ = self._run(tmp_path, go_version="1.26.0", build_ok=False)
+        assert result.returncode != 0
+        assert "Compilazione di megachatd fallita" in result.stderr
+
+    def test_missing_sources_use_an_existing_binary(self, tmp_path: Path):
+        result, _, _ = self._run(tmp_path, go_version=None, sources=False, binary=True)
         assert result.returncode == 0, result.stderr
-        assert "Compilazione di megachatd fallita" in result.stdout
-        assert "MEGACHAT_SERVER=python" in (project / ".env").read_text()
+        assert "uso il binario già presente" in result.stdout
 
-    def test_build_removes_the_fallback_it_wrote_and_keeps_the_rest(
-        self, tmp_path: Path
-    ):
-        mark = "# Scritto da install.sh: Go non disponibile, uso il server Python"
-        result, project, _ = self._run(
-            tmp_path,
-            go_version="1.26.0",
-            env_text=f"KEEP=1\n\n{mark}\nMEGACHAT_SERVER=python\n",
-        )
-        assert result.returncode == 0, result.stderr
-        text = (project / ".env").read_text()
-        assert "MEGACHAT_SERVER" not in text
-        assert "KEEP=1" in text
-
-    def test_users_own_python_choice_is_kept(self, tmp_path: Path):
-        result, project, _ = self._run(
-            tmp_path, go_version="1.26.0", env_text="MEGACHAT_SERVER=python\n"
-        )
-        assert result.returncode == 0, result.stderr
-        assert (project / ".env").read_text() == "MEGACHAT_SERVER=python\n"
-
-
-class TestWahaIsOptIn:
-    def test_help_lists_waha_flags_not_a_default_docker_step(self, tmp_path: Path):
-        out = _run_install(tmp_path, "--help").stdout
-        assert "--waha" in out
-        assert "--check-waha" in out
-        assert "megachatd" in out
-
-    def test_default_run_never_touches_docker(self, tmp_path: Path):
-        text = INSTALL_SCRIPT.read_text(encoding="utf-8")
-        main = text[text.index("# ─── Esecuzione principale") :]
-        assert 'if [ "$DO_WHATSAPP" -eq 1 ]' not in main.split("# 5.5")[0]
-        assert "Hai Docker installato" not in text
+    def test_missing_sources_without_binary_die(self, tmp_path: Path):
+        result, _, _ = self._run(tmp_path, go_version=None, sources=False)
+        assert result.returncode != 0
+        assert "Sorgenti di megachatd non trovati" in result.stderr

@@ -1,5 +1,4 @@
-"""Restart the signal-cli daemon (for the *configured* account only) and, for the
-Python server, WAHA.
+"""Restart the signal-cli daemon for the *configured* account.
 
 Ported from ``scripts/restart_backend.sh``.
 """
@@ -13,9 +12,7 @@ import subprocess
 import time
 from pathlib import Path
 
-from . import serverbin
-from . import whatsapp as whatsapp_mod
-from .common import PROJECT_DIR, command_exists, die, http_post, info, port_listening
+from .common import PROJECT_DIR, die, http_post, info, port_listening
 
 SIGNAL_RPC_URL = "http://127.0.0.1:8080/api/v1/rpc"
 
@@ -174,90 +171,9 @@ def _restart_signal_daemon(wait: bool, timeout_s: int) -> None:
     die(f"Timeout: signal-cli non risponde via JSON-RPC entro {timeout_s}s.")
 
 
-def _restart_waha(
-    wait: bool, api_timeout_s: int, *, docker_limits: bool = True
-) -> None:
-    if not command_exists("docker"):
-        die("docker non trovato. Installa Docker e riprova.")
-        return
-    if (
-        subprocess.run(
-            ["docker", "compose", "version"], capture_output=True, check=False
-        ).returncode
-        != 0
-    ):
-        die(
-            "Docker Compose non disponibile. Installa il plugin Docker Compose e riprova."
-        )
-        return
-    compose_file = whatsapp_mod.COMPOSE_FILE
-    if not compose_file.exists():
-        die(f"File Compose non trovato: {compose_file}")
-        return
-
-    compose = ["docker", "compose", *whatsapp_mod.compose_args(docker_limits)]
-    result = subprocess.run(
-        compose + ["config", "--services"], capture_output=True, text=True, check=False
-    )
-    if result.returncode != 0:
-        die("Impossibile leggere i servizi dal file Compose.")
-        return
-    if "whatsapp" not in result.stdout.splitlines():
-        die("Il file Compose non definisce il servizio 'whatsapp'.")
-        return
-
-    existing = subprocess.run(
-        compose + ["ps", "-aq", "whatsapp"], capture_output=True, text=True, check=False
-    ).stdout.strip()
-    if existing:
-        info("Riavvio del solo servizio WAHA (whatsapp)...")
-        result = subprocess.run(compose + ["restart", "whatsapp"], check=False)
-    else:
-        info("Il servizio WAHA non esiste ancora: avvio del solo servizio whatsapp...")
-        result = subprocess.run(compose + ["up", "-d", "whatsapp"], check=False)
-    if result.returncode != 0:
-        die("Avvio/riavvio del servizio whatsapp fallito.")
-        return
-
-    if not wait:
-        info("Comando completato (--no-wait).")
-        return
-
-    api_url = os.environ.get(
-        "WHATSAPP_API_URL", f"http://127.0.0.1:{whatsapp_mod.WA_PORT}"
-    ).rstrip("/")
-    api_key = whatsapp_mod.read_waha_api_key()
-    info(f"Attendo l'API WAHA su {api_url}/api/version (timeout: {api_timeout_s}s)...")
-    deadline = time.monotonic() + api_timeout_s
-    from .common import http_get
-
-    while time.monotonic() < deadline:
-        result_get = http_get(
-            f"{api_url}/api/version",
-            headers={"X-Api-Key": api_key} if api_key else {},
-            timeout=5,
-        )
-        if result_get is not None and 200 <= result_get[0] < 300:
-            print(f"✅ WAHA pronta: {api_url}")
-            return
-        time.sleep(2)
-    die(
-        f"Timeout: WAHA non risponde su {api_url}/api/version entro {api_timeout_s}s. "
-        f'Controlla: docker compose -f "{compose_file}" logs whatsapp'
-    )
-
-
-def run(no_wait: bool, *, docker_limits: bool = True, waha: bool | None = None) -> int:
-    """Restart signal-cli and, when *waha* (default: only with the Python
-    server, ``MEGACHAT_SERVER=python``), WAHA; megachatd needs no WAHA."""
-    if waha is None:
-        waha = serverbin.use_python(PROJECT_DIR)
+def run(no_wait: bool) -> int:
+    """Restart the configured signal-cli daemon."""
     wait = not no_wait
     signal_timeout = int(os.environ.get("SIGNAL_DAEMON_TIMEOUT_SECONDS", "30") or "30")
-    api_timeout = int(os.environ.get("WAHA_API_TIMEOUT_SECONDS", "120") or "120")
     _restart_signal_daemon(wait, signal_timeout)
-    if waha:
-        _restart_waha(wait, api_timeout, docker_limits=docker_limits)
-    else:
-        info("WAHA non necessario (WhatsApp è nativo in megachatd): salto.")
     return 0

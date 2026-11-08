@@ -32,9 +32,9 @@ from textual.widgets import (
     Static,
 )
 
+from client.client import ApiError
 from models import DEFAULT_SIGNAL_DEVICE_NAME
 from qr_utils import qr_png_to_ascii, qr_to_ascii
-from client.client import ApiError
 from tui.client_timeouts import call_op
 
 logger = logging.getLogger(__name__)

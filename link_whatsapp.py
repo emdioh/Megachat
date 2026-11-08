@@ -47,9 +47,9 @@ import time
 
 logger = logging.getLogger(__name__)
 
-from qr_utils import print_qr_code, qr_png_to_ascii
 from client.attach import AttachError, attach_or_spawn
 from client.client import ApiError
+from qr_utils import print_qr_code, qr_png_to_ascii
 
 #: Seconds to wait for the phone to scan before giving up.
 LINK_TIMEOUT_S = 300

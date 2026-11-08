@@ -3,23 +3,16 @@
 
     python3 launcher.py install [options]            # was install.sh
     python3 launcher.py aliases                       # was install.sh --aliases
-    python3 launcher.py whatsapp start|stop [--no-wait]      # was scripts/start_whatsapp.sh
     python3 launcher.py backend-restart [--no-wait]   # was scripts/restart_backend.sh
     python3 launcher.py server start [--web-host H] [--web-port P] [...]
-    python3 launcher.py server stop [--waha]
+    python3 launcher.py server stop
     python3 launcher.py server status                 # was scripts/start_on_server.sh
     python3 launcher.py handover to-server|to-local|status  # was scripts/tui_handover.sh
     python3 launcher.py profile pyspy|strace [duration]     # was profiling/run_*.sh
     python3 launcher.py test                           # was tests/run_regression_tests.sh
 
 The server is ``megachatd`` (Go, WhatsApp built in; build it with
-``make megachatd``).  ``MEGACHAT_SERVER=python`` selects the old Python server,
-the only one that needs WAHA: ``install --waha``, ``server start --waha``,
-``whatsapp start`` and ``backend-restart --waha`` start WAHA with CPU/RAM caps
-(docker-compose.resources.yml) applied by default; pass --no-docker-limits
-to skip that (e.g. on a host that doesn't delegate the
-memory cgroup controller, such as an unprivileged Proxmox/LXC container
-without nesting=1).
+``make megachatd``).
 
 Kept dependency-free (stdlib only) so ``install`` can run before anything in
 requirements.txt is on disk. See ``launcher/`` for the implementation of
@@ -31,7 +24,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from launcher import backend, handover, install, server, test, whatsapp
+from launcher import backend, handover, install, server, test
 from launcher import profile as profile_mod
 
 
@@ -45,19 +38,6 @@ def _port(value: str) -> int:
     return port
 
 
-def _add_compose_file(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument(
-        "--compose-file",
-        action="append",
-        default=[],
-        metavar="PATH",
-        help=(
-            "Extra docker compose file layered on WAHA's (repeatable); "
-            "to make it permanent set WAHA_COMPOSE_FILES in .env"
-        ),
-    )
-
-
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="launcher.py",
@@ -69,7 +49,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     p_install = sub.add_parser(
-        "install", help="Full installer (signal-cli, venv, deps, aliases)"
+        "install", help="Full installer (signal-cli, venv, deps, megachatd, aliases)"
     )
     p_install.add_argument(
         "--no-venv", action="store_true", help="Use the system Python instead of a venv"
@@ -87,76 +67,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--update", action="store_true", help="Update signal-cli to latest"
     )
     p_install.add_argument(
-        "--waha",
-        "--whatsapp",
-        dest="whatsapp",
-        action="store_true",
-        help=(
-            "Also start the WAHA WhatsApp HTTP API (only for the old Python "
-            "server, MEGACHAT_SERVER=python; megachatd needs no WAHA)"
-        ),
-    )
-    p_install.add_argument(
-        "--check-waha",
-        "--check-whatsapp",
-        dest="check_whatsapp",
-        action="store_true",
-        help="Only check WAHA prerequisites (Docker, ports)",
-    )
-    p_install.add_argument(
-        "--no-web",
-        action="store_true",
-        help="Don't install optional Web UI dependencies",
-    )
-    p_install.add_argument(
         "--aliases",
         action="store_true",
         help="Install only the web reader shell aliases",
     )
-    p_install.add_argument(
-        "--no-docker-limits",
-        action="store_true",
-        help=(
-            "Start WAHA without CPU/RAM caps (default: docker-compose.resources.yml "
-            "is applied on top). Use this if your host doesn't delegate the memory "
-            "cgroup controller, e.g. an unprivileged Proxmox/LXC container without "
-            "nesting=1."
-        ),
-    )
-    _add_compose_file(p_install)
 
     sub.add_parser("aliases", help="Install only the web reader shell aliases")
 
-    p_wa = sub.add_parser(
-        "whatsapp", help="Start/stop the WAHA WhatsApp HTTP API container"
-    )
-    wa_sub = p_wa.add_subparsers(dest="wa_command", required=True)
-    p_wa_start = wa_sub.add_parser("start")
-    p_wa_start.add_argument("--no-wait", action="store_true")
-    p_wa_start.add_argument(
-        "--no-docker-limits",
-        action="store_true",
-        help="Start WAHA without CPU/RAM caps (default: applied)",
-    )
-    _add_compose_file(p_wa_start)
-    wa_sub.add_parser("stop")
-
     p_backend = sub.add_parser(
-        "backend-restart",
-        help="Restart the signal-cli daemon (configured account) and, with --waha, WAHA",
+        "backend-restart", help="Restart the signal-cli daemon (configured account)"
     )
     p_backend.add_argument("--no-wait", action="store_true")
-    p_backend.add_argument(
-        "--waha",
-        action="store_true",
-        help="Also restart WAHA (default only with MEGACHAT_SERVER=python)",
-    )
-    p_backend.add_argument(
-        "--no-docker-limits",
-        action="store_true",
-        help="Restart WAHA without CPU/RAM caps (default: applied)",
-    )
-    _add_compose_file(p_backend)
 
     p_server = sub.add_parser(
         "server",
@@ -164,12 +85,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     server_sub = p_server.add_subparsers(dest="server_command", required=True)
     p_server_start = server_sub.add_parser("start")
-    p_server_start.add_argument(
-        "--no-docker-limits",
-        action="store_true",
-        help="Start WAHA without CPU/RAM caps (default: applied)",
-    )
-    _add_compose_file(p_server_start)
     p_server_start.add_argument(
         "--no-token",
         action="store_true",
@@ -213,27 +128,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--debug", action="store_true", help="Debug logging in /tmp/signal-tui.log"
     )
     p_server_start.add_argument(
-        "--waha",
-        action="store_true",
-        help="Also start WAHA (only with the Python server, MEGACHAT_SERVER=python)",
-    )
-    p_server_start.add_argument(
-        "--no-whatsapp", action="store_true", help=argparse.SUPPRESS
-    )  # obsolete: WAHA is no longer started by default
-    p_server_start.add_argument(
         "--foreground",
         action="store_true",
         help="Run the server in this terminal instead of detached (Ctrl+C stops it)",
     )
-    p_server_stop = server_sub.add_parser("stop")
-    p_server_stop.add_argument(
-        "--waha",
-        action="store_true",
-        help="Also bring the WAHA container down",
-    )
-    p_server_stop.add_argument(
-        "--keep-whatsapp", action="store_true", help=argparse.SUPPRESS
-    )  # obsolete: WAHA is left alone unless --waha
+    server_sub.add_parser("stop")
     server_sub.add_parser("status")
 
     p_handover = sub.add_parser(
@@ -241,19 +140,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="Move the headless server between this machine and the remote server",
     )
     handover_sub = p_handover.add_subparsers(dest="handover_command", required=True)
-    p_handover_to_server = handover_sub.add_parser("to-server")
-    p_handover_to_server.add_argument(
-        "--no-docker-limits",
-        action="store_true",
-        help="Start WAHA on the remote server without CPU/RAM caps (default: applied)",
-    )
-    p_handover_to_local = handover_sub.add_parser("to-local")
-    p_handover_to_local.add_argument(
-        "--no-docker-limits",
-        action="store_true",
-        help="Start WAHA locally without CPU/RAM caps (default: applied)",
-    )
-    _add_compose_file(p_handover_to_local)
+    handover_sub.add_parser("to-server")
+    handover_sub.add_parser("to-local")
     handover_sub.add_parser("status")
 
     p_profile = sub.add_parser("profile", help="CPU (py-spy) / I/O (strace) profiling")
@@ -271,28 +159,16 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    whatsapp.add_compose_files(getattr(args, "compose_file", None) or [])
 
     if args.command == "install":
         return install.run(args)
     if args.command == "aliases":
         return install.run_aliases_only()
-    if args.command == "whatsapp":
-        if args.wa_command == "start":
-            return whatsapp.start(
-                no_wait=args.no_wait, docker_limits=not args.no_docker_limits
-            )
-        return whatsapp.stop()
     if args.command == "backend-restart":
-        return backend.run(
-            no_wait=args.no_wait,
-            docker_limits=not args.no_docker_limits,
-            waha=True if args.waha else None,
-        )
+        return backend.run(no_wait=args.no_wait)
     if args.command == "server":
         if args.server_command == "start":
             return server.start_all(
-                docker_limits=not args.no_docker_limits,
                 print_token=not args.no_token,
                 opts=server.ServeOptions(
                     web_host=args.web_host,
@@ -303,17 +179,16 @@ def main(argv: list[str] | None = None) -> int:
                     socket=args.socket,
                     debug=args.debug,
                 ),
-                whatsapp=args.waha,
                 foreground=args.foreground,
             )
         if args.server_command == "stop":
-            return server.stop_all(whatsapp=args.waha)
+            return server.stop_all()
         return server.status()
     if args.command == "handover":
         if args.handover_command == "to-server":
-            return handover.to_server(docker_limits=not args.no_docker_limits)
+            return handover.to_server()
         if args.handover_command == "to-local":
-            return handover.to_local(docker_limits=not args.no_docker_limits)
+            return handover.to_local()
         return handover.status()
     if args.command == "profile":
         if args.profile_command == "pyspy":

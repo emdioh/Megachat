@@ -2,18 +2,26 @@
 
 from __future__ import annotations
 
+import json
 import os
 import signal
 import subprocess
+from pathlib import Path
 
 import pytest
 
 from launcher import server
-from launcher import whatsapp as whatsapp_mod
 
 
 def _cp(cmd, returncode=0, stdout=""):
     return subprocess.CompletedProcess(cmd, returncode, stdout=stdout)
+
+
+def _fake_runtime_file(pid: int) -> None:
+    """Publish a server runtime file on the socket path isolated by conftest."""
+    socket = Path(os.environ["MEGACHAT_SOCKET"])
+    socket.parent.mkdir(parents=True, exist_ok=True)
+    server.runtime_file_path(socket).write_text(json.dumps({"pid": pid}))
 
 
 class TestLocalIp:
@@ -28,24 +36,6 @@ class TestLocalIp:
 
         monkeypatch.setattr(server.socket, "socket", _BoomSocket)
         assert server._local_ip() == "127.0.0.1"
-
-
-class TestDockerContainerRunning:
-    def test_true_when_name_listed(self, monkeypatch):
-        monkeypatch.setattr(server, "command_exists", lambda name: True)
-        monkeypatch.setattr(
-            server.subprocess,
-            "run",
-            lambda *a, **k: _cp(a[0], stdout="signal-tui-whatsapp\nother\n"),
-        )
-        assert server._docker_container_running("signal-tui-whatsapp") is True
-
-    def test_false_when_name_absent(self, monkeypatch):
-        monkeypatch.setattr(server, "command_exists", lambda name: True)
-        monkeypatch.setattr(
-            server.subprocess, "run", lambda *a, **k: _cp(a[0], stdout="other\n")
-        )
-        assert server._docker_container_running("signal-tui-whatsapp") is False
 
 
 class TestPgrep:
@@ -64,68 +54,51 @@ class TestStatus:
     def test_megachatd_status_has_no_waha_line(self, monkeypatch, tmp_path, capsys):
         monkeypatch.setattr(server, "LOCK_FILE", tmp_path / "no.lock")
         monkeypatch.setattr(server, "_pgrep", lambda pattern: False)
-        monkeypatch.setattr(server, "_docker_container_running", lambda name: False)
         monkeypatch.setattr(
             server, "port_listening", lambda port, host="127.0.0.1": False
         )
         assert server.status() == 0
         assert "WAHA" not in capsys.readouterr().out
 
-
     def test_reports_all_on(self, monkeypatch, tmp_path, capsys):
         lock = tmp_path / "signal-tui.lock"
         lock.write_text(str(os.getpid()), encoding="utf-8")
         monkeypatch.setattr(server, "LOCK_FILE", lock)
         monkeypatch.setattr(server, "_pgrep", lambda pattern: True)
-        monkeypatch.setattr(server, "_docker_container_running", lambda name: True)
         monkeypatch.setattr(
             server, "port_listening", lambda port, host="127.0.0.1": True
         )
-        monkeypatch.setattr(whatsapp_mod, "session_status", lambda timeout=3: "WORKING")
         assert server.status() == 0
         out = capsys.readouterr().out
         assert f"Server: ATTIVO (pid {os.getpid()}, " in out
         assert "daemon signal-cli: attivo" in out
-        assert "WAHA: attivo" in out
         assert "in ascolto su 0.0.0.0:4242" in out
 
-    def test_reports_session_state_when_waha_is_active(
+    def test_finds_a_system_service_server_on_its_socket(
         self, monkeypatch, tmp_path, capsys
     ):
         monkeypatch.setattr(server, "LOCK_FILE", tmp_path / "no.lock")
         monkeypatch.setattr(server, "_pgrep", lambda pattern: False)
-        monkeypatch.setattr(server, "_docker_container_running", lambda name: True)
         monkeypatch.setattr(
             server, "port_listening", lambda port, host="127.0.0.1": False
         )
-        seen = {}
-
-        def fake_status(timeout=3):
-            seen["timeout"] = timeout
-            return "SCAN_QR_CODE"
-
-        monkeypatch.setattr(whatsapp_mod, "session_status", fake_status)
+        _fake_runtime_file(os.getpid())
         assert server.status() == 0
         out = capsys.readouterr().out
-        assert "WAHA: attivo" in out
-        assert "in attesa di associazione" in out
-        assert seen["timeout"] == 2
+        assert f"Server: ATTIVO (pid {os.getpid()}, megachatd, socket " in out
 
 
 class TestStopAll:
-    def test_reports_waha_stopped(self, monkeypatch, capsys):
+    def test_reports_the_server_stopped(self, monkeypatch, capsys):
         monkeypatch.setattr(server, "stop_server", lambda: True)
-        monkeypatch.setattr(whatsapp_mod, "COMPOSE_FILE", "compose.yml")
-        monkeypatch.setattr(server.subprocess, "run", lambda *a, **k: _cp(a[0], 0))
-        assert server.stop_all(whatsapp=True) == 0
-        assert "WAHA fermato" in capsys.readouterr().out
+        assert server.stop_all() == 0
+        assert "Server fermato" in capsys.readouterr().out
 
-    def test_reports_waha_was_not_running(self, monkeypatch, capsys):
-        monkeypatch.setattr(server, "stop_server", lambda: True)
-        monkeypatch.setattr(whatsapp_mod, "COMPOSE_FILE", "compose.yml")
-        monkeypatch.setattr(server.subprocess, "run", lambda *a, **k: _cp(a[0], 1))
-        assert server.stop_all(whatsapp=True) == 0
-        assert "WAHA non era attivo" in capsys.readouterr().out
+    def test_dies_when_the_server_will_not_stop(self, monkeypatch):
+        monkeypatch.setattr(server, "stop_server", lambda: False)
+        monkeypatch.setattr(server, "server_pid", lambda: 99)
+        with pytest.raises(SystemExit):
+            server.stop_all()
 
 
 class _FakeProc:
@@ -142,8 +115,6 @@ class _FakeProc:
 def start_env(monkeypatch, tmp_path):
     """Isolate start_all from tmux, the real lock, the log and real sleeping."""
     monkeypatch.setenv("MEGACHATD_BIN", "/opt/megachatd")
-    monkeypatch.setattr(whatsapp_mod, "start", lambda **k: 0)
-    monkeypatch.setattr(whatsapp_mod, "session_status", lambda timeout=3: "WORKING")
     monkeypatch.setattr(server, "LOCK_FILE", tmp_path / "signal-tui.lock")
     monkeypatch.setattr(server, "_kill_tmux_session", lambda name="tui": None)
     monkeypatch.setattr(server, "SERVER_LOG", tmp_path / "serve.log")
@@ -205,7 +176,6 @@ class TestStartAll:
         assert "tok123" in out
         assert "WAHA" not in out  # megachatd: WhatsApp is native
 
-
     def test_one_time_notice_from_the_server_output_is_shown(
         self, monkeypatch, start_env, capsys
     ):
@@ -265,7 +235,6 @@ class TestStartAll:
         assert kwargs["start_new_session"] is True
         assert kwargs["cwd"] == server.PROJECT_DIR
 
-
     def test_stops_previous_instance_before_starting(self, monkeypatch, start_env):
         order = []
         monkeypatch.setattr(server, "stop_server", lambda: order.append("stop") or True)
@@ -298,7 +267,6 @@ class TestStatusStaleLock:
         monkeypatch.setattr(server, "LOCK_FILE", lock)
         monkeypatch.setattr(server, "_pid_alive", lambda pid: False)
         monkeypatch.setattr(server, "_pgrep", lambda pattern: False)
-        monkeypatch.setattr(server, "_docker_container_running", lambda name: False)
         monkeypatch.setattr(
             server, "port_listening", lambda port, host="127.0.0.1": False
         )
@@ -370,6 +338,25 @@ class TestStopServer:
         assert server.stop_server() is True
         assert not lock.exists()
 
+    def test_stops_a_system_service_server_found_on_its_socket(
+        self, monkeypatch, tmp_path, lock
+    ):
+        _fake_runtime_file(424242)
+        sent = []
+        alive = {"v": True}
+
+        def _kill(pid, sig):
+            if sig == 0:
+                if not alive["v"]:
+                    raise ProcessLookupError
+                return
+            sent.append((pid, sig))
+            alive["v"] = False
+
+        monkeypatch.setattr(server.os, "kill", _kill)
+        assert server.stop_server() is True
+        assert sent == [(424242, signal.SIGINT)]
+
 
 class TestStartAllStuckServer:
     def test_does_not_spawn_next_to_a_server_that_will_not_stop(
@@ -381,7 +368,7 @@ class TestStartAllStuckServer:
             server.start_all()
         assert start_env == []  # nothing spawned
 
-    def test_stop_all_keeps_waha_when_server_will_not_stop(self, monkeypatch, tmp_path):
+    def test_stop_all_raises_when_server_will_not_stop(self, monkeypatch, tmp_path):
         monkeypatch.setattr(server, "stop_server", lambda: False)
         monkeypatch.setattr(server, "server_pid", lambda: 99)
         ran = []

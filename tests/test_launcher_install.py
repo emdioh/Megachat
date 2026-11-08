@@ -229,44 +229,19 @@ class TestInstallPythonDeps:
             return subprocess.CompletedProcess(cmd, 0)
 
         monkeypatch.setattr(install.subprocess, "run", fake_run)
-        result = install.install_python_deps(do_venv=False, do_web=True)
+        assert install.install_python_deps(do_venv=False) is None
 
-        assert result is True
         joined = [" ".join(c) for c in calls]
         assert any("requirements.txt" in c for c in joined)
-        assert any("requirements-web.txt" in c for c in joined)
+        assert not any("web" in c for c in joined)
         assert not (project / ".venv").exists()
-
-    def test_no_web_flag_skips_web_deps(self, project: Path, monkeypatch):
-        calls: list[list[str]] = []
-
-        def fake_run(cmd, **kwargs):
-            calls.append(cmd)
-            return subprocess.CompletedProcess(cmd, 0)
-
-        monkeypatch.setattr(install.subprocess, "run", fake_run)
-        install.install_python_deps(do_venv=False, do_web=False)
-
-        joined = [" ".join(c) for c in calls]
-        assert any("requirements.txt" in c for c in joined)
-        assert not any("requirements-web.txt" in c for c in joined)
-
-    def test_web_deps_failure_is_soft(self, project: Path, monkeypatch):
-        def fake_run(cmd, **kwargs):
-            if "requirements-web.txt" in " ".join(cmd):
-                return subprocess.CompletedProcess(cmd, 1)
-            return subprocess.CompletedProcess(cmd, 0)
-
-        monkeypatch.setattr(install.subprocess, "run", fake_run)
-        result = install.install_python_deps(do_venv=False, do_web=True)
-        assert result is False  # web disabled, but no exception raised
 
     def test_requirements_failure_dies(self, project: Path, monkeypatch):
         def fake_run(cmd, **kwargs):
-            if "requirements.txt" in " ".join(cmd) and "web" not in " ".join(cmd):
+            if "requirements.txt" in " ".join(cmd):
                 return subprocess.CompletedProcess(cmd, 1)
             return subprocess.CompletedProcess(cmd, 0)
 
         monkeypatch.setattr(install.subprocess, "run", fake_run)
         with pytest.raises(SystemExit):
-            install.install_python_deps(do_venv=False, do_web=True)
+            install.install_python_deps(do_venv=False)

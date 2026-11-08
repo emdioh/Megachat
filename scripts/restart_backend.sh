@@ -1,12 +1,10 @@
 #!/usr/bin/env bash
 #
-# restart_backend.sh — Riavvia il daemon signal-cli (e, solo con il vecchio
-# server Python, MEGACHAT_SERVER=python, anche WAHA).
+# restart_backend.sh — Riavvia il daemon signal-cli dell'account configurato.
 #
-# Wrapper sottile di `launcher.py backend-restart`: con megachatd WhatsApp è
-# nativo e WAHA non viene toccata.
+# Wrapper sottile di `launcher.py backend-restart`.
 #
-# Uso: ./scripts/restart_backend.sh [--no-wait] [--no-docker-limits]
+# Uso: ./scripts/restart_backend.sh [--no-wait]
 #
 set -euo pipefail
 
@@ -19,8 +17,8 @@ fi
 
 for arg in "$@"; do
     case "$arg" in
-        --no-wait|--no-docker-limits) ;;
-        --help|-h) echo "Uso: $0 [--no-wait] [--no-docker-limits]"; exit 0 ;;
+        --no-wait) ;;
+        --help|-h) echo "Uso: $0 [--no-wait]"; exit 0 ;;
         *) echo "❌ Opzione sconosciuta: $arg" >&2; exit 1 ;;
     esac
 done

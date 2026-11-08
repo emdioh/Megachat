@@ -2,8 +2,7 @@
 
 Replaces the argument-parsing portion of the old tests/test_install_script.py
 (bash --help/unknown-flag/missing-arg tests) — the actual command logic is
-tested in tests/test_launcher_install.py, tests/test_launcher_whatsapp.py and
-tests/test_launcher_aliases.py.
+tested in tests/test_launcher_install.py and tests/test_launcher_aliases.py.
 """
 
 from __future__ import annotations
@@ -29,7 +28,7 @@ def test_top_level_help():
     result = _run("--help")
     assert result.returncode == 0
     assert "install" in result.stdout
-    assert "whatsapp" in result.stdout
+    assert "server" in result.stdout
     assert "handover" in result.stdout
 
 
@@ -41,9 +40,6 @@ def test_install_help_lists_all_flags():
         "--version",
         "--skip-signal-cli",
         "--update",
-        "--whatsapp",
-        "--check-whatsapp",
-        "--no-web",
         "--aliases",
     ):
         assert flag in result.stdout
@@ -59,11 +55,6 @@ def test_install_missing_version_arg():
     result = _run("install", "--version")
     assert result.returncode != 0
     assert "--version" in result.stderr
-
-
-def test_whatsapp_requires_subcommand():
-    result = _run("whatsapp")
-    assert result.returncode != 0
 
 
 def test_server_requires_subcommand():

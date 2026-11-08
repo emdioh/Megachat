@@ -19,13 +19,12 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from . import whatsapp as whatsapp_mod
+from . import serverbin
 from .aliases import install_aliases
 from .common import (
     C_BOLD,
     C_GREEN,
     C_RESET,
-    C_YELLOW,
     PROJECT_DIR,
     command_exists,
     die,
@@ -211,7 +210,7 @@ def remove_old_versions(keep: str) -> None:
             shutil.rmtree(d, ignore_errors=True)
 
 
-def install_python_deps(do_venv: bool, do_web: bool) -> bool:
+def install_python_deps(do_venv: bool) -> None:
     if do_venv:
         venv_dir = PROJECT_DIR / ".venv"
         if not venv_dir.is_dir():
@@ -221,7 +220,7 @@ def install_python_deps(do_venv: bool, do_web: bool) -> bool:
             )
             if result.returncode != 0:
                 die("Creazione del virtualenv fallita.")
-                return do_web
+                return
         else:
             info(f"Virtualenv già presente in {venv_dir}")
         python_cmd = str(venv_dir / "bin" / "python")
@@ -248,38 +247,13 @@ def install_python_deps(do_venv: bool, do_web: bool) -> bool:
     )
     if result.returncode != 0:
         die("Installazione delle dipendenze Python fallita.")
-        return do_web
-
-    if do_web:
-        result = subprocess.run(
-            [
-                python_cmd,
-                "-m",
-                "pip",
-                "install",
-                "-r",
-                str(PROJECT_DIR / "requirements-web.txt"),
-            ],
-            check=False,
-        )
-        if result.returncode != 0:
-            warn(
-                "Dipendenze Web UI non installate; la Web UI resterà disabilitata. "
-                f"Riprovare: {python_cmd} -m pip install -r requirements-web.txt"
-            )
-            do_web = False
-    else:
-        info("Dipendenze Web UI saltate (--no-web).")
+        return
 
     if do_venv:
         ok("Dipendenze installate nel virtualenv. Attivalo con:")
         print(f"    source {PROJECT_DIR}/.venv/bin/activate")
     else:
         ok("Dipendenze installate nel Python di sistema.")
-    return do_web
-
-
-FALLBACK_MARK = "# Scritto da install.sh: Go non disponibile, uso il server Python"
 
 
 def _version_tuple(text: str) -> tuple[int, ...]:
@@ -307,54 +281,32 @@ def installed_go_version() -> str:
     return match.group(1) if match else ""
 
 
-def use_python_server() -> None:
-    """Fallback: ``MEGACHAT_SERVER=python`` in ``.env`` (read by launcher/TUI)."""
-    env_file = PROJECT_DIR / ".env"
-    try:
-        text = env_file.read_text(encoding="utf-8") if env_file.exists() else ""
-        if re.search(r"^MEGACHAT_SERVER=", text, re.MULTILINE):
-            return  # the user already chose
-        env_file.touch(mode=0o600)
-        env_file.chmod(stat.S_IRUSR | stat.S_IWUSR)
-        with env_file.open("a", encoding="utf-8") as handle:
-            handle.write(f"\n{FALLBACK_MARK}\nMEGACHAT_SERVER=python\n")
-    except OSError as exc:
-        warn(f"Impossibile scrivere MEGACHAT_SERVER=python in {env_file}: {exc}")
-        return
-    warn(
-        f"Server Python attivo come ripiego: MEGACHAT_SERVER=python scritto in {env_file}"
-    )
-
-
-def clear_python_fallback() -> None:
-    """Remove the fallback written by :func:`use_python_server` (only that)."""
-    env_file = PROJECT_DIR / ".env"
-    try:
-        lines = env_file.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return
-    if FALLBACK_MARK not in lines:
-        return
-    kept = [ln for ln in lines if ln not in (FALLBACK_MARK, "MEGACHAT_SERVER=python")]
-    env_file.write_text("\n".join(kept) + ("\n" if kept else ""), encoding="utf-8")
-    info(f"Rimosso il ripiego MEGACHAT_SERVER=python da {env_file}")
-
-
 def build_megachatd() -> bool:
-    """Build ``megachatd/bin/megachatd`` when Go is available; else warn in
-    Italian and fall back to the Python server.  ``True`` when built."""
-    if not (MEGACHATD_DIR / "go.mod").is_file():
-        info("Sorgenti di megachatd non trovati: compilazione saltata.")
-        return False
+    """Build ``megachatd/bin/megachatd`` when Go is available; an existing
+    release binary is accepted when Go is not.  ``True`` when megachatd is
+    available.  A missing Go *and* binary, or a failed build, is fatal."""
     want = go_required_version()
+    if not (MEGACHATD_DIR / "go.mod").is_file():
+        if serverbin.resolve_megachatd(PROJECT_DIR):
+            info("Sorgenti di megachatd non trovati: uso il binario già presente.")
+            return True
+        die(
+            "Sorgenti di megachatd non trovati e nessun binario megachatd: "
+            "serve il repository completo o un binario in "
+            f"{serverbin.BIN_ENV}/PATH."
+        )
+        return False
     if not command_exists("go"):
-        warn(
-            f"Go non trovato: megachatd non può essere compilato (serve Go {want or '1.21'}+)."
+        binary = serverbin.resolve_megachatd(PROJECT_DIR)
+        if binary:
+            info(f"Go non trovato: uso il binario megachatd già presente ({binary}).")
+            return True
+        die(
+            f"Go non trovato: megachatd non può essere compilato (serve Go "
+            f"{want or '1.21'}+) e nessun binario megachatd è presente. Installa "
+            "Go da https://go.dev/dl/ oppure imposta "
+            f"{serverbin.BIN_ENV}=/percorso/megachatd."
         )
-        warn(
-            "Installa Go da https://go.dev/dl/ e rilancia l'installazione per usare megachatd."
-        )
-        use_python_server()
         return False
     have = installed_go_version()
     if want and have and _version_tuple(have) < _version_tuple(want):
@@ -363,10 +315,9 @@ def build_megachatd() -> bool:
                 f"Go {have} trovato, megachatd richiede Go {want}: Go scaricherà la toolchain necessaria."
             )
         else:
-            warn(
+            die(
                 f"Go {have} trovato, ma megachatd richiede Go {want}+: aggiornalo da https://go.dev/dl/."
             )
-            use_python_server()
             return False
     info("Compilazione di megachatd (go build) ...")
     result = subprocess.run(
@@ -375,11 +326,9 @@ def build_megachatd() -> bool:
         check=False,
     )
     if result.returncode != 0:
-        warn("Compilazione di megachatd fallita.")
-        use_python_server()
+        die("Compilazione di megachatd fallita.")
         return False
     ok(f"megachatd compilato in {MEGACHATD_DIR / 'bin' / 'megachatd'}")
-    clear_python_fallback()
     return True
 
 
@@ -392,10 +341,6 @@ def run_aliases_only() -> int:
 def run(args) -> int:
     do_venv = not args.no_venv
     do_signal_cli = not args.skip_signal_cli
-    do_web = not args.no_web
-    do_whatsapp = args.whatsapp
-    do_check_whatsapp = args.check_whatsapp
-    do_docker_limits = not args.no_docker_limits
     specific_version = args.version
 
     if args.aliases:
@@ -454,17 +399,11 @@ def run(args) -> int:
         else:
             ok(f"signal-cli v{installed} trovato in {BIN_DIR}.")
 
-    do_web = install_python_deps(do_venv, do_web)
+    install_python_deps(do_venv)
 
     build_megachatd()
 
-    if do_web:
-        ensure_web_config()
-
-    if do_check_whatsapp:
-        whatsapp_mod.setup(should_start=False, docker_limits=do_docker_limits)
-    elif do_whatsapp:
-        whatsapp_mod.setup(should_start=True, docker_limits=do_docker_limits)
+    ensure_web_config()
 
     if not install_aliases():
         warn("Installazione degli alias shell non riuscita; l'installazione continua.")
@@ -497,35 +436,11 @@ def run(args) -> int:
     if do_venv:
         print("       source .venv/bin/activate")
     print("       python3 signal_tui.py")
-    if do_web:
-        print("       Web UI: http://127.0.0.1:4242")
-        print("       Token:  config.json → web.token")
-        print(
-            "       Gmail (opzionale): python3 scripts/gmail_setup.py "
-            "(scrive gmail.enabled in config.json; a mano: GMAIL_ENABLED=1)"
-        )
+    print("       Web UI: http://127.0.0.1:4242")
+    print("       Token:  config.json → web.token")
+    print(
+        "       Gmail (opzionale): python3 scripts/gmail_setup.py "
+        "(scrive gmail.enabled in config.json; a mano: GMAIL_ENABLED=1)"
+    )
     print()
-    env_file = PROJECT_DIR / ".env"
-    try:
-        python_fallback = re.search(
-            r"^MEGACHAT_SERVER=python",
-            env_file.read_text(encoding="utf-8"),
-            re.MULTILINE,
-        )
-    except OSError:
-        python_fallback = None
-    if python_fallback:
-        print(
-            f"{C_YELLOW}Nota:{C_RESET} stai usando il server Python "
-            "(megachatd non compilato)."
-        )
-        print(
-            f"  Per compilare megachatd installa Go e rilancia "
-            f"{C_BOLD}python3 launcher.py install{C_RESET}"
-        )
-        print(
-            f"  (WhatsApp con il server Python richiede WAHA: "
-            f"{C_BOLD}python3 launcher.py install --waha{C_RESET})"
-        )
-        print()
     return 0

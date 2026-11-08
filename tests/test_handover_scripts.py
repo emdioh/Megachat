@@ -1,14 +1,13 @@
-"""scripts/start_on_server.sh, scripts/tui_handover.sh, scripts/restart_backend.sh
-and scripts/start_whatsapp.sh: thin wrappers of ``launcher.py`` (so they use
-megachatd, or the Python server with ``MEGACHAT_SERVER=python``), never a
-tmux-hosted TUI and never ``megachat.py serve`` by hand.
+"""scripts/start_on_server.sh, scripts/tui_handover.sh and
+scripts/restart_backend.sh: thin wrappers of ``launcher.py`` (so they use
+megachatd), never a tmux-hosted TUI and never ``megachat.py serve`` by hand.
 
 The scripts run as subprocesses in a temporary project copy (with the real
 launcher linked in) with stub
-``ssh``/``tmux``/``docker``/``pkill``/``pgrep`` on PATH, ``MEGACHAT_LOCK_FILE``
-pointing into tmp_path and HOME isolated.  Starting a real server is not
+``ssh``/``tmux``/``pkill``/``pgrep`` on PATH, ``MEGACHAT_LOCK_FILE``
+pointing into tmp_path and HOME isolated. Starting a real server is not
 covered here (the scripts probe the fixed port 4242): the Python launcher
-tests and ``scripts/smoke_e2e.sh`` cover that.
+tests cover that.
 """
 
 from __future__ import annotations
@@ -36,7 +35,7 @@ def _stub(path: Path, body: str) -> None:
 def env(tmp_path):
     project = tmp_path / "project"
     (project / "scripts").mkdir(parents=True)
-    for name in SCRIPTS + ("restart_backend.sh", "start_whatsapp.sh"):
+    for name in SCRIPTS + ("restart_backend.sh",):
         (project / "scripts" / name).write_text(
             (ROOT / "scripts" / name).read_text(encoding="utf-8"), encoding="utf-8"
         )
@@ -109,7 +108,7 @@ def _spawn_fake_server(lock: Path) -> subprocess.Popen:
 
 
 @pytest.mark.parametrize(
-    "name", SCRIPTS + ("restart_backend.sh", "start_whatsapp.sh")
+    "name", SCRIPTS + ("restart_backend.sh",)
 )
 def test_syntax(name):
     path = ROOT / "scripts" / name
@@ -179,8 +178,9 @@ def test_to_server_stops_local_then_sends_serve_script_over_ssh(env):
         assert not env["lock"].exists()
         assert "Handover verso il server completato" in result.stdout
         sent = env["ssh_stdin"].read_text()
-        # same engine choice as launcher/serverbin.py, on the remote side
-        assert "megachatd/bin/megachatd" in sent and "MEGACHAT_SERVER" in sent
+        # same binary lookup as launcher/serverbin.py, on the remote side
+        assert "megachatd/bin/megachatd" in sent
+        assert "MEGACHAT_SERVER" not in sent
         assert "--web-port 4242 --web-host 0.0.0.0" in sent
         assert "tmux new-session" not in sent
         assert "OK_TUI_SERVER" in sent
@@ -220,18 +220,3 @@ def test_start_on_server_start_uses_launcher_and_reports_missing_binary(env):
     assert "tmux new-session" not in (
         env["calls"].read_text() if env["calls"].exists() else ""
     )
-
-
-def test_start_whatsapp_explains_native_whatsapp_without_waha_flag(env):
-    result = _run(env, "start_whatsapp.sh")
-    assert result.returncode == 0
-    assert "python link_whatsapp.py" in result.stdout
-    assert "nativo" in result.stdout
-    assert not env["calls"].exists()  # docker never touched
-
-
-def test_start_whatsapp_stop_needs_waha_flag(env):
-    assert _run(env, "start_whatsapp.sh", "--stop").returncode == 0
-    assert not env["calls"].exists()
-    assert _run(env, "start_whatsapp.sh", "--waha", "--stop").returncode == 0
-    assert "docker compose" in env["calls"].read_text()
