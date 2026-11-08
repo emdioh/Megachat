@@ -412,10 +412,28 @@ exit 0
 
         result = _run_install(tmp_path, "--skip-signal-cli", "--no-venv")
         assert result.returncode != 0
-        assert "Python 3.13+ richiesto" in result.stderr
+        assert "Python 3.12+ richiesto" in result.stderr
 
-    def test_python_3_12_rejected(self, tmp_path: Path, fake_path: Path):
-        """3.12 sotto il nuovo floor → errore con hint."""
+    def test_python_3_11_rejected(self, tmp_path: Path, fake_path: Path):
+        """3.11 sotto il floor → errore con hint."""
+        fake_bin = fake_path
+        python_stub = """#!/bin/sh
+if [ "$1" = "-c" ]; then
+    echo "3.11"
+    exit 0
+fi
+exit 0
+"""
+        (fake_bin / "python3").write_text(python_stub, encoding="utf-8")
+        _make_executable(fake_bin / "python3")
+        result = _run_install(tmp_path, "--skip-signal-cli", "--no-venv")
+        assert result.returncode != 0
+        assert "Python 3.12+ richiesto" in result.stderr
+        assert "trovato 3.11" in result.stderr
+        assert "brew install python@3.12" in result.stderr
+
+    def test_python_3_12_accepted(self, tmp_path: Path, fake_path: Path):
+        """3.12 esattamente al floor → accettato."""
         fake_bin = fake_path
         python_stub = """#!/bin/sh
 if [ "$1" = "-c" ]; then
@@ -427,26 +445,8 @@ exit 0
         (fake_bin / "python3").write_text(python_stub, encoding="utf-8")
         _make_executable(fake_bin / "python3")
         result = _run_install(tmp_path, "--skip-signal-cli", "--no-venv")
-        assert result.returncode != 0
-        assert "Python 3.13+ richiesto" in result.stderr
-        assert "trovato 3.12" in result.stderr
-        assert "brew install python@3.13" in result.stderr
-
-    def test_python_3_13_accepted(self, tmp_path: Path, fake_path: Path):
-        """3.13 esattamente al floor → accettato."""
-        fake_bin = fake_path
-        python_stub = """#!/bin/sh
-if [ "$1" = "-c" ]; then
-    echo "3.13"
-    exit 0
-fi
-exit 0
-"""
-        (fake_bin / "python3").write_text(python_stub, encoding="utf-8")
-        _make_executable(fake_bin / "python3")
-        result = _run_install(tmp_path, "--skip-signal-cli", "--no-venv")
         assert result.returncode == 0
-        assert "Python 3.13 trovato" in result.stdout
+        assert "Python 3.12 trovato" in result.stdout
 
     def test_java_old_warns(self, tmp_path: Path, fake_path: Path):
         """Java troppo vecchio → warning ma non blocca."""

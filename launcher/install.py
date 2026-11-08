@@ -38,7 +38,7 @@ from .common import (
 BIN_DIR = PROJECT_DIR / "bin"
 MEGACHATD_DIR = PROJECT_DIR / "megachatd"
 REPO = "AsamK/signal-cli"
-REQUIRED_PYTHON = (3, 13)
+REQUIRED_PYTHON = (3, 12)
 REQUIRED_JAVA_MAJOR = 25
 
 

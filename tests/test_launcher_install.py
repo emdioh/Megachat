@@ -129,7 +129,7 @@ class TestDownloadSignalCli:
 
 class TestPrerequisites:
     def test_check_python_ok_for_current_interpreter(self, project: Path):
-        """Assunzione: l'interprete che esegue i test soddisfa il floor del repo (≥3.13)."""
+        """Assunzione: l'interprete che esegue i test soddisfa il floor del repo (≥3.12)."""
         install.check_python()  # running interpreter satisfies the repo's own floor
 
     def test_check_python_too_old_dies(self, monkeypatch, capsys):

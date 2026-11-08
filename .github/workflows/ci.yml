@@ -2,7 +2,8 @@
 # CI — Signal TUI Client (TYPE CHECK + LINT + TEST con coverage gate + Codecov)
 #
 # Trigger : push su `master` + `pull_request` (le feature branch NON triggerano).
-# Matrice : Python 3.13 + 3.14 + 3.15 — runner ubuntu-latest.
+# Matrice : Python 3.12 + 3.13 + 3.14 + 3.15 — runner ubuntu-latest.
+#   · 3.12 (test)     → `make test` (floor supportato, senza overhead coverage)
 #   · 3.13 (coverage) → `make coverage` (gate fail_under=68) + upload Codecov (OIDC)
 #   · 3.14 (test)     → `make test` (verifica cross-versione, senza overhead coverage)
 #   · 3.15 (test)     → `make test` (verifica cross-versione, senza overhead coverage)
@@ -97,6 +98,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          - python-version: "3.12"
+            coverage: false    # floor supportato: solo test
           - python-version: "3.13"
             coverage: true     # gamba "canonica": gate coverage + upload Codecov
           - python-version: "3.14"
@@ -130,7 +133,7 @@ jobs:
         if: matrix.coverage
         run: make coverage
 
-      # Gambe solo-test (3.14 + 3.15): stessa suite, senza overhead di coverage.
+      # Gambe solo-test (3.12 + 3.14 + 3.15): stessa suite, senza overhead di coverage.
       - name: Esegui la suite di test
         if: ${{ ! matrix.coverage }}
         run: make test
