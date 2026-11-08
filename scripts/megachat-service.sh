@@ -64,8 +64,9 @@ Global options:
   -h, --help       Show this help.
 
 Install options:
-  --user USER      User to run the service as (default: $SUDO_USER, else the
-                   owner of the project dir).  root is refused.
+  --user USER      User to run the service as (default: $SUDO_USER under
+                   sudo, else the invoking user, else the owner of the project
+                   dir).  root is refused.
   --project-dir DIR
                    Directory with config.json (default: the repo holding this
                    script).
@@ -140,8 +141,14 @@ user_group() {
 }
 
 resolve_service_user() {
-    if [ -z "$SERVICE_USER" ]; then
+    # Default: the user who ran sudo; without sudo, whoever runs the script
+    # (a stale $SUDO_USER in a non-root shell is ignored); as plain root, the
+    # owner of the project dir.
+    if [ -z "$SERVICE_USER" ] && [ "$(id -u)" -eq 0 ]; then
         SERVICE_USER=${SUDO_USER:-}
+    fi
+    if [ -z "$SERVICE_USER" ] && [ "$(id -u)" -ne 0 ]; then
+        SERVICE_USER=$(id -un)
     fi
     if [ -z "$SERVICE_USER" ]; then
         SERVICE_USER=$(stat -c '%U' "$PROJECT_DIR" 2>/dev/null || true)
@@ -218,7 +225,8 @@ check_no_running_server() {
     # sessions.  Skip it under --root (tests must stay hermetic) and dry-run.
     if [ -z "$ROOT" ] && [ "$DRY_RUN" -eq 0 ] && [ -f "$PROJECT_DIR/launcher.py" ] \
         && command -v python3 >/dev/null 2>&1; then
-        if ( cd "$PROJECT_DIR" && python3 launcher.py server status 2>/dev/null ) \
+        # No bytecode: as root it would leave root-owned __pycache__ in the repo.
+        if ( cd "$PROJECT_DIR" && PYTHONDONTWRITEBYTECODE=1 python3 launcher.py server status 2>/dev/null ) \
             | grep -q 'Server: ATTIVO'; then
             refuse_running_server "$lock"
         fi

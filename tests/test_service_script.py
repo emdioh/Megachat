@@ -293,7 +293,9 @@ class TestRefusals:
         )
         assert result.returncode != 0
         assert "root" in result.stderr
-        assert not (root / "etc" / "systemd" / "system" / "megachat-test.service").exists()
+        assert not (
+            root / "etc" / "systemd" / "system" / "megachat-test.service"
+        ).exists()
 
     def test_missing_binary_has_clear_error(
         self, tmp_path: Path, project: Path, root: Path, service_user: pwd.struct_passwd
@@ -311,7 +313,9 @@ class TestRefusals:
         )
         assert result.returncode != 0
         assert "make megachatd" in result.stderr
-        assert not (root / "etc" / "systemd" / "system" / "megachat-test.service").exists()
+        assert not (
+            root / "etc" / "systemd" / "system" / "megachat-test.service"
+        ).exists()
 
     def test_refuses_while_another_server_holds_the_lock(
         self,
@@ -325,24 +329,43 @@ class TestRefusals:
         (tmp_path / "signal-tui.lock").write_text(f"{os.getpid()}\n", encoding="utf-8")
         result = _run(
             tmp_path,
-            *_install_args(root, service_user.pw_name, project, init="systemd", binary=megachatd_bin),
+            *_install_args(
+                root,
+                service_user.pw_name,
+                project,
+                init="systemd",
+                binary=megachatd_bin,
+            ),
         )
         assert result.returncode != 0
         assert "launcher.py server stop" in result.stderr
-        assert not (root / "etc" / "systemd" / "system" / "megachat-test.service").exists()
+        assert not (
+            root / "etc" / "systemd" / "system" / "megachat-test.service"
+        ).exists()
 
     def test_rejects_unknown_init(
-        self, tmp_path: Path, project: Path, megachatd_bin: Path, root: Path, service_user: pwd.struct_passwd
+        self,
+        tmp_path: Path,
+        project: Path,
+        megachatd_bin: Path,
+        root: Path,
+        service_user: pwd.struct_passwd,
     ):
         result = _run(
             tmp_path,
-            *_install_args(root, service_user.pw_name, project, init="sysv", binary=megachatd_bin),
+            *_install_args(
+                root, service_user.pw_name, project, init="sysv", binary=megachatd_bin
+            ),
         )
         assert result.returncode != 0
         assert "systemd" in result.stderr and "openrc" in result.stderr
 
     def test_install_needs_root_without_dry_run_or_root(
-        self, tmp_path: Path, project: Path, megachatd_bin: Path, service_user: pwd.struct_passwd
+        self,
+        tmp_path: Path,
+        project: Path,
+        megachatd_bin: Path,
+        service_user: pwd.struct_passwd,
     ):
         if os.getuid() == 0:
             pytest.skip("running as root")
@@ -367,28 +390,53 @@ class TestRefusals:
 
 class TestUninstall:
     def test_systemd_uninstall_removes_unit(
-        self, tmp_path: Path, root: Path, project: Path, megachatd_bin: Path, service_user: pwd.struct_passwd
+        self,
+        tmp_path: Path,
+        root: Path,
+        project: Path,
+        megachatd_bin: Path,
+        service_user: pwd.struct_passwd,
     ):
         install = _run(
             tmp_path,
-            *_install_args(root, service_user.pw_name, project, init="systemd", binary=megachatd_bin),
+            *_install_args(
+                root,
+                service_user.pw_name,
+                project,
+                init="systemd",
+                binary=megachatd_bin,
+            ),
         )
         assert install.returncode == 0, install.stderr
         unit = root / "etc" / "systemd" / "system" / "megachat-test.service"
         assert unit.is_file()
 
         result = _run(
-            tmp_path, "--root", str(root), "uninstall", "--init", "systemd", "--name", "megachat-test"
+            tmp_path,
+            "--root",
+            str(root),
+            "uninstall",
+            "--init",
+            "systemd",
+            "--name",
+            "megachat-test",
         )
         assert result.returncode == 0, result.stderr
         assert not unit.exists()
 
     def test_openrc_uninstall_removes_init_and_keeps_log(
-        self, tmp_path: Path, root: Path, project: Path, megachatd_bin: Path, service_user: pwd.struct_passwd
+        self,
+        tmp_path: Path,
+        root: Path,
+        project: Path,
+        megachatd_bin: Path,
+        service_user: pwd.struct_passwd,
     ):
         install = _run(
             tmp_path,
-            *_install_args(root, service_user.pw_name, project, init="openrc", binary=megachatd_bin),
+            *_install_args(
+                root, service_user.pw_name, project, init="openrc", binary=megachatd_bin
+            ),
         )
         assert install.returncode == 0, install.stderr
         init_script = root / "etc" / "init.d" / "megachat-test"
@@ -396,18 +444,32 @@ class TestUninstall:
         assert init_script.is_file() and log.is_file()
 
         result = _run(
-            tmp_path, "--root", str(root), "uninstall", "--init", "openrc", "--name", "megachat-test"
+            tmp_path,
+            "--root",
+            str(root),
+            "uninstall",
+            "--init",
+            "openrc",
+            "--name",
+            "megachat-test",
         )
         assert result.returncode == 0, result.stderr
         assert not init_script.exists()
         assert log.exists(), "logs stay unless --purge-logs is given"
 
     def test_purge_logs_removes_only_the_log(
-        self, tmp_path: Path, root: Path, project: Path, megachatd_bin: Path, service_user: pwd.struct_passwd
+        self,
+        tmp_path: Path,
+        root: Path,
+        project: Path,
+        megachatd_bin: Path,
+        service_user: pwd.struct_passwd,
     ):
         install = _run(
             tmp_path,
-            *_install_args(root, service_user.pw_name, project, init="openrc", binary=megachatd_bin),
+            *_install_args(
+                root, service_user.pw_name, project, init="openrc", binary=megachatd_bin
+            ),
         )
         assert install.returncode == 0, install.stderr
         log = root / "var" / "log" / "megachat-test.log"
@@ -428,7 +490,12 @@ class TestUninstall:
         assert not log.exists()
 
     def test_uninstall_leaves_project_data_alone(
-        self, tmp_path: Path, root: Path, project: Path, megachatd_bin: Path, service_user: pwd.struct_passwd
+        self,
+        tmp_path: Path,
+        root: Path,
+        project: Path,
+        megachatd_bin: Path,
+        service_user: pwd.struct_passwd,
     ):
         # config.json (and the data dirs it points at) belong to the user.
         config = project / "config.json"
@@ -437,7 +504,13 @@ class TestUninstall:
         state.mkdir()
         install = _run(
             tmp_path,
-            *_install_args(root, service_user.pw_name, project, init="systemd", binary=megachatd_bin),
+            *_install_args(
+                root,
+                service_user.pw_name,
+                project,
+                init="systemd",
+                binary=megachatd_bin,
+            ),
         )
         assert install.returncode == 0, install.stderr
 
@@ -524,7 +597,13 @@ class TestRootNeverCallsInitTools:
     ):
         result = _run(
             tmp_path,
-            *_install_args(root, service_user.pw_name, project, init="systemd", binary=megachatd_bin),
+            *_install_args(
+                root,
+                service_user.pw_name,
+                project,
+                init="systemd",
+                binary=megachatd_bin,
+            ),
             fake_bin=fake_bin,
         )
         assert result.returncode == 0, result.stderr
@@ -541,7 +620,9 @@ class TestRootNeverCallsInitTools:
     ):
         result = _run(
             tmp_path,
-            *_install_args(root, service_user.pw_name, project, init="openrc", binary=megachatd_bin),
+            *_install_args(
+                root, service_user.pw_name, project, init="openrc", binary=megachatd_bin
+            ),
             fake_bin=fake_bin,
         )
         assert result.returncode == 0, result.stderr
@@ -553,32 +634,106 @@ class TestRootNeverCallsInitTools:
 
 class TestStatus:
     def test_systemd_status_shows_path_and_unknown_state_under_root(
-        self, tmp_path: Path, root: Path, project: Path, megachatd_bin: Path, service_user: pwd.struct_passwd
+        self,
+        tmp_path: Path,
+        root: Path,
+        project: Path,
+        megachatd_bin: Path,
+        service_user: pwd.struct_passwd,
     ):
         install = _run(
             tmp_path,
-            *_install_args(root, service_user.pw_name, project, init="systemd", binary=megachatd_bin),
+            *_install_args(
+                root,
+                service_user.pw_name,
+                project,
+                init="systemd",
+                binary=megachatd_bin,
+            ),
         )
         assert install.returncode == 0, install.stderr
         result = _run(
-            tmp_path, "--root", str(root), "status", "--init", "systemd", "--name", "megachat-test"
+            tmp_path,
+            "--root",
+            str(root),
+            "status",
+            "--init",
+            "systemd",
+            "--name",
+            "megachat-test",
         )
         assert result.returncode == 0, result.stderr
         assert "init: systemd" in result.stdout
-        assert str(root / "etc" / "systemd" / "system" / "megachat-test.service") in result.stdout
+        assert (
+            str(root / "etc" / "systemd" / "system" / "megachat-test.service")
+            in result.stdout
+        )
         assert "enabled: unknown (--root)" in result.stdout
         assert "active: unknown (--root)" in result.stdout
 
     def test_openrc_status(
-        self, tmp_path: Path, root: Path, project: Path, megachatd_bin: Path, service_user: pwd.struct_passwd
+        self,
+        tmp_path: Path,
+        root: Path,
+        project: Path,
+        megachatd_bin: Path,
+        service_user: pwd.struct_passwd,
     ):
         install = _run(
             tmp_path,
-            *_install_args(root, service_user.pw_name, project, init="openrc", binary=megachatd_bin),
+            *_install_args(
+                root, service_user.pw_name, project, init="openrc", binary=megachatd_bin
+            ),
         )
         assert install.returncode == 0, install.stderr
-        result = _run(tmp_path, "--root", str(root), "status", "--init", "openrc", "--name", "megachat-test")
+        result = _run(
+            tmp_path,
+            "--root",
+            str(root),
+            "status",
+            "--init",
+            "openrc",
+            "--name",
+            "megachat-test",
+        )
         assert result.returncode == 0, result.stderr
         assert "init: openrc" in result.stdout
         assert str(root / "etc" / "init.d" / "megachat-test") in result.stdout
         assert "unknown (--root)" in result.stdout
+
+
+def test_default_user_ignores_a_stale_sudo_user_when_not_root(tmp_path):
+    """Without root, the service user defaults to whoever runs the script,
+    not to a leftover $SUDO_USER from an outer sudo."""
+    import getpass
+
+    if os.geteuid() == 0:
+        pytest.skip("must run as a non-root user")
+    binary = tmp_path / "megachatd"
+    binary.write_text("#!/bin/sh\n")
+    binary.chmod(0o755)
+    env = {
+        **os.environ,
+        "SUDO_USER": "someone-else",
+        "MEGACHAT_LOCK_FILE": str(tmp_path / "lock"),
+    }
+    result = subprocess.run(
+        [
+            "bash",
+            str(SERVICE_SCRIPT),
+            "--root",
+            str(tmp_path / "root"),
+            "--init",
+            "systemd",
+            "install",
+            "--bin",
+            str(binary),
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    unit = (tmp_path / "root" / "etc/systemd/system/megachat.service").read_text()
+    assert f"User={getpass.getuser()}\n" in unit

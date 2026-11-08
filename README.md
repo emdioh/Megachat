@@ -1025,12 +1025,13 @@ sudo ./scripts/megachat-service.sh install
 ./scripts/megachat-service.sh status             # unit path, enabled/active
 sudo ./scripts/megachat-service.sh uninstall     # --purge-logs: also remove /var/log/megachat.log
 
-# OpenRC / Alpine (detected from openrc-run)
+# OpenRC / Alpine (detected from openrc-run; the script needs bash: apk add bash)
 sudo ./scripts/megachat-service.sh install --init openrc
 sudo ./scripts/megachat-service.sh uninstall --init openrc
 ```
 
-Defaults: name `megachat`, user `$SUDO_USER` (else the repo owner; root is refused), project dir the
+Defaults: name `megachat`, user `$SUDO_USER` under sudo (else the invoking user, else the repo
+owner; root is refused), project dir the
 repo holding the script, binary `megachatd/bin/megachatd` (build it with `make megachatd`). Options:
 `--user USER`, `--project-dir DIR`, `--bin PATH`, `--name NAME`, and `--extra ARG` (repeatable,
 appended to `megachatd serve`, e.g. `--extra --web-port --extra 8080`). Re-running `install`
@@ -1040,7 +1041,8 @@ run without changing anything. Logs go to journald (`journalctl -u megachat`) on
 
 `install` refuses to continue when another server already holds the instance lock — stop it first
 with `python3 launcher.py server stop` (the script never kills it). `uninstall` never touches user
-data.
+data. The TUI finds the service on its own: when nothing answers on the per-login socket it also
+tries `~/.local/state/megachat/server.sock` before spawning a server.
 
 ### Fast cycle (background + token)
 
