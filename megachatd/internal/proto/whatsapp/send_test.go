@@ -295,6 +295,98 @@ func TestSendReply(t *testing.T) {
 	}
 }
 
+// oneMessage returns the single pending message event of the receive queue.
+func oneMessage(t *testing.T, b *Backend) proto.Event {
+	t.Helper()
+	evs := b.PollOnce()
+	if len(evs) != 1 || evs[0].Type != proto.EventMessage {
+		t.Fatalf("events = %+v, want one %s", evs, proto.EventMessage)
+	}
+	return evs[0]
+}
+
+// Regression: replying to a photo from the web UI sends the attachment name
+// ("true_<chat>_<HEX>_<part>@lid.jpeg") as quote_message. The recipient shows
+// the typed placeholder, so the mirrored row must carry it too: ingest only
+// fills quote_text when it is empty, so the raw client value would stick.
+func TestEnqueueSentMessageQuoteTextForMediaReply(t *testing.T) {
+	e := newEnv(t)
+	seed(e.b, quoteChat, &entry{ID: quoteID, MsgType: "image", MediaKind: "image",
+		ContentType: "image/jpeg", AttachmentID: "pic.png", AttachmentInfo: badQuoteName})
+	// Text-only send: messages.send -> Manager.SendMessage -> mirror.
+	if err := e.b.EnqueueSentMessage(ctx, proto.SentMessage{
+		ContactID: quoteChat, MessageID: "true_" + quoteChat + "_3EB0FFFF_20508603076702@lid",
+		Text:  "nice one",
+		Quote: proto.Quote{ReplyToMessageID: quoteID, Message: badQuoteName, Timestamp: 1000},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ev := oneMessage(t, e.b)
+	if got := ev.Payload["quote_text"]; got != mediaQuotePlaceholders["image"] {
+		t.Fatalf("text reply quote_text = %v, want %q", got, mediaQuotePlaceholders["image"])
+	}
+	if ev.Payload["text"] != "nice one" || ev.Payload["reply_to_message_id"] != quoteID {
+		t.Fatalf("payload = %v", ev.Payload)
+	}
+	if ev.Payload["quote_author"] != nil {
+		t.Fatalf("no client author was sent: %v", ev.Payload["quote_author"])
+	}
+	// Attachment send: messages.send_attachment -> Manager.SendAttachment -> mirror.
+	img := writeFile(t, e.dir, "up.png", "PNGDATA")
+	if err := e.b.EnqueueSentMessage(ctx, proto.SentMessage{
+		ContactID: quoteChat, MessageID: "true_" + quoteChat + "_3EB10000_20508603076702@lid",
+		AttachmentPath: img, MimeType: "image/png", MediaKind: "image",
+		Quote: proto.Quote{ReplyToMessageID: quoteID, Message: badQuoteName},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := oneMessage(t, e.b).Payload["quote_text"]; got != mediaQuotePlaceholders["image"] {
+		t.Fatalf("attachment reply quote_text = %v, want %q", got, mediaQuotePlaceholders["image"])
+	}
+}
+
+// A reply to a text row mirrors the row's text, not the client value.
+func TestEnqueueSentMessageQuoteTextFromTextRow(t *testing.T) {
+	e := newEnv(t)
+	seed(e.b, quoteChat, &entry{ID: quoteID, Text: "hello there", MsgType: "text"})
+	if err := e.b.EnqueueSentMessage(ctx, proto.SentMessage{
+		ContactID: quoteChat, MessageID: "true_" + quoteChat + "_3EB0AAAA_20508603076702@lid",
+		Text:  "ok",
+		Quote: proto.Quote{ReplyToMessageID: quoteID, Message: badQuoteName},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := oneMessage(t, e.b).Payload["quote_text"]; got != "hello there" {
+		t.Fatalf("quote_text = %v, want the row's text", got)
+	}
+}
+
+// Without a reply id there is no row to resolve: the client text is kept,
+// unless it is an attachment reference.
+func TestEnqueueSentMessageQuoteTextWithoutReplyID(t *testing.T) {
+	e := newEnv(t)
+	cases := []struct {
+		client string
+		want   any
+	}{
+		{"what the user wrote", "what the user wrote"},
+		{badQuoteName, nil},
+		{"", nil},
+	}
+	for _, c := range cases {
+		if err := e.b.EnqueueSentMessage(ctx, proto.SentMessage{
+			ContactID: quoteChat, MessageID: "true_" + quoteChat + "_3EB0BBBB_20508603076702@lid",
+			Text:  "ok",
+			Quote: proto.Quote{Message: c.client},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if got := oneMessage(t, e.b).Payload["quote_text"]; got != c.want {
+			t.Errorf("client text %q: quote_text = %v, want %v", c.client, got, c.want)
+		}
+	}
+}
+
 func TestSendErrors(t *testing.T) {
 	e := newEnv(t)
 	if _, err := e.b.SendMessage(ctx, "not-a-jid", "x", proto.Quote{}); !errors.Is(err, ErrInvalidTarget) {

@@ -352,7 +352,7 @@ func (b *Backend) EnqueueSentMessage(ctx context.Context, m proto.SentMessage) e
 	}
 	b.emit(proto.EventMessage, m.ContactID, map[string]any{
 		"id": m.MessageID, "text": text, "is_mine": true, "sender": "You", "timestamp": nowMs(),
-		"quote_text": strOrNil(m.Quote.Message), "quote_timestamp": quoteTS, "quote_author": strOrNil(m.Quote.Author),
+		"quote_text": b.mirrorQuoteText(m.ContactID, m.Quote), "quote_timestamp": quoteTS, "quote_author": strOrNil(m.Quote.Author),
 		"reply_to_message_id": strOrNil(m.Quote.ReplyToMessageID), "msg_type": msgType,
 		"attachment_info": info, "attachment_id": attachmentID, "content_type": strOrNil(m.MimeType),
 		"media_kind": strOrNil(kind), "batch_id": strOrNil(m.BatchID), "batch_index": batchIndex,

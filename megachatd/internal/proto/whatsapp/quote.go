@@ -148,6 +148,28 @@ func (b *Backend) quotedMessage(row *entry, clientText string) *waE2E.Message {
 	return &waE2E.Message{Conversation: gproto.String(text)}
 }
 
+// mirrorQuoteText is the quote text of our own sent row: the string the
+// recipient sees, not the raw client value. The web client sends the
+// attachment name (a serialized WAHA id, "true_<chat>_<HEX>_<part>@lid.jpeg")
+// as quote_message for a media reply; mirroring it verbatim would persist it,
+// because ingest fills quote_text only when the row's value is empty.
+func (b *Backend) mirrorQuoteText(contactID string, q proto.Quote) any {
+	if q.ReplyToMessageID == "" {
+		if isAttachmentRef(q.Message, nil) {
+			return nil
+		}
+		return strOrNil(q.Message)
+	}
+	row := b.quotedRow(contactID, q.ReplyToMessageID)
+	if t, ok := quoteText(b.quotedMessage(row, q.Message)); ok {
+		return b.resolveTextMentions(t)
+	}
+	if isAttachmentRef(q.Message, row) {
+		return nil
+	}
+	return strOrNil(q.Message)
+}
+
 func normalizedMime(ct, fallback string) string {
 	ct = strings.TrimSpace(ct)
 	if ct == "" || strings.HasSuffix(ct, "/*") || mimeOnlyRE.FindString(strings.ToLower(ct)) == "" {
