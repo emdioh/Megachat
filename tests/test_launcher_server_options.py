@@ -178,18 +178,6 @@ class TestStartWithOptions:
         assert env["waha"] == []
         assert "WAHA non serve a megachatd" in capsys.readouterr().out
 
-    def test_waha_flag_starts_waha_with_the_python_server(self, monkeypatch, env):
-        monkeypatch.setenv("MEGACHAT_SERVER", "python")
-        monkeypatch.setattr(
-            server, "port_listening", lambda port, host="127.0.0.1": True
-        )
-        assert server.start_all(whatsapp=True) == 0
-        assert len(env["waha"]) == 1
-        assert env["spawn"][0][1:3] == [
-            str(server.PROJECT_DIR / "megachat.py"),
-            "serve",
-        ]
-
     def test_missing_binary_is_reported_in_italian(self, monkeypatch, env, capsys):
         monkeypatch.delenv("MEGACHATD_BIN")
         monkeypatch.setattr(server.serverbin.shutil, "which", lambda name: None)

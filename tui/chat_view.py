@@ -8,6 +8,7 @@ from pathlib import Path
 from textual.containers import Vertical
 from textual.widgets import Button, Static
 
+from client.client import ApiError
 from models import (
     DEFAULT_THUMBNAIL_MAX_COLS,
     DEFAULT_THUMBNAIL_MAX_LINES,
@@ -24,7 +25,6 @@ from models import (
     lazy_media_token,
     media_kind_from_mime,
 )
-from server.client import ApiError
 from tui.blobs import resolve_attachment_path
 from tui.images.detect import ImageSupport
 from ui_components import (

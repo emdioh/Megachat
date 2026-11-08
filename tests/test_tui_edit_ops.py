@@ -7,8 +7,8 @@ from unittest.mock import MagicMock
 
 from client_harness import StubClient, run_workers, view_app
 
+from client.errors import ApiError
 from models import PROTOCOL_SIGNAL
-from server.api import ApiError
 
 ROOT = Path(__file__).resolve().parent.parent
 

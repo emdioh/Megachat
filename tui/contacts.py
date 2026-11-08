@@ -6,6 +6,8 @@ from dataclasses import dataclass
 
 from textual.widgets import Label, ListItem, ListView
 
+from client.errors import ApiError
+from client.events_api import contact_from_wire, contact_to_wire
 from contact_picker import (
     PickerEntry,
     _protocol_priority,
@@ -18,8 +20,6 @@ from models import (
     ChatContact,
     protocol_emoji,
 )
-from server.api import ApiError
-from server.events_api import contact_from_wire, contact_to_wire
 from ui_components import MessageTextArea
 
 logger = logging.getLogger(__name__)

@@ -1,7 +1,7 @@
 """Per-operation timeouts of the TUI's client calls, in one place.
 
 A ``SocketClient`` call waits at most *timeout* seconds for the server's
-answer (the in-process client ignores it).  A timed-out operation is NOT
+answer.  A timed-out operation is NOT
 cancelled server side: for a mutation the outcome is unknown and the TUI
 resyncs (see ``tui.client_calls``).  Every operation the TUI calls must be
 listed here: :func:`timeout_for` raises ``KeyError`` for an unknown one, so a
@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from server.client import ChatClient
+from client.client import ChatClient
 
 #: Seconds, by operation name.
 OP_TIMEOUTS: dict[str, float] = {

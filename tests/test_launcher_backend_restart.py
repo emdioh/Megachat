@@ -180,12 +180,6 @@ class TestRunWahaSelection:
         assert backend.run(no_wait=True) == 0
         assert calls == []
 
-    def test_python_server_restarts_waha(self, monkeypatch):
-        calls = self._patch(monkeypatch)
-        monkeypatch.setenv("MEGACHAT_SERVER", "python")
-        assert backend.run(no_wait=True) == 0
-        assert calls == [1]
-
 
 class TestConfiguredDaemonPids:
     def test_empty_when_no_matching_process(self):

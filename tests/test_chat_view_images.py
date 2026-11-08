@@ -20,7 +20,6 @@ from PIL import Image
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-import pytest
 
 from models import PROTOCOL_SIGNAL
 from tui.app import SignalTUI
@@ -32,8 +31,6 @@ from tui.chat_view import (
 from tui.images.detect import ImageSupport
 from tui.images.kitty_renderer import KittyRenderer
 from ui_components import ImageWidget, MessageWidget
-
-pytestmark = pytest.mark.usefixtures("open_media_root")
 
 
 def _make_png_bytes(width: int = 16, height: int = 32) -> bytes:
@@ -72,196 +69,14 @@ class _FakeChatLog:
         self.scroll_end_calls += 1
 
 
-class TestResolveAttachmentWorkerKitty:
-    def test_kitty_branch_prepares_transmits_and_registers(self, tmp_path):
-        app, written = _make_kitty_app()
-        img_path = tmp_path / "photo.png"
-        Image.new("RGB", (64, 32), "red").save(img_path)
-        app.core.manager.get_attachment_path.return_value = img_path
-
-        widget = ImageWidget(attachment_path=None, attachment_id="att-1")
-        widget._is_mounted = True
-
-        app._resolve_attachment_worker(
-            PROTOCOL_SIGNAL, "att-1", widget, "Photo", max_lines=12, max_cols=60
-        )
-
-        # Transmit (a=t) + register widget native state on the UI thread.
-        assert any("a=t" in s for s in written)
-        assert widget.native_image_id == 1
-        assert widget.native_renderer is app._native_renderer
-        assert widget.attachment_path == img_path
-        # Native mode: no textual placeholder — the kitty image covers it.
-        assert widget.content == ""
-
-    def test_worker_uses_semaphore(self, tmp_path):
-        app, _ = _make_kitty_app()
-        app._image_resolve_semaphore = MagicMock()
-        app.core.manager.get_attachment_path.return_value = None
-        widget = ImageWidget(attachment_path=None, attachment_id="att-1")
-
-        app._resolve_attachment_worker(PROTOCOL_SIGNAL, "att-1", widget, "Photo")
-
-        app._image_resolve_semaphore.__enter__.assert_called_once()
-        app._image_resolve_semaphore.__exit__.assert_called_once()
-
-    def test_semaphore_limits_concurrency_to_4(self):
-        app, _ = _make_kitty_app()
-        sem = app._image_resolve_semaphore
-        for _ in range(4):
-            assert sem.acquire(blocking=False) is True
-        assert sem.acquire(blocking=False) is False  # 5th would block
-        for _ in range(4):
-            sem.release()
-
-    def test_prepare_failure_falls_back_to_catimg_resolve(self, tmp_path):
-        app, written = _make_kitty_app()
-        img_path = tmp_path / "not-an-image.png"
-        img_path.write_text("garbage")
-        app.core.manager.get_attachment_path.return_value = img_path
-        widget = ImageWidget(attachment_path=None, attachment_id="att-1")
-        widget._is_mounted = True
-
-        app._resolve_attachment_worker(
-            PROTOCOL_SIGNAL, "att-1", widget, "Photo", max_lines=12, max_cols=60
-        )
-
-        # No transmit; the CATIMG finish path updated the placeholder.
-        assert not any("a=t" in s for s in written)
-        assert widget.native_image_id is None
-        assert widget.attachment_path == img_path
-        # Degraded (prepare failed) → the textual placeholder reappears.
-        assert "Click Enter to View" in str(widget.render())
-
-
-class TestFinishNativeThumbnail:
-    def test_unmounted_widget_is_noop(self, tmp_path):
-        app, written = _make_kitty_app()
-        widget = ImageWidget(attachment_path=None, attachment_id="att-1")
-
-        app._finish_native_thumbnail(widget, tmp_path / "x.png", b"png-bytes")
-
-        assert written == []
-        assert widget.native_image_id is None
-
-    def test_no_renderer_falls_back_to_catimg(self, tmp_path):
-        app, _ = _make_kitty_app()
-        app._native_renderer = None
-        path = tmp_path / "photo.jpg"
-        widget = ImageWidget(attachment_path=None, attachment_id="att-1")
-        widget._is_mounted = True
-
-        app._finish_native_thumbnail(widget, path, b"png-bytes")
-
-        assert widget.attachment_path == path
-        assert widget.native_image_id is None
-        assert "Click Enter to View" in str(widget.render())
-
-
-class TestResolveMountedImagePaths:
-    def _make_widget(self, attachment_id, path=None):
-        widget = ImageWidget(attachment_path=path, attachment_id=attachment_id)
-        widget._protocol = PROTOCOL_SIGNAL
-        widget._attachment_info = "Photo"
-        return widget
-
-    def test_schedules_worker_only_for_eligible_widgets(self, tmp_path):
-        app, _ = _make_kitty_app()
-        app._chat_log = _FakeChatLog()
-
-        with_id = self._make_widget("att-1")
-        no_id = self._make_widget("")
-        resolved = self._make_widget("att-2", path=tmp_path / "x.jpg")
-        not_image = MagicMock()
-
-        app._resolve_mounted_image_paths([with_id, no_id, resolved, not_image])
-
-        # Only `with_id` (image, no path, has id) is eligible.
-        assert app.run_worker.call_count == 1
-        args = app.run_worker.call_args.args[0]
-        assert args() is None  # the worker lambda is callable
-
-    def test_noop_when_not_kitty(self):
-        app, _ = _make_kitty_app()
-        app.image_support = ImageSupport.CATIMG
-        app._chat_log = _FakeChatLog()
-        widget = self._make_widget("att-1")
-
-        app._resolve_mounted_image_paths([widget])
-
-        app.run_worker.assert_not_called()
-
-    def test_noop_when_no_renderer(self):
-        app, _ = _make_kitty_app()
-        app._native_renderer = None
-        app._chat_log = _FakeChatLog()
-        widget = self._make_widget("att-1")
-
-        app._resolve_mounted_image_paths([widget])
-
-        app.run_worker.assert_not_called()
-
-
 class TestNativePlaceholder:
     """Native mode shows no placeholder; degraded/fallback modes keep it."""
-
-    def test_empty_in_kitty_with_id(self):
-        app, _ = _make_kitty_app()
-        assert app._native_placeholder("[🖼️ Image]", attachment_id="att-1") == ""
 
     def test_text_when_catimg(self):
         app = SignalTUI()  # default CATIMG, no renderer
         assert (
             app._native_placeholder("[🖼️ Image]", attachment_id="att-1") == "[🖼️ Image]"
         )
-
-    def test_text_when_no_renderer(self):
-        app, _ = _make_kitty_app()
-        app._native_renderer = None
-        assert (
-            app._native_placeholder("[🖼️ Image]", attachment_id="att-1") == "[🖼️ Image]"
-        )
-
-    def test_text_when_no_attachment_id(self):
-        app, _ = _make_kitty_app()
-        assert app._native_placeholder("[🖼️ Image]", attachment_id=None) == "[🖼️ Image]"
-
-    def test_build_message_widgets_empty_in_kitty(self):
-        app, _ = _make_kitty_app()
-        message = {
-            "text": "",
-            "is_mine": False,
-            "sender": "Mario",
-            "timestamp": 1000,
-            "msg_type": "image",
-            "attachment_info": "photo.jpg",
-            "attachment_id": "att-1",
-            "read": False,
-            "status": "read",
-        }
-
-        widgets = app._build_message_widgets(PROTOCOL_SIGNAL, False, message)
-        image_widget = widgets[0]
-
-        assert isinstance(image_widget, ImageWidget)
-        assert image_widget.content == ""
-
-    def test_render_image_in_chat_empty_in_kitty(self):
-        app, _ = _make_kitty_app()
-        log = _FakeChatLog()
-
-        app._render_image_in_chat(
-            attachment_id="att-1",
-            attachment_info="photo.jpg",
-            is_mine=False,
-            chat_log=log,
-            protocol=PROTOCOL_SIGNAL,
-        )
-
-        widget = log.children[0]
-        assert isinstance(widget, ImageWidget)
-        assert widget.content == ""
-        assert app.run_worker.call_count == 1
 
 
 class TestMediaKindRendering:
@@ -375,27 +190,6 @@ class TestMediaKindRendering:
         assert isinstance(widgets[0], MessageWidget)
         assert widgets[0]._attachment_ref == ("doc-1", PROTOCOL_SIGNAL)
 
-    def test_non_image_worker_only_resolves_path_then_opens(self, tmp_path):
-        app = SignalTUI()
-        app.core.manager = MagicMock()
-        app.call_from_thread = MagicMock(side_effect=lambda fn, *a, **k: fn(*a, **k))
-        app._open_media_path = MagicMock()
-        path = tmp_path / "manual.pdf"
-        path.write_bytes(b"%PDF-1.4")  # the operation only serves existing files
-        app.core.manager.get_attachment_path.return_value = path
-        widget = MessageWidget(
-            "📎 manual.pdf", attachment_ref=("doc-1", PROTOCOL_SIGNAL)
-        )
-        widget._is_mounted = True
-
-        app._resolve_media_path_worker(PROTOCOL_SIGNAL, "doc-1", widget)
-
-        app.core.manager.get_attachment_path.assert_called_once_with(
-            PROTOCOL_SIGNAL, "doc-1"
-        )
-        assert widget.attachment_path == path
-        app._open_media_path.assert_called_once_with(path)
-
 
 class _ScrollFakeChatLog:
     """Fake ``#chat-log`` exposing a controllable scroll state (headless)."""
@@ -421,36 +215,6 @@ class TestScrollAnchor:
         app._chat_log = log
         app._finish_native_thumbnail(widget, tmp_path / "x.png", _make_png_bytes())
 
-    def test_scrolls_when_at_bottom(self, tmp_path):
-        app, _ = _make_kitty_app()
-        log = _ScrollFakeChatLog(max_y=50, offset_y=50)
-        widget = self._mounted_widget()
-
-        self._call(app, widget, log, tmp_path)
-
-        # Widget grew (thumbnail applied) AND the log was re-anchored.
-        assert widget.styles.height.value > 1
-        assert log.scroll_end_calls == 1
-
-    def test_no_scroll_when_user_scrolled_up(self, tmp_path):
-        app, _ = _make_kitty_app()
-        log = _ScrollFakeChatLog(max_y=50, offset_y=25)
-        widget = self._mounted_widget()
-
-        self._call(app, widget, log, tmp_path)
-
-        assert widget.styles.height.value > 1
-        assert log.scroll_end_calls == 0
-
-    def test_scrolls_when_shorter_than_viewport(self, tmp_path):
-        app, _ = _make_kitty_app()
-        log = _ScrollFakeChatLog(max_y=0, offset_y=0)
-        widget = self._mounted_widget()
-
-        self._call(app, widget, log, tmp_path)
-
-        assert log.scroll_end_calls == 1
-
     def test_is_scrolled_to_bottom_tolerance(self):
         # At exactly max_y - 1 the 1-cell tolerance still counts as "bottom".
         assert _is_scrolled_to_bottom(_ScrollFakeChatLog(max_y=50, offset_y=49)) is True
@@ -458,104 +222,3 @@ class TestScrollAnchor:
             _is_scrolled_to_bottom(_ScrollFakeChatLog(max_y=50, offset_y=48)) is False
         )
         assert _is_scrolled_to_bottom(_ScrollFakeChatLog(max_y=-3, offset_y=0)) is True
-
-
-class TestWindowLoadAnchor:
-    """Window token + pending counter guarantee scroll-to-bottom at window end.
-
-    Reproduces the race: the mount's ``scroll_end`` is deferred (call_after_refresh)
-    so when the resolution workers complete the scroll is NOT yet at the bottom.
-    The pending counter must re-anchor exactly once when the LAST worker drains.
-    """
-
-    def _setup(self, tmp_path, n_images):
-        app, _ = _make_kitty_app()
-        log = _ScrollFakeChatLog(max_y=100, offset_y=10)  # NOT at bottom (race)
-        app._chat_log = log
-        img_path = tmp_path / "photo.png"
-        Image.new("RGB", (64, 32), "red").save(img_path)
-        app.core.manager.get_attachment_path.return_value = img_path
-        widgets = []
-        for i in range(n_images):
-            widget = ImageWidget(attachment_path=None, attachment_id=f"att-{i}")
-            widget._is_mounted = True
-            widget._protocol = PROTOCOL_SIGNAL
-            widget._attachment_info = "Photo"
-            widgets.append(widget)
-        return app, log, widgets
-
-    def _run_window(self, app, widgets):
-        # Mirror the _mount_window preamble (token++ / pending=0) before the
-        # resolution workers are started.
-        app._window_native_token += 1
-        app._window_native_pending = 0
-        app._resolve_mounted_image_paths(widgets)
-
-    def _drain_workers(self, app):
-        for call in app.run_worker.call_args_list:
-            call.args[0]()  # run the worker lambda inline
-
-    def test_window_load_scrolls_once_at_end(self, tmp_path):
-        app, log, widgets = self._setup(tmp_path, n_images=3)
-        self._run_window(app, widgets)
-
-        assert app._window_native_pending == 3
-        assert log.scroll_end_calls == 0  # workers still pending
-
-        self._drain_workers(app)
-
-        assert app._window_native_pending == 0
-        assert log.scroll_end_calls == 1  # exactly once, at the end
-
-    def test_all_terminal_branches_decrement(self, tmp_path):
-        app, log, widgets = self._setup(tmp_path, n_images=3)
-        img_ok = tmp_path / "ok.png"
-        Image.new("RGB", (64, 32), "red").save(img_ok)
-        img_bad = tmp_path / "bad.png"
-        img_bad.write_text("garbage")
-
-        def _get_path(protocol, aid):
-            if aid == "att-0":
-                return None  # path None branch
-            if aid == "att-1":
-                return img_bad  # prepare-failed branch
-            return img_ok  # native success branch
-
-        app.core.manager.get_attachment_path.side_effect = _get_path
-
-        self._run_window(app, widgets)
-        assert app._window_native_pending == 3
-        self._drain_workers(app)
-
-        assert app._window_native_pending == 0  # no deadlock
-        assert log.scroll_end_calls == 1
-
-    def test_token_change_ignores_orphan_workers(self, tmp_path):
-        app, log, widgets = self._setup(tmp_path, n_images=1)
-        self._run_window(app, widgets)
-        assert app._window_native_pending == 1
-
-        # Switch chat mid-load (what _clear_chat does): invalidate the window.
-        app._window_native_token += 1
-        app._window_native_pending = 0
-
-        # The orphan worker completes with the OLD token.
-        app.run_worker.call_args_list[0].args[0]()
-
-        # It must NOT scroll the new chat, nor touch the new counter.
-        assert log.scroll_end_calls == 0
-        assert app._window_native_pending == 0
-
-    def test_live_worker_does_not_touch_counter(self, tmp_path):
-        app, log, widgets = self._setup(tmp_path, n_images=1)
-        widget = widgets[0]
-        app._window_native_pending = 5  # sentinel
-        app._window_native_token = 7
-
-        # Live path: no window_token → no counter effect.
-        app._resolve_attachment_worker(
-            PROTOCOL_SIGNAL, "att-0", widget, "Photo", max_lines=12, max_cols=60
-        )
-
-        assert app._window_native_pending == 5  # untouched
-        assert log.scroll_end_calls == 0

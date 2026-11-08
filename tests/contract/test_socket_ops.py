@@ -11,8 +11,8 @@ import time
 import pytest
 from harness import Server, start_server
 
-from server.api import ApiError
-from server.socket_client import SocketClient
+from client.errors import ApiError
+from client.socket_client import SocketClient
 
 SIG = "+15550100001"
 WA = "393331110001@c.us"
@@ -21,11 +21,78 @@ TG = "424242"
 CHATS = [("signal", SIG), ("whatsapp", WA), ("whatsapp", WA_GROUP), ("telegram", TG)]
 
 
-def _python_ops() -> list[str]:
-    import server.api as api
-
-    api._load_operations()
-    return sorted(api._REGISTRY)
+#: The operation set rpc.hello must list: the legacy Python server's registry,
+#: frozen on 2026-11-08 when that server was deleted (the Go table matched it).
+EXPECTED_OPS = [
+    "autotranscribe.chat",
+    "autotranscribe.config",
+    "autotranscribe.set_chat",
+    "autotranscribe.set_global",
+    "chats.archive",
+    "chats.mark_read",
+    "config.set_openai_key",
+    "contacts.address_book",
+    "contacts.avatar",
+    "contacts.book",
+    "contacts.check_number",
+    "contacts.for_protocol",
+    "contacts.list",
+    "contacts.register",
+    "download.serve_attachment",
+    "download.serve_text",
+    "emoji.list",
+    "gmail.address_book",
+    "gmail.attachment",
+    "gmail.image",
+    "gmail.messages.archive",
+    "gmail.messages.bulk_delete",
+    "gmail.messages.delete",
+    "gmail.messages.get",
+    "gmail.messages.list",
+    "gmail.messages.mark_read",
+    "gmail.messages.mark_unread",
+    "gmail.messages.send",
+    "gmail.messages.send.check",
+    "gmail.status",
+    "gmail.unread",
+    "link.cancel",
+    "link.finalize",
+    "link.poll",
+    "link.reconnect",
+    "link.required",
+    "link.start",
+    "link.status",
+    "link.submit_2fa",
+    "links.preview",
+    "links.preview_image",
+    "media.attachment",
+    "media.quote",
+    "media.quoted_attachment",
+    "media.thumbnail",
+    "messages.edit",
+    "messages.page",
+    "messages.send",
+    "messages.send.check",
+    "messages.snapshot",
+    "messages.window",
+    "reactions.available",
+    "reactions.set",
+    "server.client_log",
+    "server.clients",
+    "server.config",
+    "server.logs",
+    "server.logs_clear",
+    "server.shutdown",
+    "server.status",
+    "transcribe.check",
+    "transcribe.config",
+    "transcribe.diagnostics",
+    "transcribe.set_api_key",
+    "transcribe.set_settings",
+    "transcribe.settings",
+    "transcribe.status",
+    "transcribe.submit",
+]
 
 
 def err_of(srv: Server, op: str, params=None) -> ApiError:
@@ -37,11 +104,11 @@ def err_of(srv: Server, op: str, params=None) -> ApiError:
 # -- handshake / coverage ------------------------------------------------------
 
 
-def test_hello_lists_every_python_operation(go_server: Server):
+def test_hello_lists_every_operation(go_server: Server):
     info = go_server.client.server_info
     assert info["api_version"] == 1
     assert info["operations"] == sorted(info["operations"])
-    assert info["operations"] == _python_ops()
+    assert info["operations"] == EXPECTED_OPS
 
 
 def test_ping(go_server: Server):

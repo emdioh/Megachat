@@ -4,6 +4,8 @@ import logging
 
 from textual.widgets import TextArea
 
+from client.errors import ApiError
+from client.events_api import contact_from_wire
 from contact_picker import ContactPickerScreen
 from device_link_screen import DeviceLinkPickerScreen
 from emoji_picker import (
@@ -13,8 +15,6 @@ from emoji_picker import (
 from models import (
     ChatContact,
 )
-from server.api import ApiError
-from server.events_api import contact_from_wire
 from ui_components import MessageTextArea
 
 logger = logging.getLogger("signal_tui")

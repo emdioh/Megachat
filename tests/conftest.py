@@ -58,112 +58,9 @@ def fail_on_unclosed_sqlite(monkeypatch: pytest.MonkeyPatch):
 
 
 @pytest.fixture(autouse=True)
-def isolate_gmail_imap_pool():
-    """Reset the process-wide IMAP pool around every test.
-
-    The pool lives at module level in :mod:`server.gmail`, so a connection left
-    idle by one test would otherwise be reused by the next one, bypassing its
-    freshly patched ``IMAP4_SSL`` fake.  Clearing before *and* after every test
-    keeps the Gmail/link-preview suites isolated from module-level state.
-    """
-    from server import gmail
-
-    gmail.clear_imap_pool()
-    try:
-        yield
-    finally:
-        gmail.clear_imap_pool()
-
-
-@pytest.fixture(autouse=True)
-def stop_whatsapp_resolver_threads(monkeypatch: pytest.MonkeyPatch):
-    """Stop the WhatsApp resolver threads a test started, when it ends.
-
-    ``wa-media-resolver`` and ``wa-mention-lid-resolver`` are daemon loops that
-    only exit on ``disconnect_sync()``.  Left running, they kept retrying lookups
-    (real HTTP for backends built with a real REST client) during later tests,
-    and their ``WAHA request failed`` records landed in other tests' ``caplog``.
-    """
-    from protocols.whatsapp import WhatsAppBackend
-
-    started: list[WhatsAppBackend] = []
-    for name in ("_start_media_resolver", "_start_mention_lid_resolver"):
-        original = getattr(WhatsAppBackend, name)
-
-        def tracking(self, *args, _original=original, **kwargs):
-            started.append(self)
-            return _original(self, *args, **kwargs)
-
-        monkeypatch.setattr(WhatsAppBackend, name, tracking)
-    try:
-        yield
-    finally:
-        for backend in dict.fromkeys(started):
-            backend.disconnect_sync()
-
-
-@pytest.fixture(autouse=True)
-def isolate_gmail_image_caches(monkeypatch: pytest.MonkeyPatch):
-    """Empty the Gmail image caches and disable the remote image prefetch.
-
-    Opening a message would otherwise start real network fetches for the
-    images of the test HTML, and a cached image from one test would answer the
-    next test's request instead of its patched fetcher.  The unread polling
-    worker is disabled too: a test that starts a core on a machine where Gmail
-    is configured would otherwise poll the real mailbox.
-    """
-    from server import gmail
-    from server.ops import gmail as gmail_ops
-
-    monkeypatch.setenv("GMAIL_IMAGE_PREFETCH", "0")
-    monkeypatch.setenv("GMAIL_UNREAD_POLL_S", "0")
-    gmail.clear_inline_image_cache()
-    gmail_ops.clear_remote_image_cache()
-    try:
-        yield
-    finally:
-        gmail.clear_inline_image_cache()
-        gmail_ops.clear_remote_image_cache()
-
-
-@pytest.fixture(autouse=True)
-def isolate_backend_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Isolate every test from the user's persistent cache and database."""
-    import protocols.db as backend
-    import protocols.download as download_mod
-    import protocols.signal as signal_mod
-    import protocols.whatsapp as whatsapp_mod
-    from protocols import config, rpc
-
-    cache_dir = tmp_path / "backend-cache"
-    cache_dir.mkdir()
-    monkeypatch.setattr(backend, "CACHE_DIR", cache_dir)
-    monkeypatch.setattr(backend, "DB_FILE", cache_dir / "messages.db")
-    monkeypatch.setattr(backend, "CACHE_FILE", cache_dir / "messages.json")
-    monkeypatch.setattr(rpc, "SIGNAL_CLI_ATTACHMENTS_DIR", cache_dir / "signal-media")
-    monkeypatch.setattr(config, "get_whatsapp_media_dir", lambda: "")
-
-    # Modules that bind these names by value at import time (no local import).
-    monkeypatch.setattr(signal_mod, "CACHE_DIR", cache_dir)
-    monkeypatch.setattr(
-        signal_mod, "SIGNAL_CLI_ATTACHMENTS_DIR", cache_dir / "signal-media"
-    )
-    monkeypatch.setattr(download_mod, "CACHE_DIR", cache_dir)
-    monkeypatch.setattr(whatsapp_mod, "get_whatsapp_media_dir", lambda: "")
-
-    # Process-wide download globals: reset so the first test to use them
-    # resolves under tmp_path. Resetting _DOWNLOAD_SERVER does not close a real
-    # server; tests either mock it or stop it explicitly.
-    monkeypatch.setattr(download_mod, "_TEMP_DOWNLOAD_DIR", None)
-    monkeypatch.setattr(download_mod, "_DOWNLOAD_SERVER", None)
-    monkeypatch.setattr(download_mod, "_DOWNLOAD_URL_BASE", None)
-    return cache_dir
-
-
-@pytest.fixture(autouse=True)
 def isolate_server_socket(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """No test may bind (or probe) the user's real server socket: ``megachat
-    serve`` and the socket adapter resolve their default path from this."""
+    """No test may probe the user's real server socket: the TUI's attach and
+    ``megachat serve`` resolve their default path from this."""
     path = tmp_path / "megachat-run" / "server.sock"
     monkeypatch.setenv("MEGACHAT_SOCKET", str(path))
     return path
@@ -173,86 +70,20 @@ def isolate_server_socket(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Pa
 def isolate_instance_lock(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Child processes (spawned servers, shell aliases) resolve the instance
     lock from this: the real ``/tmp/signal-tui.lock`` is never touched.
-    (In-process code reads ``server.lock.LOCK_FILE``, which tests patch.)"""
+    (In-process code reads ``client.lock.LOCK_FILE``, which tests patch.)"""
     path = tmp_path / "signal-tui.lock"
     monkeypatch.setenv("MEGACHAT_LOCK_FILE", str(path))
     return path
 
 
 @pytest.fixture(autouse=True)
-def isolate_server_engine(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Spawn code (launcher, TUI attach, ``megachat serve``) picks megachatd
-    unless ``MEGACHAT_SERVER=python``; a developer's ``.env`` must not flip that
-    under test.  Tests set ``MEGACHATD_BIN`` / ``MEGACHAT_SERVER=python`` when
-    they need a specific engine."""
-    monkeypatch.setenv("MEGACHAT_SERVER", "megachatd")
-
-
-@pytest.fixture
-def open_media_root(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Let ``media.*`` operations hand out any path a test's fake manager returns.
-
-    The real operations confine attachments to the protocol's media root; tests
-    of *callers* (TUI, adapters) that return arbitrary tmp files from a fake
-    manager open the root.  Confinement itself is covered by
-    ``tests/test_blob_ops.py``.
-    """
-    monkeypatch.setattr(
-        "server.media._allowed_media_root", lambda _manager, _proto: Path("/")
-    )
-
-
-@pytest.fixture(autouse=True)
-def bus_wire_guard(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch):
-    """Every event published on any ``EventBus`` must be JSON-serializable.
-
-    The Phase 2 socket adapter forwards payloads unchanged, so a live object
-    (``ChatContact``, set, Path, ...) on the bus is a bug.  Violations are
-    collected (a publisher thread may swallow exceptions) and asserted at
-    teardown.  Opt out with ``@pytest.mark.allow_unserializable_events``.
-    """
-    import json
-
-    from server.bus import EventBus
-
-    if request.node.get_closest_marker("allow_unserializable_events"):
-        yield
-        return
-    original = EventBus.publish
-    violations: list[str] = []
-
-    def guarded(self, type, payload=None):
-        try:
-            json.dumps(payload)
-        except (TypeError, ValueError) as exc:
-            violations.append(f"{type}: {exc}")
-        return original(self, type, payload)
-
-    monkeypatch.setattr(EventBus, "publish", guarded)
-    yield
-    assert not violations, f"non-JSON event payloads published: {violations}"
-
-
-@pytest.fixture(autouse=True)
 def isolate_environment(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Clear SIGNAL_TUI_WEB_TOKEN so web-server tests are deterministic.
+    """Clear SIGNAL_TUI_WEB_TOKEN so web tests are deterministic.
 
     Only this variable is cleared: SIGNAL_USER_NUMBER, WHATSAPP_API_URL and the
     LIVE_* flags must stay visible so the opt-in live tests remain runnable.
     """
     monkeypatch.delenv("SIGNAL_TUI_WEB_TOKEN", raising=False)
-
-
-@pytest.fixture
-def tmp_cache_dir(isolate_backend_cache: Path) -> Path:
-    """Return the isolated cache directory for the current test."""
-    return isolate_backend_cache
-
-
-@pytest.fixture
-def tmp_cache_file(tmp_cache_dir: Path) -> Path:
-    """Return the path to the cache file inside the temp directory."""
-    return tmp_cache_dir / "messages.json"
 
 
 @pytest.fixture
@@ -432,10 +263,12 @@ def sample_contacts_subprocess_output() -> str:
 
 @contextmanager
 def _make_test_app():
-    """Build a ``SignalTUI`` with mocked, I/O-free backends and neutralized workers.
+    """Build a ``SignalTUI`` around a mock ``ChatClient`` with neutralized workers.
 
-    Kept as a shared context manager so both ``app_for_test`` and
-    ``app_for_test_with_mocks`` reuse the same setup.
+    The TUI is a client of megachatd: there are no backends in the process.
+    ``app.client`` is a ``MagicMock`` (calls return mocks unless a test
+    configures them), ``on_mount`` does not start the poll worker or resync,
+    background workers are no-ops, and three Signal contacts are rendered.
     """
     from unittest.mock import MagicMock, patch
 
@@ -445,26 +278,12 @@ def _make_test_app():
     from tui.app import SignalTUI
 
     def _noop_on_mount(self: SignalTUI) -> None:
-        """Mount the UI without starting poll/connect workers, then render contacts."""
+        """Mount the UI without starting poll/resync workers, then render contacts."""
         self._chat_log = self.query_one("#chat-log", Vertical)
         self._render_contact_list(list(self.contacts))
 
-    # Patch the symbols where they are IMPORTED/USED (``tui.app``), not where
-    # they are defined (``protocols`` / ``signal_tui`` shim).
-    with (
-        patch("server.core.BackendManager"),
-        patch("server.core.SignalBackend"),
-        patch("server.core.whatsapp_enabled", return_value=False),
-        patch("server.core.telegram_enabled", return_value=False),
-        patch.object(SignalTUI, "on_mount", _noop_on_mount),
-    ):
-        app = SignalTUI()
-        # Route manager.get(protocol) to the mocked Signal backend so selection
-        # and send paths resolve to the same mock (easy to assert on).
-        app.core.signal_backend.protocol = PROTOCOL_SIGNAL
-        app.core.manager.get.return_value = app.core.signal_backend
-        # Neutralize background workers (load-messages / send) to keep tests
-        # deterministic and thread-free.
+    with patch.object(SignalTUI, "on_mount", _noop_on_mount):
+        app = SignalTUI(client=MagicMock())
         app.run_worker = MagicMock()
         app.contacts = [
             ChatContact(
@@ -484,20 +303,9 @@ def _make_test_app():
 def app_for_test():
     """Create a ``SignalTUI`` instance ready for ``App.run_test()`` headless.
 
-    No real I/O happens: the backends are mocked, WhatsApp/Telegram are
-    disabled, the ``on_mount`` workers (poll loop + per-protocol connections)
-    are neutralized, background workers are no-ops, and a small set of fake
+    No real I/O happens: the client is a mock, the ``on_mount`` workers are
+    neutralized, background workers are no-ops, and a small set of fake
     contacts is injected and rendered.
     """
     with _make_test_app() as app:
         yield app
-
-
-@pytest.fixture
-def app_for_test_with_mocks():
-    """Like ``app_for_test`` but also yields the mocked Signal backend.
-
-    Useful for tests that must assert on backend calls (e.g. message send).
-    """
-    with _make_test_app() as app:
-        yield app, app.core.signal_backend

@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from server.client import ApiError, ChatClient
+from client.client import ApiError, ChatClient
 from tui.client_timeouts import call_op
 
 logger = logging.getLogger(__name__)

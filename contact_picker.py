@@ -35,7 +35,7 @@ from models import (
     ChatContact,
     protocol_emoji,
 )
-from server.domain import search_contacts  # noqa: F401  (moved; re-exported)
+from client.domain import search_contacts  # noqa: F401  (moved; re-exported)
 
 logger = logging.getLogger(__name__)
 

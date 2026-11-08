@@ -1,7 +1,7 @@
 """View handling of core events: messages, receipts, typing.
 
 The domain work (ingest, edits, reactions, receipts, contact registration) is
-done by :meth:`server.core.ChatCore.process`; the handlers here only update
+done by megachatd; the handlers here only update
 the TUI (contact list, cache mirror, widgets) from the resulting core events.
 """
 
@@ -9,6 +9,9 @@ import logging
 import time
 from typing import Any
 
+from client.bus import Event
+from client.domain import looks_unresolved
+from client.events_api import contact_from_wire
 from models import (
     PROTOCOL_SIGNAL,
     PROTOCOL_WHATSAPP,
@@ -17,9 +20,6 @@ from models import (
     protocol_emoji,
     protocol_name,
 )
-from server.bus import Event
-from server.domain import looks_unresolved, resolve_placeholder_name
-from server.events_api import contact_from_wire
 from ui_components import (
     MessageWidget,
 )
@@ -27,7 +27,6 @@ from ui_components import (
 logger = logging.getLogger(__name__)
 
 # Re-exported for callers/tests that imported the helpers from here.
-_resolve_placeholder_name = resolve_placeholder_name
 _looks_unresolved = looks_unresolved
 
 

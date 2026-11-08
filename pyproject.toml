@@ -61,12 +61,9 @@ extend-exclude = ["*.md"]
 
 [tool.basedpyright]
 typeCheckingMode = "off"
-# Temporary reduced subset for progressive rollout. Extend in follow-ups to:
-# protocols/config.py (60 errors), protocols/manager.py (39),
-# protocols/signal.py (633), protocols/telegram.py (354),
-# protocols/whatsapp.py (771), protocols/whatsapp_events.py (350),
-# protocols/whatsapp_rest.py (158).
-strict = ["protocols/base.py", "models.py"]
+# Strict subset for progressive rollout (the Python server's protocols/ was
+# deleted in mc-zao.4.4; extend to client/ next).
+strict = ["models.py"]
 pythonVersion = "3.12"
 exclude = [".venv", ".venv-test", "__pycache__"]
 

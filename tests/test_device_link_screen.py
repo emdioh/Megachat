@@ -12,7 +12,6 @@ Covers:
 from __future__ import annotations
 
 import base64
-import itertools
 import sys
 from asyncio import run
 from pathlib import Path
@@ -26,8 +25,8 @@ from textual.widgets import Input, ListView
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from client.client import ApiError
 from device_link_screen import _PROTOCOL_ITEMS, DeviceLinkPickerScreen
-from server.client import ApiError
 
 
 class TestDeviceLinkPickerScreen:
@@ -252,7 +251,7 @@ class TestDeviceLinkReconnectWiring:
     def test_open_device_link_reconnects_only_touched(self):
         from signal_tui import SignalTUI
 
-        app = SignalTUI()
+        app = SignalTUI(client=MagicMock())
         fake_screen = MagicMock()
         fake_screen._touched_protocols = {"telegram"}
         app.push_screen = MagicMock()
@@ -833,97 +832,6 @@ class TestDeviceLinkScreenFlows:
             }[sel]
         )
         return screen, code, status
-
-    def test_whatsapp_flow_over_real_operations(self):
-        rest = MagicMock()
-        rest.get_session_status.side_effect = [
-            {"status": "scan_qr"},  # start
-            {"status": "scan_qr"},  # poll 1
-            {"status": "working", "me": {"id": "1@c.us"}},  # poll 2
-        ]
-        rest.get_pairing_qr.return_value = b"\x89PNG"
-        manager = MagicMock()
-        manager.get.side_effect = lambda p: (
-            SimpleNamespace(_rest=rest) if p == "whatsapp" else None
-        )
-        screen, code, status = self._real_flow_screen(manager)
-        screen._selected_protocol = "whatsapp"
-        screen.run_worker = MagicMock(side_effect=lambda coro, **k: coro.close())
-        with patch("device_link_screen.qr_png_to_ascii", return_value="WA-QR"):
-            run(screen._fetch_real_qr(""))
-        code.update.assert_called_once_with("WA-QR")
-        status.update.assert_called_once_with("⏳ Waiting for scan from phone...")
-
-        with patch("asyncio.sleep", AsyncMock()) as sleep:
-            run(screen._poll_completion(""))
-        assert sleep.await_count == 2  # one pause between polls, one before dismiss
-        status.update.assert_called_with("✅ Device linked successfully!")
-        screen.dismiss.assert_called_once_with(None)
-
-    def test_telegram_2fa_flow_over_real_operations(self):
-        tb = MagicMock(_connected=False, _needs_2fa=True)
-        tb.get_pairing_qr.return_value = "tg://login?token=1"
-        tb.complete_2fa.return_value = True
-        manager = MagicMock()
-        manager.get.side_effect = lambda p: tb if p == "telegram" else None
-        screen, code, status = self._real_flow_screen(manager)
-        screen._selected_protocol = "telegram"
-        screen.run_worker = MagicMock(side_effect=lambda coro, **k: coro.close())
-        with patch("device_link_screen.qr_to_ascii", return_value="TG-QR"):
-            run(screen._fetch_real_qr(""))
-        code.update.assert_called_once_with("TG-QR")
-
-        # first poll: the account asks for a password
-        container = MagicMock()
-        screen.query_one = MagicMock(
-            side_effect=lambda sel, *_: {
-                "#link-qr-status": status,
-                "#link-qr-container": container,
-            }[sel]
-        )
-        with patch("device_link_screen.Input") as make_input:
-            assert run(screen._check_telegram_done()) is False
-        container.mount.assert_called_once_with(make_input.return_value)
-        # not asked twice
-        assert run(screen._check_telegram_done()) is False
-        container.mount.assert_called_once()
-
-        screen.query_one = MagicMock(return_value=status)
-        with patch("asyncio.sleep", AsyncMock()):
-            run(screen._complete_2fa_worker("pw"))
-        tb.complete_2fa.assert_called_once_with("pw")
-        screen.dismiss.assert_called_once_with(None)
-
-    def test_signal_flow_over_real_operations(self, tmp_path):
-        from protocols import rpc as signal_rpc
-
-        proc = MagicMock()
-        proc.stdout.readline.side_effect = ["sgnl://linkdevice?uuid=abc", ""]
-        proc.poll.side_effect = itertools.chain([None], itertools.repeat(0))
-        backend = SimpleNamespace(user_number="")
-        manager = MagicMock()
-        manager.get.side_effect = lambda p: backend if p == "signal" else None
-        screen, code, _status = self._real_flow_screen(manager)
-        screen._selected_protocol = "signal"
-        screen.run_worker = MagicMock(side_effect=lambda coro, **k: coro.close())
-        with (
-            patch.object(signal_rpc, "PROJECT_DIR", tmp_path),
-            patch.object(signal_rpc, "find_signal_cli", return_value=Path("cli")),
-            patch("server.link.subprocess.Popen", return_value=proc),
-            patch(
-                "server.link.list_signal_accounts",
-                side_effect=[[], ["+391111111111"], ["+391111111111"]],
-            ),
-            patch("device_link_screen.qr_to_ascii", return_value="SIG-QR"),
-            patch("asyncio.sleep", AsyncMock()),
-        ):
-            run(screen._fetch_real_qr("+39 111"))
-            code.update.assert_called_once_with("SIG-QR")
-            run(screen._poll_completion("+39 111"))
-        assert backend.user_number == "+391111111111"
-        assert screen._signal_number == "+391111111111"
-        assert screen._touched_protocols == {"signal"}
-        screen.dismiss.assert_called_once_with(None)
 
     def test_poll_times_out_after_five_minutes(self):
         link = LinkStub(

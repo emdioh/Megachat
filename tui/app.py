@@ -7,7 +7,7 @@ import threading
 import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, ClassVar, Protocol
+from typing import ClassVar
 
 from textual.app import App
 from textual.binding import Binding
@@ -21,6 +21,7 @@ from textual.widgets import (
     ListItem,
 )
 
+from client.client import ChatClient, ClientSubscription
 from contact_picker import BackendChoiceScreen, ContactPickerScreen
 from models import (
     PROTOCOL_SIGNAL,
@@ -29,9 +30,6 @@ from models import (
     ChatContact,
     protocol_emoji,
 )
-from server.bus import EventBus
-from server.client import ChatClient, ClientSubscription, InProcessClient
-from server.core import ChatCore
 from tui.backend_connect import BackendConnectMixin
 from tui.chat_view import ChatViewMixin
 from tui.client_calls import ClientCallsMixin
@@ -57,28 +55,6 @@ from ui_components import (
 )
 
 logger = logging.getLogger(__name__)
-
-
-class WebAdapter(Protocol):
-    """What the TUI needs to host the web adapter next to its core.
-
-    Supplied by the composition root (``signal_tui``) so that ``tui`` never
-    imports ``web``: ``start`` is ``web.server.start_web_server``, ``stop``
-    is ``web.server.stop_web_server``.
-    """
-
-    def start(
-        self,
-        api: Any,
-        port: int,
-        token: str,
-        *,
-        host: str,
-        require_auth: bool,
-        bus: EventBus,
-    ) -> Any: ...
-
-    def stop(self, handle: Any) -> None: ...
 
 
 class SignalTUI(
@@ -120,12 +96,6 @@ class SignalTUI(
         image_support: ImageSupport = ImageSupport.CATIMG,
         *,
         initial_cell_size: tuple[int, int] | None = None,
-        web_enabled: bool = False,
-        web_port: int = 4242,
-        web_host: str = "127.0.0.1",
-        web_token: str = "",
-        web_no_auth: bool = False,
-        web_adapter: WebAdapter | None = None,
         client: ChatClient | None = None,
         server_spawned: bool | None = None,
     ):
@@ -137,15 +107,6 @@ class SignalTUI(
         # Cell size measured BEFORE ``run()`` (P2): the CSI fallback can only run
         # safely outside the app (no Textual key-thread racing for stdin).
         self._initial_cell_size = initial_cell_size
-        self._web_enabled = web_enabled
-        self._web_port = web_port
-        self._web_host = web_host
-        self._web_token = web_token
-        self._web_no_auth = web_no_auth
-        self._web_server = None
-        # The embedded web adapter is injected by the composition root
-        # (``signal_tui``): the TUI itself never imports ``web``.
-        self._web_adapter = web_adapter
 
         # Native kitty image rendering state (phase 2).  The renderer is created
         # in ``on_mount`` when the terminal supports it; placements are reconciled
@@ -179,26 +140,13 @@ class SignalTUI(
         self._window_native_token = 0
         self._window_native_pending = 0
 
-        # Headless core: owns the backends and their connect workers; the TUI
-        # reacts to its bus events (see ``BackendConnectMixin``).  The backend
-        # attributes below are aliases to the core's objects.
-        self.bus = EventBus()
-        # Only an in-process TUI builds the core; with a remote client the
-        # backends live in the server and no ChatCore exists in this process.
-        self.core: ChatCore | None = ChatCore(self.bus) if client is None else None
-        # The TUI consumes core events (and, in later steps, operations)
-        # through the client; ``bus``/``core`` stay for the not yet migrated
-        # direct uses.
-        # With an injected ``client`` (a remote server) the TUI does not own the
-        # core: it neither starts nor shuts it down and syncs from the server.
-        self._owns_core = client is None
-        # Whether this TUI started the server it is attached to (True), found it
-        # already running (False), or owns an in-process core (None).  The exit
-        # dialog's default (Quit vs Detach) depends on it.
+        # The TUI is a client of megachatd: ``signal_tui`` attaches to (or
+        # spawns) the server and passes the socket client in.  Whether this TUI
+        # started that server (True) or found it running (False) sets the exit
+        # dialog's default (Quit vs Detach); None when unknown (tests).
         self.server_spawned = server_spawned
-        self.client: ChatClient = (
-            InProcessClient(self._own_core()) if client is None else client
-        )
+        # Tests build the app without a server and set ``client`` themselves.
+        self.client: ChatClient = client  # type: ignore[assignment]
         self._core_sub: ClientSubscription | None = None
         self._init_client_state()
         self._init_exit_state()
@@ -313,13 +261,6 @@ class SignalTUI(
             yield Footer()
             yield StatusBar(id="status-bar")
 
-    def _own_core(self) -> ChatCore:
-        """The in-process core (only exists when the TUI owns it)."""
-        core = self.core
-        if core is None:
-            raise RuntimeError("this TUI is a client of a remote server: no core")
-        return core
-
     def _install_sigint_on_loop(self) -> None:
         """Move the Ctrl+C handler onto the asyncio loop.
 
@@ -345,49 +286,15 @@ class SignalTUI(
         # Settings (thumbnail sizes, picker options) come from the server in a
         # worker; the defaults serve until they arrive.
         self._start_server_config_fetch()
-        if self._web_enabled:
-            adapter = self._web_adapter
-            if adapter is None:
-                logger.error("Web UI enabled but no web adapter was provided")
-            else:
-                self._web_server = adapter.start(
-                    self._own_core().api,
-                    self._web_port,
-                    self._web_token,
-                    host=self._web_host,
-                    require_auth=not self._web_no_auth,
-                    bus=self.bus,
-                )
-            if self._web_server is not None:
-                # Only the web-signal-tui-bg shell alias used to print the
-                # Bearer token; a plain `python3 signal_tui.py --web` launch
-                # left no way to find it short of reading config.json by
-                # hand. Surface it here too (persistent until dismissed).
-                if self._web_no_auth:
-                    self._status(
-                        f"🌐 Web UI: http://{self._web_host}:{self._web_port} "
-                        "— ⚠️ NO AUTH (--web-no-auth)",
-                        0,
-                    )
-                else:
-                    self._status(
-                        f"🌐 Web UI: http://{self._web_host}:{self._web_port} "
-                        f"— token: {self._web_token}",
-                        0,
-                    )
         # Start poll worker immediately — Signal and WhatsApp events flow
         # as soon as their backends are ready (independent workers below).
         self._polling_active = True
-        # Subscribe BEFORE starting the core so no event is missed.  The poll
-        # worker is the single bus consumer (the core owns the event pump).
+        # The poll worker is the single consumer of the server's event stream.
         self._core_sub = self.client.subscribe()
         self.run_worker(self._poll_worker, exclusive=True, thread=True)
-        if self._owns_core:
-            self._own_core().start()
-        else:
-            # The server's backends are already up: no ``backend_ready`` will
-            # come, so fetch contacts and chats the way a resync does.
-            self._schedule_resync("attach")
+        # The server's backends are already up: no ``backend_ready`` will
+        # come, so fetch contacts and chats the way a resync does.
+        self._schedule_resync("attach")
 
         self._init_native_renderer()
 
@@ -687,27 +594,15 @@ class SignalTUI(
             self._hires_executor.shutdown(wait=False)
         except Exception as _e:
             logger.debug("Hi-res executor shutdown failed", exc_info=True)
-        # Stop, web adapter, Telegram disconnect and cache prune: one core
-        # method, idempotent (the SIGINT handler may already have run it).
-        if self._owns_core:
-            self._own_core().shutdown(self._stop_web_adapter)
 
     def shutdown_from_signal(self) -> None:
-        """Ctrl+C: stop polling, shut the core down, exit the app.
+        """Ctrl+C: stop polling and exit the app.
 
-        A client of a server only detaches (no dialog: a signal must never stop
-        a server other TUIs share)."""
+        The TUI only detaches (no dialog: a signal must never stop a server
+        other TUIs share)."""
         self._polling_active = False
         self._cancel_exit_wait()
-        if self._owns_core:
-            self._own_core().shutdown(self._stop_web_adapter)
         self.exit()
-
-    def _stop_web_adapter(self) -> None:
-        """Stop the embedded web adapter (the core's shutdown hook)."""
-        adapter = self._web_adapter
-        if self._web_enabled and adapter is not None:
-            adapter.stop(self._web_server)
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
         """Gate the global Ctrl+W / Ctrl+U / Ctrl+A filters while a picker is open.

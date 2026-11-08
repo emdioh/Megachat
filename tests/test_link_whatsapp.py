@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 import link_whatsapp
-from server.client import ApiError
+from client.client import ApiError
 
 
 class FakeClient:

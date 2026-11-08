@@ -3,7 +3,6 @@
 ======================  ===================================================
 Where it comes from      Result
 ======================  ===================================================
-``--in-process``         quit as before (the TUI owns the core): no dialog
 Ctrl+Q, server reachable dialog: Detach / Quit / Cancel
 Ctrl+Q, server lost      no dialog, exit (nothing to detach from)
 Ctrl+C / SIGINT          Detach, no dialog (never stops a shared server)
@@ -20,9 +19,9 @@ import logging
 import threading
 from typing import Any
 
-from server.api import ApiError
-from server.attach import server_pid, wait_server_stopped
-from server.socket_client import ServerUnavailable
+from client.attach import server_pid, wait_server_stopped
+from client.errors import ApiError
+from client.socket_client import ServerUnavailable
 from tui.client_timeouts import call_op
 from tui.exit_dialog import ExitDialogScreen
 
@@ -39,7 +38,6 @@ STOP_WAIT_S = 30.0
 class ExitFlowMixin:
     """``SignalTUI``'s quit routing, dialog and Detach/Quit actions."""
 
-    _owns_core: bool = True
     _exit_pending: bool = False
     #: Set when the app is leaving, to cut a Quit's wait for the server short.
     _exit_cancel: threading.Event | None = None
@@ -57,9 +55,6 @@ class ExitFlowMixin:
 
     def _request_exit(self) -> None:
         """Ctrl+Q.  UI thread."""
-        if self._owns_core:
-            self._finish_exit()  # in-process: the TUI owns the core
-            return
         if self._exit_pending:
             return
         if not getattr(self.client, "connected", True):

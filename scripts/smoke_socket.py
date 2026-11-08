@@ -83,7 +83,7 @@ async def _check_ws(port: str) -> None:
 
 
 def do_shutdown() -> None:
-    from server.socket_client import SocketClient
+    from client.socket_client import SocketClient
 
     c = SocketClient.connect(timeout=10)
     try:

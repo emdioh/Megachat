@@ -3,10 +3,10 @@
 import logging
 import threading
 
+from client.bus import GAP, Event
+from client.errors import ApiError
+from client.events_api import contact_from_wire
 from models import ChatContact, contact_cache_key
-from server.api import ApiError
-from server.bus import GAP, Event
-from server.events_api import contact_from_wire
 
 logger = logging.getLogger("signal_tui")
 

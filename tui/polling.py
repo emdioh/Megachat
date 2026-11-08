@@ -3,8 +3,8 @@
 import logging
 import time
 
-from server.bus import GAP, Event
-from server.socket_client import CONNECTION_EVENT
+from client.bus import GAP, Event
+from client.socket_client import CONNECTION_EVENT
 
 logger = logging.getLogger(__name__)
 
@@ -13,7 +13,7 @@ class PollingMixin:
     def _poll_worker(self):
         """Thread worker that consumes the core events through ``self.client``.
 
-        The event pump itself lives in ``ChatCore``: it polls the backends,
+        The event pump itself lives in megachatd: it polls the backends,
         does all domain handling and publishes core events.  This worker is
         the single event consumer of the TUI: every cycle it waits up to 0.1s
         for an event, drains the rest of the batch and dispatches each event.

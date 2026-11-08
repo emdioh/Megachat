@@ -247,14 +247,6 @@ class TestToLocal:
         assert events == ["remote-stop", "local-stop", "spawn"]  # no WAHA
         assert "megachatd serve" in capsys.readouterr().out
 
-    def test_python_server_starts_waha_first(self, monkeypatch, tmp_path, capsys):
-        events = self._stubs(monkeypatch, tmp_path, python=True)
-        assert handover.to_local() == 0
-        assert events == ["remote-stop", "waha", "local-stop", "spawn"]
-        out = capsys.readouterr().out
-        assert "Handover verso il locale completato" in out
-        assert "megachat.py" in out
-
     def test_never_starts_tmux(self, monkeypatch, tmp_path):
         self._stubs(monkeypatch, tmp_path)
         ran = []
@@ -271,17 +263,3 @@ class TestToLocal:
         with pytest.raises(SystemExit):
             handover.to_local()
         assert events == ["remote-stop"]  # no second server
-
-    def test_falls_back_to_no_wait_start_when_waha_start_fails(
-        self, monkeypatch, tmp_path, capsys
-    ):
-        self._stubs(monkeypatch, tmp_path, python=True)
-        starts = []
-        monkeypatch.setattr(
-            whatsapp_mod,
-            "start",
-            lambda **k: starts.append(k) or (1 if not k.get("no_wait") else 0),
-        )
-        assert handover.to_local() == 0
-        assert len(starts) == 2  # first wait=True attempt, then no_wait fallback
-        assert "Handover verso il locale completato" in capsys.readouterr().out

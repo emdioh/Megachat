@@ -22,15 +22,15 @@ import time
 from collections.abc import Callable
 from typing import Any
 
-from contact_picker import configure_picker
-from models import ChatContact
-from server.api import ApiError
-from server.events_api import contact_from_wire
-from server.socket_client import (
+from client.errors import ApiError
+from client.events_api import contact_from_wire
+from client.socket_client import (
     IncompatibleServer,
     OperationTimeout,
     ServerUnavailable,
 )
+from contact_picker import configure_picker
+from models import ChatContact
 from tui.client_timeouts import call_op
 
 logger = logging.getLogger("signal_tui")
@@ -77,7 +77,6 @@ class ClientCallsMixin:
     _resync_running: bool = False
     _resync_again: bool = False
     _open_contact_token: int = 0
-    _owns_core: bool = True
     _thumbnail_limits_cache: tuple[int, int] | None = None
     #: ``server.config`` ``wa_lazy_media``: off until the server says so (an
     #: older server without the field cannot resolve lazy tokens).

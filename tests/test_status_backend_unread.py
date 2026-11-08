@@ -200,7 +200,7 @@ class TestRefreshBackendStatusIfIdle:
 
 class TestOnBackendReadyInitsDefault:
     def test_on_backend_ready_renders_default_when_idle(self):
-        app = SignalTUI()
+        app = SignalTUI(client=MagicMock())
         app.contacts = [
             _contact(PROTOCOL_SIGNAL, "+1"),
             _contact(PROTOCOL_WHATSAPP, "wa1"),

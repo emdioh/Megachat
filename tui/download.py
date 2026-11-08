@@ -9,10 +9,10 @@ from pathlib import Path
 from textual.containers import Horizontal
 from textual.widgets import Static
 
+from client.client import ApiError
 from models import (
     PROTOCOL_SIGNAL,
 )
-from server.client import ApiError
 from tui.blobs import resolve_attachment_path
 from tui.images.detect import ImageSupport
 from ui_components import (

@@ -16,8 +16,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 from client_harness import StubClient, run_workers, view_app
 
+from client.errors import ApiError
 from models import PROTOCOL_SIGNAL, PROTOCOL_TELEGRAM
-from server.api import ApiError
 from ui_components import MessageWidget
 
 ROOT = Path(__file__).resolve().parent.parent

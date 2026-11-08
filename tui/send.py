@@ -8,6 +8,8 @@ from typing import Any
 
 from textual.widgets import Input
 
+from client.errors import ApiError
+from client.socket_client import OperationTimeout
 from emoji_picker import EmojiCompletionWidget
 from emoji_picker import replace_emoji_aliases as _replace_emoji_aliases
 from models import (
@@ -16,8 +18,6 @@ from models import (
     PROTOCOL_WHATSAPP,
     is_media_quote_placeholder,
 )
-from server.api import ApiError
-from server.socket_client import OperationTimeout
 from tui.client_calls import is_unknown_outcome
 from ui_components import MessageTextArea
 

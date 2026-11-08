@@ -14,7 +14,6 @@ import os
 import shutil
 import socket
 import subprocess
-import sys
 import tempfile
 import time
 from dataclasses import dataclass, field
@@ -59,7 +58,7 @@ class Resp:
 
 @dataclass
 class Server:
-    kind: str  # "go" | "py"
+    kind: str  # always "go" (the Python server is gone)
     root: Path
     home: Path
     port: int
@@ -77,7 +76,7 @@ class Server:
     def client(self):
         """A connected :class:`server.socket_client.SocketClient` (lazy)."""
         if self._client is None:
-            from server.socket_client import SocketClient
+            from client.socket_client import SocketClient
 
             self._client = SocketClient.connect(
                 self.socket_path, timeout=10, reconnect=False
@@ -167,12 +166,12 @@ def _env(root: Path, home: Path, token: str | None) -> dict[str, str]:
         GMAIL_ENABLED="0",
         GMAIL_UNREAD_POLL_S="0",
         GMAIL_IMAGE_PREFETCH="0",
-        PYTHONUNBUFFERED="1",
     )
+    env.pop("SIGNAL_TUI_WEB_TOKEN", None)
     if token is not None:
-        env["SIGNAL_TUI_WEB_TOKEN"] = token
+        env["WEB_TOKEN"] = token
     else:
-        env.pop("SIGNAL_TUI_WEB_TOKEN", None)
+        env.pop("WEB_TOKEN", None)
     return env
 
 
@@ -184,10 +183,10 @@ def start_server(
     token: str | None = TOKEN,
     extra_args: tuple[str, ...] = (),
     extra_env: dict[str, str] | None = None,
-    py_root: Path | None = None,
 ) -> Server:
-    """Start the Go binary (``kind="go"``) or the Python server (``"py"``) in
-    a fresh temp HOME (a copy of *seed_home* when given), no real backend."""
+    """Start the Go binary (*kind* must be ``"go"``) in a fresh temp HOME (a
+    copy of *seed_home* when given), no real backend."""
+    assert kind == "go", kind
     root = short_tmp("mc" + kind)
     home = root / "home"
     if seed_home is not None:
@@ -198,21 +197,13 @@ def start_server(
     sock = root / "run" / "s.sock"
     env = _env(root, home, token)
     env.update(extra_env or {})
-    if kind == "go" and token is not None:
-        # The Go server reads WEB_TOKEN; SIGNAL_TUI_WEB_TOKEN is the legacy
-        # name the Python server still uses (same env dict for both).
-        env.pop("SIGNAL_TUI_WEB_TOKEN", None)
-        env["WEB_TOKEN"] = token
     args = ["--web-port", str(port), "--socket", str(sock), *extra_args]
-    if kind == "go":
-        assert binary
-        cmd = [binary, "serve", "--project-dir", str(root / "proj"), *args]
-    else:
-        cmd = [sys.executable, "-m", "server", *args]
+    assert binary
+    cmd = [binary, "serve", "--project-dir", str(root / "proj"), *args]
     log = root / "stdout.log"
     with log.open("wb") as fh:
         proc = subprocess.Popen(
-            cmd, env=env, cwd=str(py_root or REPO) if kind == "py" else str(root),
+            cmd, env=env, cwd=str(root),
             stdout=fh, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
         )
     srv = Server(kind, root, home, port, token or "", sock, proc, log)
@@ -228,27 +219,6 @@ def start_server(
     out = srv.log()
     srv.stop()
     raise RuntimeError(f"{kind} server did not come up:\n{out[-3000:]}")
-
-
-def copy_python_project(dest: Path) -> Path:
-    """A private copy of the Python sources.
-
-    ``protocols.config`` reads and WRITES ``<project>/config.json`` (and reads
-    ``.env``) next to the sources, so the Python server must not run from the
-    developer's checkout: settings writes would leak into it and between runs.
-
-    ``bin`` (where ``signal-cli`` is installed) is dropped on purpose: the Go
-    server runs with an empty ``--project-dir``, so copying the developer's
-    ``bin/signal-cli-*`` would give the two sides different link.* behaviour
-    (Python would run the installed CLI, Go would report it as missing) and
-    make the parity tests depend on the machine, not on the wire contract.
-    """
-    skip = shutil.ignore_patterns(
-        ".git", "tests", "docs", "documentation", "assets", "megachatd", "profiling", "bin",
-        "__pycache__", "*.png", "*.pyc", "config.json", ".env", ".venv*", "node_modules",
-    )
-    shutil.copytree(REPO, dest, ignore=skip)
-    return dest
 
 
 def _port_open(port: int) -> bool:

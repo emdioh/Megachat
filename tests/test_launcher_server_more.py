@@ -71,20 +71,6 @@ class TestStatus:
         assert server.status() == 0
         assert "WAHA" not in capsys.readouterr().out
 
-    def test_reports_all_off(self, monkeypatch, tmp_path, capsys):
-        monkeypatch.setenv("MEGACHAT_SERVER", "python")
-        monkeypatch.setattr(server, "LOCK_FILE", tmp_path / "no.lock")
-        monkeypatch.setattr(server, "_pgrep", lambda pattern: False)
-        monkeypatch.setattr(server, "_docker_container_running", lambda name: False)
-        monkeypatch.setattr(
-            server, "port_listening", lambda port, host="127.0.0.1": False
-        )
-        assert server.status() == 0
-        out = capsys.readouterr().out
-        assert "Server: spento" in out
-        assert "daemon signal-cli: spento" in out
-        assert "WAHA: spento" in out
-        assert "Web UI: spenta" in out
 
     def test_reports_all_on(self, monkeypatch, tmp_path, capsys):
         lock = tmp_path / "signal-tui.lock"
@@ -219,15 +205,6 @@ class TestStartAll:
         assert "tok123" in out
         assert "WAHA" not in out  # megachatd: WhatsApp is native
 
-    def test_waha_session_reported_with_python_server_and_flag(
-        self, monkeypatch, start_env, capsys
-    ):
-        monkeypatch.setenv("MEGACHAT_SERVER", "python")
-        monkeypatch.setattr(
-            server, "port_listening", lambda port, host="127.0.0.1": True
-        )
-        assert server.start_all(whatsapp=True) == 0
-        assert "Sessione WhatsApp connessa." in capsys.readouterr().out
 
     def test_one_time_notice_from_the_server_output_is_shown(
         self, monkeypatch, start_env, capsys
@@ -288,22 +265,6 @@ class TestStartAll:
         assert kwargs["start_new_session"] is True
         assert kwargs["cwd"] == server.PROJECT_DIR
 
-    def test_python_fallback_spawns_the_old_server(self, monkeypatch, start_env):
-        monkeypatch.setenv("MEGACHAT_SERVER", "python")
-        monkeypatch.setattr(
-            server, "port_listening", lambda port, host="127.0.0.1": True
-        )
-        assert server.start_all() == 0
-        ((cmd, _kwargs),) = start_env
-        assert cmd[0].endswith(".venv/bin/python")
-        assert cmd[1:] == [
-            str(server.PROJECT_DIR / "megachat.py"),
-            "serve",
-            "--web-port",
-            "4242",
-            "--web-host",
-            "0.0.0.0",
-        ]
 
     def test_stops_previous_instance_before_starting(self, monkeypatch, start_env):
         order = []

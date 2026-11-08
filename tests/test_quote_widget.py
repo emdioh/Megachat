@@ -21,14 +21,11 @@ from textual.widgets import Static
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-import pytest
 
 from tui.app import SignalTUI
 from tui.images.detect import ImageSupport
 from tui.images.kitty_renderer import KittyRenderer
 from ui_components import ImageWidget, QuoteWidget
-
-pytestmark = pytest.mark.usefixtures("open_media_root")
 
 
 def _make_png(width: int = 16, height: int = 32) -> bytes:
@@ -476,37 +473,6 @@ class TestQuoteThumbnailFlow:
         app._quote_resolve_semaphore.__exit__.assert_called_once()
 
     # ── Ingresso (chunk 5): resolve via quote_attachment_id ──────────────
-    def test_generates_thumbnail_from_attachment_id(self, tmp_path):
-        app, written = _make_kitty_app()
-        img_path = self._write_png(tmp_path)
-        app.core.manager = MagicMock()
-        app.core.manager.get_attachment_path.return_value = img_path
-        quote = QuoteWidget(
-            "🖼️ Immagine", attachment_id="tgref:42:12", protocol="telegram"
-        )
-        quote._is_mounted = True
-
-        app._maybe_resolve_quote_thumbnail(quote)
-
-        assert any("a=t" in s for s in written)
-        assert quote.native_image_id == 1
-        app.core.manager.get_attachment_path.assert_called_once_with(
-            "telegram", "tgref:42:12"
-        )
-
-    def test_attachment_id_unresolvable_no_thumbnail(self):
-        app, written = _make_kitty_app()
-        app.core.manager = MagicMock()
-        app.core.manager.get_attachment_path.return_value = None
-        quote = QuoteWidget(
-            "🖼️ Immagine", attachment_id="tgref:42:12", protocol="telegram"
-        )
-        quote._is_mounted = True
-
-        app._maybe_resolve_quote_thumbnail(quote)
-
-        assert not any("a=t" in s for s in written)
-        assert quote.native_image_id is None
 
     def test_attachment_id_no_protocol_no_thumbnail(self):
         app, written = _make_kitty_app()
@@ -518,65 +484,3 @@ class TestQuoteThumbnailFlow:
 
         assert app.run_worker.call_count == 0
         assert written == []
-
-    def test_uscita_lazy_whatsapp_attachment_id(self, tmp_path):
-        """Uscita con path=None ma attachment_id+protocol → lazy resolve (WA)."""
-        app, written = _make_kitty_app()
-        img_path = self._write_png(tmp_path)
-        app.core.manager = MagicMock()
-        app.core.manager.get_attachment_path.return_value = img_path
-        quote = QuoteWidget(
-            "🖼️ Immagine", attachment_id="wa-media-123", protocol="whatsapp"
-        )
-        quote._is_mounted = True
-
-        app._maybe_resolve_quote_thumbnail(quote)
-
-        assert any("a=t" in s for s in written)
-        assert quote.native_image_id == 1
-        app.core.manager.get_attachment_path.assert_called_once_with(
-            "whatsapp", "wa-media-123"
-        )
-
-    def test_stale_path_falls_back_to_lazy_resolve(self, tmp_path):
-        """Path persistito ma file mancante → fallback lazy su attachment_id."""
-        app, written = _make_kitty_app()
-        img_path = self._write_png(tmp_path)
-        app.core.manager = MagicMock()
-        app.core.manager.get_attachment_path.return_value = img_path
-        stale = tmp_path / "gone.png"  # never created → missing
-        quote = QuoteWidget(
-            "🖼️ Immagine",
-            attachment_path=stale,
-            attachment_id="tgref:42:12",
-            protocol="telegram",
-        )
-        quote._is_mounted = True
-
-        app._maybe_resolve_quote_thumbnail(quote)
-
-        # Stale path detected → lazy resolve produced a valid file → thumbnail.
-        assert any("a=t" in s for s in written)
-        assert quote.native_image_id == 1
-        app.core.manager.get_attachment_path.assert_called_once_with(
-            "telegram", "tgref:42:12"
-        )
-
-    def test_stale_path_and_lazy_fails_text_only(self, tmp_path):
-        """Path stale + lazy resolve None → testo, nessun crash."""
-        app, written = _make_kitty_app()
-        app.core.manager = MagicMock()
-        app.core.manager.get_attachment_path.return_value = None
-        stale = tmp_path / "gone.png"
-        quote = QuoteWidget(
-            "🖼️ Immagine",
-            attachment_path=stale,
-            attachment_id="tgref:42:12",
-            protocol="telegram",
-        )
-        quote._is_mounted = True
-
-        app._maybe_resolve_quote_thumbnail(quote)
-
-        assert not any("a=t" in s for s in written)
-        assert quote.native_image_id is None

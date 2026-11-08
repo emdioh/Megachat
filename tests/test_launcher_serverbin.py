@@ -73,33 +73,6 @@ class TestServeCommand:
         assert cmd.count("--project-dir") == 1
         assert "/elsewhere" in cmd
 
-    def test_missing_binary_raises_with_italian_hint(self, repo):
-        with pytest.raises(serverbin.ServerBinaryNotFound) as exc:
-            serverbin.serve_command([], repo=repo)
-        message = str(exc.value)
-        assert "make megachatd" in message
-        assert "MEGACHATD_BIN" in message
-        assert "MEGACHAT_SERVER=python" in message
-
-    def test_python_escape_hatch_from_environment(self, repo, monkeypatch):
-        monkeypatch.setenv("MEGACHAT_SERVER", "python")
-        monkeypatch.setenv("MEGACHATD_BIN", "/opt/megachatd")  # ignored
-        cmd = serverbin.serve_command(["--no-web"], python="/py", repo=repo)
-        assert cmd == ["/py", str(repo / "megachat.py"), "serve", "--no-web"]
-
-    def test_python_default_interpreter_is_the_repo_venv(self, repo, monkeypatch):
-        monkeypatch.setenv("MEGACHAT_SERVER", "Python")  # case-insensitive
-        cmd = serverbin.serve_command([], repo=repo)
-        assert cmd[0] == str(repo / ".venv" / "bin" / "python")
-
-    def test_python_escape_hatch_from_dotenv(self, repo):
-        repo.mkdir()
-        (repo / ".env").write_text(
-            "OTHER=1\nMEGACHAT_SERVER='python'\n", encoding="utf-8"
-        )
-        assert serverbin.use_python(repo) is True
-        assert serverbin.engine_name(repo) == "python"
-
     def test_environment_beats_dotenv(self, repo, monkeypatch):
         repo.mkdir()
         (repo / ".env").write_text("MEGACHAT_SERVER=python\n", encoding="utf-8")

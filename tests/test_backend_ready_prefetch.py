@@ -7,7 +7,7 @@ not run on the Textual UI thread.
 import threading
 from unittest.mock import MagicMock
 
-from server.bus import Event
+from client.bus import Event
 from tui.app import SignalTUI
 
 
@@ -84,7 +84,7 @@ def test_prefetched_merge_does_not_call_the_client_again() -> None:
 
 
 def test_prefetch_failure_degrades_to_empty() -> None:
-    from server.api import ApiError
+    from client.errors import ApiError
 
     app = _app()
     app.client.call.side_effect = ApiError("backend_down", "down")

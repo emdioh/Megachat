@@ -1,14 +1,12 @@
-"""Which headless server to spawn: ``megachatd`` (Go) or the Python server.
+"""How to spawn the headless server, ``megachatd`` (Go).
 
 Stdlib only (see ``__init__.py``); shared by the launcher and by the TUI's
-find-or-spawn (``server/attach.py``).
+find-or-spawn (``client/attach.py``).
 
-* Default: ``megachatd serve <args> --project-dir <repo>``.  Binary lookup:
-  ``$MEGACHATD_BIN``, else ``<repo>/megachatd/bin/megachatd``, else
-  ``megachatd`` on ``PATH``.
-* Escape hatch: ``MEGACHAT_SERVER=python`` (environment, else ``.env`` in the
-  repo, where ``install.sh`` writes it when Go is missing) uses the old Python
-  server (``megachat.py serve``).
+``megachatd serve <args> --project-dir <repo>``.  Binary lookup:
+``$MEGACHATD_BIN``, else ``<repo>/megachatd/bin/megachatd``, else
+``megachatd`` on ``PATH``.  (The legacy Python server and its
+``MEGACHAT_SERVER=python`` switch are gone.)
 """
 
 from __future__ import annotations
@@ -28,25 +26,11 @@ class ServerBinaryNotFound(Exception):
     """megachatd cannot be found; the message is user facing (Italian)."""
 
 
-def _env_file_setting(name: str, repo: Path) -> str:
-    try:
-        lines = (repo / ".env").read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return ""
-    value = ""
-    for line in lines:
-        line = line.strip()
-        if line.startswith(f"{name}="):
-            value = line.split("=", 1)[1].strip()
-            if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
-                value = value[1:-1]
-    return value
-
-
 def use_python(repo: Path = REPO_DIR) -> bool:
-    """``True`` when ``MEGACHAT_SERVER=python`` selects the old Python server."""
-    value = os.environ.get(ENGINE_ENV) or _env_file_setting(ENGINE_ENV, repo)
-    return value.strip().lower() == "python"
+    """Always ``False``: the Python server was deleted.  Kept only until the
+    launcher callers drop their WAHA / Python branches (bead mc-zao.4.4)."""
+    del repo
+    return False
 
 
 def resolve_megachatd(repo: Path = REPO_DIR) -> str | None:
@@ -68,8 +52,7 @@ def resolve_megachatd(repo: Path = REPO_DIR) -> str | None:
 def not_found_message(repo: Path = REPO_DIR) -> str:
     return (
         "megachatd non trovato. Compilalo con `make megachatd` (serve Go), "
-        f"oppure imposta {BIN_ENV}=/percorso/megachatd, "
-        f"oppure usa il server Python con {ENGINE_ENV}=python."
+        f"oppure imposta {BIN_ENV}=/percorso/megachatd."
     )
 
 
@@ -84,9 +67,7 @@ def serve_command(
 
     Raises :class:`ServerBinaryNotFound` when megachatd is wanted but missing.
     """
-    if use_python(repo):
-        interpreter = python or str(repo / ".venv" / "bin" / "python")
-        return [interpreter, str(repo / "megachat.py"), "serve", *serve_args]
+    del python  # unused: the Python server is gone
     binary = resolve_megachatd(repo)
     if binary is None:
         raise ServerBinaryNotFound(not_found_message(repo))

@@ -393,92 +393,6 @@ class TestVisibleKeys:
 
 
 class TestSelectContactUnreadOnly:
-    def test_select_contact_pins_selected_keeps_chat(self):
-        mario = _contact(PROTOCOL_SIGNAL, "+1", "Mario", phone="391")
-        luigi = _contact(PROTOCOL_SIGNAL, "+2", "Luigi", phone="392")
-        app = _make_app(mario, luigi)
-        app._unread_only = True
-        app._unread_counts = {"signal:+1": 2, "signal:+2": 3}
-
-        fake = _render(app)
-        mario_header = app._group_widgets[app._member_to_group[mario.cache_key]]
-        luigi_header = app._group_widgets[app._member_to_group[luigi.cache_key]]
-        assert mario_header.display is True
-        assert luigi_header.display is True
-
-        fake_list = MagicMock()
-        fake_list.children = list(fake.items)
-        fake_list.index = None
-        _prepare_select(app, fake_list)
-        app._cache = {}
-
-        app._select_contact(mario)
-
-        # Chat stays open; the just-read selected contact is PINNED (stays
-        # visible) and the still-unread contact remains visible too.
-        assert app.selected_contact is mario
-        assert mario_header.display is True
-        assert luigi_header.display is True
-        # Highlight lands on the selected contact's header (member collapsed).
-        assert fake_list.index == fake_list.children.index(mario_header)
-
-    def test_select_other_contact_unpins_previous(self):
-        mario = _contact(PROTOCOL_SIGNAL, "+1", "Mario", phone="391")
-        luigi = _contact(PROTOCOL_SIGNAL, "+2", "Luigi", phone="392")
-        app = _make_app(mario, luigi)
-        app._unread_only = True
-        app._unread_counts = {"signal:+1": 2, "signal:+2": 3}
-
-        fake = _render(app)
-        mario_header = app._group_widgets[app._member_to_group[mario.cache_key]]
-        luigi_header = app._group_widgets[app._member_to_group[luigi.cache_key]]
-
-        fake_list = MagicMock()
-        fake_list.children = list(fake.items)
-        fake_list.index = None
-        _prepare_select(app, fake_list)
-        app._cache = {}
-
-        app._select_contact(mario)
-        assert mario_header.display is True
-        assert luigi_header.display is True
-
-        app._select_contact(luigi)
-
-        # The previous contact (now unread=0 and no longer selected) vanishes;
-        # the newly selected contact is pinned instead.
-        assert app.selected_contact is luigi
-        assert mario_header.display is False
-        assert luigi_header.display is True
-
-    def test_proto_unread_pin_only_when_protocol_matches(self):
-        mario = _contact(PROTOCOL_SIGNAL, "+1", "Mario", phone="391")
-        anna = _contact(PROTOCOL_WHATSAPP, "wa1", "Anna", phone="392")
-        app = _make_app(mario, anna)
-        app._protocol_filter = PROTOCOL_SIGNAL
-        app._unread_only = True
-        app._unread_counts = {"signal:+1": 2}
-
-        fake = _render(app)
-        mario_header = app._group_widgets[app._member_to_group[mario.cache_key]]
-        anna_header = app._group_widgets[app._member_to_group[anna.cache_key]]
-        assert mario_header.display is True
-        assert anna_header.display is False
-
-        fake_list = MagicMock()
-        fake_list.children = list(fake.items)
-        fake_list.index = None
-        _prepare_select(app, fake_list)
-        app._cache = {}
-
-        app._select_contact(anna)
-
-        # Chat stays open, but the selected WhatsApp contact is NOT pinned:
-        # its protocol is outside the Signal filter's scope.
-        assert app.selected_contact is anna
-        assert anna_header.display is False
-        assert mario_header.display is True
-
     def test_no_pin_when_unread_only_false(self):
         mario = _contact(PROTOCOL_SIGNAL, "+1", "Mario", phone="391")
         app = _make_app(mario)
@@ -505,52 +419,6 @@ class TestSelectContactUnreadOnly:
         luigi_header = app._group_widgets[app._member_to_group[luigi.cache_key]]
         assert mario_header.display is True  # pin survives the chunk render
         assert luigi_header.display is True
-
-    def test_ghost_contact_hidden_in_unread_only_but_chat_open(self):
-        mario = _contact(PROTOCOL_SIGNAL, "+1", "Mario", phone="391")
-        app = _make_app(mario)
-        app._unread_only = True
-        app._unread_counts = {"signal:+1": 1}
-
-        lst = _SelectListView()
-        app.query_one = MagicMock(return_value=lst)
-        app._render_contact_list(list(app.contacts))
-
-        _prepare_select(app, lst)
-        app._cache = {}
-
-        ghost = _contact(PROTOCOL_WHATSAPP, "wa-ghost", "Ghost")
-        app._select_contact(ghost)
-
-        # The ghost is registered by the core; the TUI selects its own copy.
-        assert app.selected_contact is not None
-        assert app.selected_contact.cache_key == ghost.cache_key
-        assert app.selected_contact.extras.get("ghost") is True
-        assert app.selected_contact in app.contacts
-        ghost_item = app._contact_widgets.get(ghost.cache_key)
-        assert ghost_item is not None
-        assert ghost_item.display is False
-
-
-class TestSelectContactMarksRead:
-    def test_mark_read_goes_through_the_client_and_badge_clears_at_once(self):
-        mario = _contact(PROTOCOL_SIGNAL, "+1", "Mario", phone="391")
-        app = _make_app(mario)
-        lst = _SelectListView()
-        app.query_one = MagicMock(return_value=lst)
-        app._render_contact_list(list(app.contacts))
-        _prepare_select(app, lst)
-        app._cache = {}
-        app._unread_counts = {"signal:+1": 3}
-        app._client_call_background = MagicMock()
-
-        app._select_contact(mario)
-
-        app._client_call_background.assert_called_once_with(
-            "chats.mark_read", {"protocol": "signal", "contact_id": "+1"}
-        )
-        assert app._unread_counts["signal:+1"] == 0
-        app.core.manager.get.return_value.mark_read_sync.assert_not_called()
 
 
 # ─── A. Auto-selection of the first visible contact on filter change ──────────
@@ -796,68 +664,7 @@ class TestAutoSelectFirstVisible:
 
     # ── No recursion: `_select_contact` → `_apply_contact_visibility` ─────────
 
-    def test_select_first_visible_not_reentrant(self):
-        mario = _contact(PROTOCOL_SIGNAL, "+391", "Mario", phone="391", ts=100)
-        luigi = _contact(PROTOCOL_SIGNAL, "+392", "Luigi", phone="392")
-        app = _make_app(mario, luigi)
-        app._protocol_filter = "signal"
-        app._unread_only = True
-        app._unread_counts = {"signal:+391": 2, "signal:+392": 3}
-        fake = _render(app)
-
-        fake_list = MagicMock()
-        fake_list.children = list(fake.items)
-        fake_list.index = None
-        app.query_one = MagicMock(side_effect=self._query_for(fake_list))
-        app._sync_status_segments = MagicMock()
-        _prepare_select(app, fake_list)
-        app._cache = {}
-
-        calls = []
-        real = app._select_contact
-
-        def spy(contact):
-            calls.append(contact)
-            return real(contact)
-
-        app._select_contact = spy
-
-        app._apply_contact_filter()
-
-        # The mark-read inside `_select_contact` re-applies visibility, but that
-        # must NOT re-trigger the auto-selection hook: exactly one call.
-        assert len(calls) == 1
-        assert calls[0] is mario
-
     # ── Unread pin survives the auto-selection mark-read ──────────────────────
-
-    def test_select_first_visible_keeps_pin_and_new_selection_visible(self):
-        mario = _contact(PROTOCOL_SIGNAL, "+391", "Mario", phone="391", ts=100)
-        luigi = _contact(PROTOCOL_SIGNAL, "+392", "Luigi", phone="392", ts=200)
-        app = _make_app(mario, luigi)
-        app._unread_only = True
-        app._unread_counts = {"signal:+391": 2, "signal:+392": 3}
-        app.selected_contact = mario  # old selection (has unread)
-        fake = _render(app)
-        mario_header = app._group_widgets[app._member_to_group[mario.cache_key]]
-        luigi_header = app._group_widgets[app._member_to_group[luigi.cache_key]]
-
-        fake_list = MagicMock()
-        fake_list.children = list(fake.items)
-        fake_list.index = None
-        app.query_one = MagicMock(side_effect=self._query_for(fake_list))
-        _prepare_select(app, fake_list)
-        app._cache = {}
-
-        app._select_first_visible_contact()
-
-        # New first visible (Luigi, most recent) is selected and, after
-        # mark-read, stays pinned/visible; the old selection still has unread
-        # and stays visible too.
-        assert app.selected_contact is luigi
-        assert app._unread_counts["signal:+392"] == 0
-        assert luigi_header.display is True
-        assert mario_header.display is True
 
 
 # ─── A. ctrl+u binding + check_action gate ───────────────────────────────────

@@ -2,8 +2,8 @@
 
 import logging
 
+from client.errors import ApiError
 from models import PROTOCOL_SIGNAL
-from server.api import ApiError
 from tui.client_calls import is_unknown_outcome
 from ui_components import MessageTextArea, MessageWidget
 
