@@ -10,6 +10,6 @@
 //   - CSS inlining of <style> blocks: github.com/vanng822/go-premailer with an
 //     adaptation layer (inline.go) that keeps css-inline's semantics;
 //   - HTML sanitising: golang.org/x/net/html plus bluemonday, with a
-//     serialiser that reproduces nh3/ammonia (sanitize.go, ammonia_style.go);
-//     sanitize_parity_test.go checks it against the real Python sanitizer.
+//     serialiser that reproduces nh3/ammonia (sanitize.go, ammonia_style.go),
+//     covered by sanitize_test.go.
 package gmail

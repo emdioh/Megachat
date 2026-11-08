@@ -24,8 +24,7 @@ func cacheRows(*config.Config) []row {
 		// "<n>@lid" sender/quote_author. window/snapshot resolve them at display
 		// time through the group sender resolver of messages.page: the known LID
 		// becomes its name, the unknown one the annotated placeholder, the
-		// device-suffixed head names its bare user part (mc-zao.5.8, see
-		// lidPlaceholderFields in parity_test.go).
+		// device-suffixed head names its bare user part (mc-zao.5.8).
 		{"protocol": "whatsapp", "contact_number": waGrp, "text": "legacy lid", "is_mine": 0, "sender": "111@lid", "timestamp": at(7), "msg_id": "G1",
 			"quote_text": "q", "quote_timestamp": at(1), "quote_author": "112@lid"},
 		{"protocol": "whatsapp", "contact_number": waGrp, "text": "named sender", "is_mine": 0, "sender": "Ann", "timestamp": at(8), "msg_id": "G2"},
@@ -41,29 +40,11 @@ func newCacheEnv(t *testing.T) *env {
 		{ID: waLid, DisplayName: "Mario", Protocol: "whatsapp", Extras: map[string]any{"phone": "391", "lid": waLid}},
 	}}
 	// "111@lid" is known: window/snapshot must resolve the legacy cache row to
-	// its name, like messages.page, where Python keeps the raw JID (mc-zao.5.8).
+	// its name (mc-zao.5.8).
 	e.addressBook = map[string][]proto.Contact{"whatsapp": {
 		{ID: "111@lid", DisplayName: "Ann", Protocol: "whatsapp", Extras: map[string]any{"phone": "39111"}},
 	}}
 	return e
-}
-
-var cacheCalls = []map[string]any{
-	{"name": "w_sig", "op": "window", "protocol": "signal", "contact_id": sig},
-	{"name": "w_none", "op": "window", "protocol": "signal", "contact_id": "+nobody"},
-	{"name": "w_ghost", "op": "window", "protocol": "whatsapp", "contact_id": waGhost},
-	{"name": "w_lid", "op": "window", "protocol": "whatsapp", "contact_id": waLid},
-	{"name": "w_grp", "op": "window", "protocol": "whatsapp", "contact_id": waGrp},
-	{"name": "w_tg", "op": "window", "protocol": "telegram", "contact_id": "t1"},
-	{"name": "s_sig", "op": "snapshot", "protocol": "signal"},
-	{"name": "s_wa", "op": "snapshot", "protocol": "whatsapp"},
-	{"name": "s_tg", "op": "snapshot", "protocol": "telegram"},
-}
-
-// TestParityWindowSnapshot compares messages.window / messages.snapshot with
-// the Python cache loader on the same database.
-func TestParityWindowSnapshot(t *testing.T) {
-	compareCalls(t, newCacheEnv(t), cacheCalls)
 }
 
 func TestWindowRefresh(t *testing.T) {

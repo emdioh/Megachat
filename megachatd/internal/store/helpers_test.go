@@ -1,17 +1,13 @@
 package store
 
 import (
-	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"io"
 	"log/slog"
-	"os"
-	"os/exec"
 	"path/filepath"
 	"reflect"
-	"sync"
 	"testing"
 )
 
@@ -124,73 +120,18 @@ func eq[T comparable](t *testing.T, got, want T) {
 func strp(s string) *string { return &s }
 func i64p(n int64) *int64   { return &n }
 
-// ---- python reference harness -------------------------------------------
+// ---- database dump helpers ----------------------------------------------
 
+// dbDump is a whole-database snapshot: schema rows sorted by name, the schema
+// version and every row of the data tables ordered by rowid.
 type dbDump struct {
 	Schema      [][]any                     `json:"schema"`
 	UserVersion int                         `json:"user_version"`
 	Tables      map[string][]map[string]any `json:"tables"`
-	Result      any                         `json:"result"`
 }
 
-var (
-	pyOnce sync.Once
-	pyOK   bool
-)
-
-func pyScript() string {
-	p, _ := filepath.Abs(filepath.Join("testdata", "pydb.py"))
-	return p
-}
-
-func pyRun(args ...string) (*dbDump, error) {
-	cmd := exec.Command("python3", append([]string{"-I", pyScript()}, args...)...)
-	var out, errb bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &out, &errb
-	if err := cmd.Run(); err != nil {
-		return nil, &pyError{err, errb.String()}
-	}
-	var d dbDump
-	if err := json.Unmarshal(out.Bytes(), &d); err != nil {
-		return nil, err
-	}
-	return &d, nil
-}
-
-type pyError struct {
-	err error
-	msg string
-}
-
-func (e *pyError) Error() string { return e.err.Error() + ": " + e.msg }
-
-// pyAvailable reports whether the Python reference implementation runs here.
-func pyAvailable(t *testing.T) bool {
-	t.Helper()
-	pyOnce.Do(func() {
-		if _, err := exec.LookPath("python3"); err != nil {
-			return
-		}
-		p := filepath.Join(t.TempDir(), "probe.db")
-		_, err := pyRun("init", p)
-		pyOK = err == nil
-		if err != nil {
-			t.Logf("python reference unavailable: %v", err)
-		}
-	})
-	return pyOK
-}
-
-// requirePython skips the test when the Python reference is unavailable.
-func requirePython(t *testing.T) {
-	t.Helper()
-	if !pyAvailable(t) {
-		t.Skip("python3 reference implementation not available")
-	}
-}
-
-// goDump dumps the database the same way pydb.py does (JSON round-tripped so
-// numbers compare as float64 on both sides).
+// goDump snapshots the database (JSON round-tripped so numbers compare as
+// float64 across snapshots).
 func goDump(t *testing.T, s *Store) *dbDump {
 	t.Helper()
 	d := &dbDump{Tables: map[string][]map[string]any{}}
@@ -223,17 +164,6 @@ func goDump(t *testing.T, s *Store) *dbDump {
 	return &out
 }
 
-func copyFile(t *testing.T, from, to string) {
-	t.Helper()
-	b, err := os.ReadFile(from)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(to, b, 0o644); err != nil {
-		t.Fatal(err)
-	}
-}
-
 // fixtureFile builds a database file with raw SQL (no migration applied).
 func fixtureFile(t *testing.T, stmts ...string) string {
 	t.Helper()
@@ -253,56 +183,19 @@ func fixtureFile(t *testing.T, stmts ...string) string {
 	return path
 }
 
-func sameDump(t *testing.T, label string, py, g *dbDump, withSchema bool) {
+func sameDump(t *testing.T, label string, want, got *dbDump, withSchema bool) {
 	t.Helper()
 	if withSchema {
-		if !reflect.DeepEqual(py.Schema, g.Schema) {
-			t.Errorf("%s: schema differs\n python: %v\n go:     %v", label, py.Schema, g.Schema)
+		if !reflect.DeepEqual(want.Schema, got.Schema) {
+			t.Errorf("%s: schema differs\n want: %v\n got:  %v", label, want.Schema, got.Schema)
 		}
-		if py.UserVersion != g.UserVersion {
-			t.Errorf("%s: user_version python=%d go=%d", label, py.UserVersion, g.UserVersion)
-		}
-	}
-	for table, rows := range py.Tables {
-		if !reflect.DeepEqual(rows, g.Tables[table]) {
-			t.Errorf("%s: table %s differs\n python: %v\n go:     %v", label, table, rows, g.Tables[table])
+		if want.UserVersion != got.UserVersion {
+			t.Errorf("%s: user_version want=%d got=%d", label, want.UserVersion, got.UserVersion)
 		}
 	}
-}
-
-// parity runs a Python reference function and a Go counterpart on two copies
-// of the same fixture database and asserts identical resulting contents.  It
-// returns the Go store (opened on its copy) for further assertions.
-func parity(t *testing.T, setup func(t *testing.T, s *Store), pyFunc string, pyArgs any, goFn func(s *Store) any) *Store {
-	t.Helper()
-	g := newStore(t)
-	setup(t, g)
-	gres := goFn(g)
-	if !pyAvailable(t) {
-		return g
-	}
-	// Build the identical fixture for Python from a second store.
-	src := newStore(t)
-	setup(t, src)
-	_ = src.Close()
-	pyPath := filepath.Join(t.TempDir(), "py.db")
-	copyFile(t, src.path, pyPath)
-	args, _ := json.Marshal(pyArgs)
-	cmdArgs := []string{"run", pyPath, pyFunc}
-	if pyArgs != nil {
-		cmdArgs = append(cmdArgs, string(args))
-	}
-	py, err := pyRun(cmdArgs...)
-	if err != nil {
-		t.Fatalf("python %s: %v", pyFunc, err)
-	}
-	sameDump(t, pyFunc, py, goDump(t, g), false)
-	if gres != nil {
-		gb, _ := json.Marshal(gres)
-		pb, _ := json.Marshal(py.Result)
-		if string(gb) != string(pb) {
-			t.Errorf("%s: result python=%s go=%s", pyFunc, pb, gb)
+	for table, rows := range want.Tables {
+		if !reflect.DeepEqual(rows, got.Tables[table]) {
+			t.Errorf("%s: table %s differs\n want: %v\n got:  %v", label, table, rows, got.Tables[table])
 		}
 	}
-	return g
 }

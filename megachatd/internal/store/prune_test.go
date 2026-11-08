@@ -129,18 +129,3 @@ func TestPruneRemovesReactionsOfPrunedMessages(t *testing.T) {
 	eq(t, must(s.PruneCache(ctx, 100, 1_000_000)), 1)
 	eq(t, len(must(s.ReactionsForContact(ctx, "signal", "contact"))), 0)
 }
-
-func TestPrunePythonParity(t *testing.T) {
-	setup := func(t *testing.T, s *Store) {
-		for i := 0; i < 130; i++ {
-			pm(t, s, "signal", "A", i, int64(900_000+i), []string{"read", "pending", "sent", "failed"}[i%4], strp(fmt.Sprint("a", i)), i%2)
-		}
-		pm(t, s, "signal", "A", 900, 1_999_999, "read", nil, 0)
-		pm(t, s, "signal", "A", 901, 10, "read", nil, 0)
-		for i := 0; i < 120; i++ {
-			pm(t, s, "telegram", "B", i, int64(i), "read", strp(fmt.Sprint("t", i)), 1)
-		}
-	}
-	parity(t, setup, "prune_cache", map[string]any{"args": []any{100}, "kwargs": map[string]any{"now_ms": 2_000_000}},
-		func(s *Store) any { return must(s.PruneCache(ctx, 100, 2_000_000)) })
-}

@@ -13,16 +13,14 @@ import (
 	"github.com/emdioh/megachat/megachatd/internal/bus"
 )
 
-// TestInteropPythonSocketClient runs the real server/socket_client.py against
-// the Go server. Skipped without python3 or the Python imports.
+// TestInteropPythonSocketClient runs the real client/socket_client.py (the
+// TUI's socket client) against the Go server. Skipped without Python or the
+// client imports.
 func TestInteropPythonSocketClient(t *testing.T) {
-	py, err := exec.LookPath("python3")
-	if err != nil {
-		t.Skip("python3 not available")
-	}
 	repo, _ := filepath.Abs("../../..")
-	if _, err := os.Stat(filepath.Join(repo, "server", "socket_client.py")); err != nil {
-		t.Skip("server/socket_client.py not found")
+	py := pythonForRepo(t, repo)
+	if _, err := os.Stat(filepath.Join(repo, "client", "socket_client.py")); err != nil {
+		t.Skip("client/socket_client.py not found")
 	}
 	script, _ := filepath.Abs("testdata/interop_client.py")
 	e := newEnv(t)
@@ -108,6 +106,21 @@ func TestInteropPythonSocketClient(t *testing.T) {
 	if err := cmd.Wait(); err != nil {
 		t.Fatalf("python exit: %v %s", err, stderr.String())
 	}
+}
+
+// pythonForRepo prefers the repo's virtualenv interpreter, where the client's
+// dependencies live, and falls back to python3 on PATH.
+func pythonForRepo(t *testing.T, repo string) string {
+	t.Helper()
+	venv := filepath.Join(repo, ".venv", "bin", "python")
+	if _, err := os.Stat(venv); err == nil {
+		return venv
+	}
+	py, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not available")
+	}
+	return py
 }
 
 type limitedBuf struct{ b []byte }

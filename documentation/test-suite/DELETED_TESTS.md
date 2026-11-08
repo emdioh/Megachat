@@ -4493,3 +4493,45 @@ The rest of each file still runs. Reason = the error the test hit once the serve
 - `TestSelectContactUnreadOnly::test_proto_unread_pin_only_when_protocol_matches` — used `app.core` (the in-process `ChatCore` with mocked backends)
 - `TestSelectContactUnreadOnly::test_select_contact_pins_selected_keeps_chat` — used `app.core` (the in-process `ChatCore` with mocked backends)
 - `TestSelectContactUnreadOnly::test_select_other_contact_unpins_previous` — used `app.core` (the in-process `ChatCore` with mocked backends)
+
+## Removed in mc-zao.4.7 (Go parity tests)
+
+The Go tests that ran the deleted Python server through a `testdata/*.py` script were removed: with `server/`, `protocols/` and their modules gone they skipped or failed instead of comparing anything. Go-only tests in the same files were kept; the parity half of `TestDedupCases` was removed and its Go assertions kept.
+
+### `megachatd/internal/gmail/sanitize_parity_test.go` (file deleted)
+
+- `TestSanitizeParityWithPython` — ran `testdata/sanitize_parity.py`, which imported the deleted `server.gmail`
+- `TestSanitizeParityRandom` — same script, seeded random documents
+- script `megachatd/internal/gmail/testdata/sanitize_parity.py` — imported `server.gmail` (nh3 + tinycss2 + css-inline)
+
+### `megachatd/internal/messages/parity_test.go` (file deleted)
+
+- `TestParityMessagesPage` — ran `testdata/parity.py`, which imported the deleted `server.messages`, `protocols.db` and `protocols.rpc`
+- `TestParityMessagesPageEagerMedia` — same script with lazy WhatsApp media off
+- `TestLIDPlaceholderAllowlist` — exercised only the allowlist that rewrote the Python payload inside that comparison
+- script `megachatd/internal/messages/testdata/parity.py` — imported `protocols.db`, `protocols.rpc`, `server.messages`
+- `megachatd/internal/messages/cache_test.go::TestParityWindowSnapshot` — ran the same script for `messages.window` / `messages.snapshot`
+
+### `megachatd/internal/store` parity tests
+
+Every one ran `testdata/pydb.py` (`protocols.db`, and `models.py` predicates).
+
+- `compat_test.go::TestPythonWrittenDatabaseOpensInGo` (the file was deleted)
+- `compat_test.go::TestGoWrittenDatabaseOpensInPython`
+- `status_parity_test.go::TestStatusUpdatesMatchPython` (the file was deleted)
+- `status_parity_test.go::TestMessageIDUpdateMatchesPython`
+- `status_parity_test.go::TestMarkAsReadMatchesPython`
+- `status_parity_test.go::TestDedupExactMatchesPython`
+- `status_parity_test.go::TestAttachmentUpdatesMatchPython`
+- `status_parity_test.go::TestUpdateTextMatchesPython`
+- `models_test.go::TestPredicatesMatchPython`
+- `prune_test.go::TestPrunePythonParity`
+- `reactions_test.go::TestReactionPythonParity`
+- `schema_test.go::TestFreshSchemaMatchesPythonExactly`
+- `schema_test.go::TestLegacyMigrationsMatchPython`
+- `transcriptions_test.go::TestTranscriptionStoreReadableByPython`
+- script `megachatd/internal/store/testdata/pydb.py` — drove `protocols.db` and `models.py`
+
+Renamed rather than deleted: `store/schema_test.go::TestPragmasMatchPython` → `TestPragmas` (it never ran Python, only checked `journal_mode=wal` and `busy_timeout`); `store/models_test.go` and the rest of `schema_test.go` kept their Go-only tests. `proto/signal/envelope_test.go::TestPlaceholdersMatchPython` → `TestPlaceholdersMatchModels`, because only its `protocols/signal.py` half was dead: the `models.py` half still checks the literals against the TUI's surviving domain module.
+
+Kept: `megachatd/internal/rpc/interop_test.go::TestInteropPythonSocketClient` now runs `client/socket_client.py` + `client/errors.py` (the TUI's client) and passes against the Go server; `megachatd/internal/proto/telegram/markdown_parity_test.go::TestMarkdownParityTelethon` only needs the telethon library and now runs on the repo `.venv` interpreter.

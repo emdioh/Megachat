@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -64,8 +63,8 @@ func (d deps) Contacts(_ context.Context, protocol string) ([]proto.Contact, boo
 	return d.e.contacts[protocol], true
 }
 
-// FindContact mirrors the Python stub of testdata/parity.py: exact id, else a
-// contact whose lid or phone@c.us alias is the id.
+// FindContact resolves an id directly, else a contact whose lid or phone@c.us
+// alias is the id.
 func (d deps) FindContact(_ context.Context, protocol, id string) (proto.Contact, bool) {
 	list := d.e.contacts[protocol]
 	for _, c := range list {
@@ -230,14 +229,4 @@ func (e *env) page(params map[string]any) []map[string]any {
 		e.t.Fatal(err)
 	}
 	return rows
-}
-
-func writeFile(t *testing.T, path string, data string) {
-	t.Helper()
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
-		t.Fatal(err)
-	}
 }
