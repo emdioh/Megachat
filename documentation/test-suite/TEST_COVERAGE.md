@@ -1,77 +1,77 @@
 # Analisi di copertura funzionale
 
-Confronto tra aree funzionali del prodotto (ricavate dal codice) e test presenti. La copertura misurata dall'ultima run registrata (`docs/TEST_REPORT.md`, 2026-08-24) è ~80% globale con gate `fail_under = 68` in `pyproject.toml`; questa analisi è qualitativa, per area funzionale.
+Confronto tra aree funzionali e test presenti, sullo stato attuale (dopo l'eliminazione del server Python, mc-zao.4.4). La copertura misurata dalla CI resta qualitativa qui; il gate Python è `fail_under = 68` in `pyproject.toml`.
 
-Legenda: **Robusta** = suite dedicata ampia; **Coperta** = test presenti ma su percorsi principali; **Parziale** = solo casi limite/indiretti; **Lacuna** = nessun test dedicato.
+Legenda: **Robusta** = suite dedicata ampia; **Coperta** = test sui percorsi principali; **Parziale** = casi limite/indiretti; **Lacuna** = nessun test dedicato.
 
-## 1. Aree per backend
-
-| Area | Stato | Evidenze |
-|---|---|---|
-| Signal RPC client + fallback subprocess | Robusta | `test_backend_rpc`, `test_backend_send`, `test_signal_real_timestamp`, `test_backend_lazy_config` |
-| Envelope parsing Signal (message/typing/receipt/edit) | Robusta | `test_ui_protocol`, fixture envelope in conftest, `test_edit_signal` |
-| Cache SQLite (insert, dedup, status, unread, pruning) | Robusta | `test_backend_cache`, `test_cache_debounce`, `test_db_edit`, `test_open_or_create` |
-| Migrazioni schema/versioning | Robusta | `test_db_schema_versioning`, `test_migrate_sqlite/protocol/status` |
-| WhatsApp webhook ingest + ack sintetici | Robusta | `test_whatsapp_backend` (121), `test_whatsapp_fix_40_41` |
-| WhatsApp receipt/canonicalizzazione id | Robusta | `test_whatsapp_receipt_id_match`, `test_whatsapp_read_receipt_fix` |
-| WhatsApp storico/resync startup | Coperta | `test_wa_startup_resync`; il retry-loop di `fetch_history` è coperto indirettamente |
-| WhatsApp resolver @lid / presence subscribe background | Parziale | esercitati in `test_whatsapp_backend` e `test_address_book`; i thread in background non hanno test di ciclo di vita dedicati |
-| Telegram backend (QR, 2FA, entità, eventi) | Robusta | `Telegram/test_telegram_backend`, `Telegram/test_regression`, `tests/test_telegram` |
-| Telegram receipt per id / reorder send | Coperta | `test_telegram_read_receipt_fix`, `test_telegram_send_reorder` |
-| Manager multi-backend + routing | Robusta | `test_backends`, `test_address_book`, `test_edit_contract` |
-
-## 2. Aree TUI/UI
+## 1. Server Go (`megachatd`)
 
 | Area | Stato | Evidenze |
 |---|---|---|
-| Dispatch eventi (`tui/events.py`) | Robusta | `test_ui_protocol` (55) |
-| Lista contatti: sort/filtri Ctrl+W/U/A | Robusta | `test_unread_filter`, `test_contact_grouping*` |
-| Raggruppamento per persona | Robusta | `test_contact_grouping` (56) + integration |
-| Contact picker (Ctrl+S) e rubrica | Robusta | `test_contact_picker`, `test_address_book` |
-| Device link (Ctrl+L, QR, 2FA) | Coperta | `test_device_link_screen` — i worker di polling completamento sono mockati |
-| Emoji picker + completamento alias | Coperta | `test_emoji_picker` |
-| Chat view (finestra 20, refresh, load-more, merge) | Robusta | `test_refresh_chat`, `test_merge_cache_edit`, `test_image_caption` |
-| Invio ottimistico + stato outgoing (pending/sent/delivered/read/**failed**) | Robusta | `test_send_persist_offthread` (26), `test_failed_send_status`, `test_outgoing_status_fallback`, `test_send_timing`, `test_telegram_send_reorder` (riordino post-invio) |
-| Edit messaggi (3 protocolli) | Robusta | `test_edit_*` (contract/flow/signal/whatsapp/telegram/db/merge) |
-| Quote media / reply con immagine (bug #37) | Coperta | headless: `test_reply_media`, `test_models`; la resa a destinazione è verificata solo dai test live gated (`test_live_quote_media`, fuori CI) |
-| Immagini native kitty + fallback catimg | Robusta | `test_kitty_renderer` (48), `test_image_detect`, `test_image_modal`, `test_chat_view_images`; la resa su terminale reale resta coperta dalla checklist manuale |
-| Typing indicator | Robusta | `test_typing_indicator` |
-| Status bar unread per-backend | Coperta | `test_status_backend_unread` |
-| Download mode (Ctrl+D) + server HTTP | Coperta | `test_download_mode`, `test_backend_download` |
-| Widget di basso livello | Coperta | `test_ui_components` |
-| Render progressivo chunked lista | Parziale | esercitato via integration/grouping; nessun test dedicato al timer `_render_next_chunk` sotto carico |
+| Store SQLite: schema, migrazioni, dedup, pruning, reazioni, trascrizioni | Robusta | `internal/store/*_test.go` (`schema_test`, `dedup_test`, `messages_test`, `prune_test`, `reactions_test`, `transcriptions_test`) |
+| Ingest e stato dei contatti | Robusta | `internal/core/events_test.go`, `ops_*_test.go`, `helpers_test.go` |
+| Invio, edit, reazioni, retry | Robusta | `internal/core/ops_send_test.go`, `ops_edit_reactions_test.go`, `retry.go` coperto via contract |
+| Address book e fan-out per protocollo | Coperta | `internal/core/ops_contacts_test.go`, `internal/proto/manager_test.go` |
+| Signal: RPC, envelope, ingest, invio, quote | Robusta | `internal/proto/signal/*_test.go` |
+| WhatsApp: conversione, ingest, history, ids, media, quote, guardie | Robusta | `internal/proto/whatsapp/*_test.go` |
+| Telegram: conversione, sessione Telethon, migrazione id, invio, media | Robusta | `internal/proto/telegram/*_test.go` |
+| Gmail: IMAP/SMTP, sanitizer, immagini, watcher | Robusta | `internal/gmail/*_test.go` |
+| Media: upload, thumbnail, link preview, avatar | Robusta | `internal/media/*_test.go` |
+| Linking QR (stati, scadenze, 2FA) | Robusta | `internal/linking/linking_test.go` |
+| Trascrizione e auto-trascrizione | Robusta | `internal/transcribe/*_test.go` |
+| Config, migrazione, validazione avvio | Robusta | `internal/config/*_test.go`, `cmd/megachatd/validation_test.go` |
+| Adapter socket JSON-RPC | Robusta | `internal/rpc/rpc_test.go`, `internal/rpc/interop_test.go` |
+| Adapter HTTP/WebSocket | Robusta | `internal/web/*_test.go` |
+| Wiring completo del binario (fake backend) | Coperta | `cmd/megachatd/main_test.go`, `integrations_test.go`, `web_wiring_test.go` |
 
-## 3. Infrastruttura
+## 2. Contratto black-box (`tests/contract/`)
 
 | Area | Stato | Evidenze |
 |---|---|---|
-| Lock istanza singola / crash log entry point | Coperta | `test_signal_tui_lock` (crash log non verificato direttamente) |
-| `install.sh` | Coperta | `test_install_script` |
-| `launcher.py` / `launcher/*.py` (alternativa Python opzionale agli script bash) | Coperta | `test_launcher_cli`, `test_launcher_install`, `test_launcher_whatsapp`, `test_launcher_aliases`, `test_launcher_misc` |
-| docker-compose (extra_hosts) | Parziale | `test_docker_compose_extra_hosts` (2 test puntuali) |
-| Script CLI standalone (`link_account.py`, `link_whatsapp.py`, `purge_whatsapp_cache.py`) | Lacuna | la logica QR è coperta (`test_qr_ascii`, device link screen) ma gli script come processi no |
-| Script migrazione one-shot (`migrate_cache_*.py`) | Coperta | `test_migrate_sqlite/protocol/status` |
-| Webhook server socket-level (bind fallito, riavvio) | Parziale | handler testato; comportamento bind-in-uso non coperto |
-| Polling worker loop completo (timeout typing, flush batch) | Parziale | effetti testati (`test_typing_indicator`, `test_cache_debounce`); il loop thread vero è neutralizzato nei test UI |
-| `backend/download.py::get_local_ip` | Parziale | percorso SSH_CONNECTION implicito nei test download |
+| Operazioni sul socket, handshake, errori | Robusta | `test_socket_ops.py` (44) |
+| Route REST, auth, blob, upload | Robusta | `test_http_routes.py` (21) |
+| WebSocket legacy e v2, resume, gap | Robusta | `test_websocket.py` (10) |
+| Id dei messaggi inviati / echo | Coperta | `test_send_message_ids.py` (6) |
+| Validazione all'avvio | Parziale | `test_startup_validation.py` (1) |
 
-## 4. Sintesi delle lacune (candidati a nuovi test)
+## 3. Client Python e TUI
 
-1. **Thread lifecycle**: SSE listener (retry ~1 s), poll worker (exit promptivo, flush differito), resolver @lid, presence sweep — oggi testati solo per effetto collaterale.
-2. **Script CLI** di linking standalone e `purge_whatsapp_cache.py`.
-3. **Casi degradati del webhook server**: porta occupata (`ensure_webhook_server → 0`), body enorme/chunked.
-4. **Telegram media lazy** (`tgref:`): risoluzione path coperta parzialmente dentro `tests/test_telegram`; mancano test del download reale mockato.
-5. **Render progressivo** sotto liste grandi (>50 righe) e interazione con filtri.
-6. **`get_local_ip()`** fallback UDP.
-7. **Integrità id/dedup al boot**: scenario `_update_message_id` multi-riga (UPDATE senza finestra/LIMIT) + `_dedup_messages_by_id` eseguita da `_load_cache` a ogni avvio — es. retry di un messaggio fallito con stesso testo → righe legittime cancellate come "duplicati" al riavvio. I test attuali coprono il caso a riga singola. (review P1-3)
-8. **Lifecycle SSE**: doppio listener via `restart_sse` (oggi dead code, race latente) e comportamento del loop quando il generatore `listen_events` ritorna senza yield (log NameError/stale, nessun segnale UI durante un outage prolungato). (review P1-4)
-9. **Race check-then-act sugli ingest**: due ingest concorrenti dello stesso messaggio (echo webhook vs `fetch_history` nel pool resync `ThreadPoolExecutor(4)`) che superano entrambi il dedup → riga doppia in DB; nessun lock applicativo sulle cache in-memory è testato. (review P1-2)
+| Area | Stato | Evidenze |
+|---|---|---|
+| Regole di import e isolamento del client | Robusta | `test_client_import_rules.py` |
+| Attach/find-or-spawn, entry point, errori di connessione | Robusta | `test_signal_tui_startup.py`, `test_megachat_entry.py`, `test_signal_tui_cli.py` |
+| Merge a backend pronto (snapshot + contatti) | Coperta | `test_backend_connect.py`, `test_backend_ready_prefetch.py` |
+| Invio ottimistico / edit visti lato client | Coperta | `test_tui_send_ops.py`, `test_tui_edit_ops.py` |
+| Dispatch eventi e aggiornamento vista | Parziale | coperto indirettamente da `test_refresh_chat.py`, `test_tui_integration.py`; i vecchi test dedicati sono in `DELETED_TESTS.md` (mc-gux) |
+| Lista contatti, grouping, filtri, unread | Robusta | `test_contact_grouping*.py`, `test_unread_filter.py`, `test_status_backend_unread.py` |
+| Picker, device link, emoji | Robusta | `test_contact_picker.py`, `test_device_link_screen.py`, `test_emoji_picker.py` |
+| Chat view: finestra, refresh, quote | Robusta | `test_refresh_chat.py`, `test_quote_widget.py`, `test_reply_media.py` |
+| Widget di basso livello | Robusta | `test_ui_components.py` |
+| Immagini native kitty | Robusta | `test_kitty_renderer.py`, `test_image_modal.py`, `test_chat_view_images.py`, `test_native_*` |
+| SPA web (JS letto dai test Python) | Coperta | `test_web_*.py` |
 
-Queste lacune NON indicano codice rotto: sono aree dove l'esecuzione reale è difficile da simulare o dove la copertura arriva tramite percorsi indiretti.
+## 4. Installazione e operatività
 
-## 5. Metriche registrate
+| Area | Stato | Evidenze |
+|---|---|---|
+| `install.sh` | Robusta | `test_install_script.py` (33) |
+| Launcher Python (alternativa agli script) | Robusta | `test_launcher_*.py` (197) |
+| Servizio systemd/OpenRC | Robusta | `test_service_script.py` (19) |
+| Handover locale ↔ server | Coperta | `test_handover_scripts.py` |
+| Setup Gmail | Coperta | `test_gmail_setup.py`, `test_gmail_refresh_wiring.py` |
 
-- File di test: 64 (`tests/`) + 2 (`Telegram/`) = **66**.
-- Funzioni `test_*`: ~1.44k (prima di parametrizzazioni), di cui 7 live gated (`test_live_quote_media`).
-- Ultima run documentata (`docs/TEST_REPORT.md`, 2026-08-24): **1389/1389 pass** + 7 test live opzionali, coverage ~80%, lint/format puliti. La fonte aggiornata per gli esiti resta la CI.
-- Gate configurati: coverage `fail_under=68` (branch on), marker `integration`/`live`/`live-manual` separati e `--strict-markers`.
+## 5. Lacune principali
+
+1. **Flussi TUI sul client** — invio/edit/eventi/lista/chat view hanno perso i test dedicati col core in-process; vanno ricostruiti su uno stub `ChatClient` (mc-gux).
+2. **Riconnessione reale del `SocketClient`** — backoff, replay `since`, `gap` e `client_connection` sono coperti dai test Go del bus/adapter e dal contract, ma pochi test Python esercitano un server che cade e ritorna.
+3. **Resa su terminale reale** — il rendering kitty è testato a livello di protocollo; la verifica visiva resta manuale.
+4. **Test live** — eliminati con il server Python; non esistono test che parlano con account reali.
+5. **Carico** — liste molto grandi, render progressivo e concorrenza di molti client non hanno test dedicati.
+6. **Gmail reale** — IMAP/SMTP è testato con un fake; i casi di rete reale (timeout, quota) restano scoperti.
+
+## 6. Metriche
+
+- Python unit/UI: **~921** casi raccolti in 64 file (987 con `pytest --collect-only` in questo worktree, SPA inclusa).
+- Contratto: **226** casi in 5 file.
+- Go: suite per package (`go test ./...`) più una run finale con `-race`.
+- Gate: coverage Python `fail_under = 68`; nessun gate di coverage Go configurato.

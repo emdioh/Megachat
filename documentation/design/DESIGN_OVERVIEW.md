@@ -1,15 +1,15 @@
 # Design — visione d'insieme
 
-Principi di design, convenzioni UI/UX e struttura del data flow della TUI. Ricavato da `tui/` (app.py, css.py, events.py, chat_view.py, contacts.py, send.py, edit.py, unread_reply.py, polling.py, backend_connect.py, pickers.py, download.py), `ui_components.py` e `models.py`.
+Principi di design, convenzioni UI/UX e struttura del data flow della TUI. Ricavato da `tui/` (app.py, css.py, events.py, chat_view.py, contacts.py, send.py, edit.py, unread_reply.py, polling.py, backend_connect.py, client_calls.py, exit_flow.py, pickers.py, download.py), `client/`, `ui_components.py` e `models.py`.
 
 ## 1. Principi di design osservati nel codice
 
-1. **Protocol-agnosticismo della UI**: la TUI consuma solo modelli neutrali (`ChatContact`, `ChatEvent`) e il `BackendManager`; le differenze di protocollo emergono come accenti visivi (`protocol-signal|whatsapp|telegram`, emoji `📱 💬 📨`) mai come rami di logica nella UI.
+1. **Protocol-agnosticismo della UI**: la TUI consuma solo modelli neutrali (`ChatContact`, i payload degli eventi) e il `ChatClient`; le differenze di protocollo emergono come accenti visivi (`protocol-signal|whatsapp|telegram`, emoji `📱 💬 📨`) mai come rami di logica nella UI.
 2. **Reattività percepita prima di tutto**: invio ed edit sono ottimistici (bolla subito, rollback su errore); la lista contatti è aggiornata in batch; il render è progressivo a chunk.
-3. **Mai bloccare il loop Textual**: tutte le operazioni potenzialmente lente girano in worker thread e tornano sulla UI con `call_from_thread`.
-4. **Un solo punto di ingresso per i dati**: ogni byte che entra passa da `tui/events.py::_handle_event` — la UI non conosce envelope nativi.
+3. **Mai bloccare il loop Textual**: ogni chiamata al server è un round trip che può essere lento o fallire; gira in worker thread con timeout espliciti e torna sulla UI con `call_from_thread` (`tui/client_calls.py`).
+4. **Un solo punto di ingresso per i dati**: ogni evento del server passa da `tui/polling.py::_dispatch_bus_event` (che instrada ai view handler in `tui/events.py`) — la UI non conosce envelope nativi né il database.
 5. **Idempotenza e dedup ovunque**: identità messaggio `(protocol, cache_key, timestamp, text)`, token anti-stale per worker, rank guard sugli status, dedup su più livelli (webhook, ingest, DB).
-6. **Degradazione graceful**: backend opzionali assenti = funzione disattivata, non errore; fallback subprocess per Signal; errori rubrica parziale segnalati ma non bloccanti.
+6. **Degradazione graceful**: backend opzionali assenti = funzione disattivata, non errore; se il server non risponde la TUI mostra un messaggio di riconnessione e si risincronizza; errori parziali della rubrica sono segnalati ma non bloccanti.
 
 ## 2. Composizione dell'app Textual
 
@@ -20,13 +20,15 @@ SignalTUI(App,
   ChatViewMixin        # rendering bolle/storico      (chat_view.py)
   EventHandlingMixin   # dispatch eventi in arrivo    (events.py)
   ContactListMixin     # lista contatti/filtri        (contacts.py)
-  BackendConnectMixin  # connect worker per backend   (backend_connect.py)
-  PollingMixin         # poll worker thread           (polling.py)
+  BackendConnectMixin  # merge a backend pronto      (backend_connect.py)
+  PollingMixin         # consumatore eventi server    (polling.py)
   SendMixin            # invio ottimistico + worker   (send.py)
   EditMessageMixin     # edit con rollback            (edit.py)
   UnreadReplyMixin     # badge unread + reply bar     (unread_reply.py)
   DownloadModeMixin    # modalità download            (download.py)
-  PickerMixin)         # emoji/contatti/device-link   (pickers.py)
+  PickerMixin          # emoji/contatti/device-link   (pickers.py)
+  ClientCallsMixin     # worker, timeout, errori      (client_calls.py)
+  ExitFlowMixin)       # Detach/Quit + shutdown       (exit_flow.py)
 ```
 
 ### Albero dei widget (`compose()`)
@@ -54,7 +56,7 @@ Horizontal
 
 ### Bindings globali (app-level)
 
-`Ctrl+E` emoji picker · `Ctrl+S` contact picker · `Ctrl+D` download mode · `Ctrl+W` ciclo filtro protocollo · `Ctrl+U` toggle unread-only · `Ctrl+A` reset All · `Ctrl+L` device link · `Ctrl+N/Ctrl+P` navigazione suggerimenti emoji. La palette comandi built-in è disabilitata (`ENABLE_COMMAND_PALETTE = False`) per liberare `Ctrl+P`. `check_action()` disattiva i filtri quando un picker modale è aperto.
+`Ctrl+E` emoji picker · `Ctrl+S` contact picker · `Ctrl+D` download mode · `Ctrl+W` ciclo filtro protocollo · `Ctrl+U` toggle unread-only · `Ctrl+A` reset All · `Ctrl+L` device link · `Ctrl+N/Ctrl+P` navigazione suggerimenti emoji · `Ctrl+Q` Detach/Quit. La palette comandi built-in è disabilitata (`ENABLE_COMMAND_PALETTE = False`) per liberare `Ctrl+P`. `check_action()` disattiva i filtri quando un picker modale è aperto.
 
 ## 3. Convenzioni CSS (`tui/css.py::APP_CSS`)
 
@@ -78,16 +80,17 @@ Horizontal
 ```
 worker threads                          UI thread (Textual)
 ──────────────                          ────────────────────
-poll worker (polling.py)      ──cfm──►  _handle_event (events.py)
-  ├ drain backend.poll_once()             ├ ingest → cache UI → bolla (_add_message)
-  ├ typing timeout/mumbling               ├ receipt → set_status sui widget
-  └ dirty flush: _recompute_unread        └ typing → label riga contatto in place
+poll worker (polling.py)      ──cfm──►  _dispatch_bus_event (events.py)
+  ├ subscription.get/drain                 ├ message → cache UI → bolla (_add_message)
+  ├ typing timeout/mumbling                ├ receipt → set_status sui widget
+  └ dirty flush: _recompute_unread         └ typing → label riga contatto in place
     + UN sort/render (_reorder_contact_list)
-send worker (send.py)         ──cfm──►  transizioni status + status bar
-load-messages worker          ──cfm──►  mount finestra atomica (mount(*widgets))
-connect workers               ──cfm──►  _on_backend_ready (merge cache+contatti)
-address book worker           ──cfm──►  screen.set_contacts (se token valido)
-attachment resolver           ──cfm──►  update ImageWidget
+send worker (send.py)         ──cfm──►  transizioni status + status bar (`messages.send`)
+edit worker (edit.py)         ──cfm──►  conferma o rollback (`messages.edit`)
+load-messages worker          ──cfm──►  mount finestra atomica (`messages.window`)
+backend-ready handler         ──cfm──►  merge snapshot+contatti (`messages.snapshot`, `contacts.for_protocol`)
+address book worker           ──cfm──►  screen.set_contacts (se token valido; `contacts.address_book`)
+attachment resolver           ──cfm──►  update ImageWidget (blob dal server)
 ```
 
 Regole chiave:
@@ -117,7 +120,7 @@ Regole chiave:
 - **Reply**: click su una bolla → `MessageClicked` → `_reply_to` compilato (testo, ts, sender, eventuale `message_id`), highlight verde, reply bar `↩️ Replying to:`. Click ripetuto annulla. Per Telegram una reply senza id server valido è rifiutata esplicitamente (evita bolle impossibili); per WhatsApp vale la stessa regola. Su un'immagine la reply si cattura con Alt+click/Alt+R (`ReplyRequested`, caption reale separata dal display placeholder — vedi [CONTRACTS.md §11](../api-contracts/CONTRACTS.md#11-quote-media-reply-con-immagine)).
 - **Edit**: Alt+click / `Alt+E` su messaggio proprio testuale già inviato → input precaricato, bar `✏️ Modifica:`; submit ottimistico + worker con rollback completo su rifiuto server. Dettagli: [DESIGN_EDIT_MESSAGES.md](DESIGN_EDIT_MESSAGES.md).
 - **Retry failed**: click su una propria bolla `failed` → `_retry_failed_message`.
-- **Contact picker (Ctrl+S)**: mostra subito le chat attive e in parallelo carica la rubrica completa dei backend (worker asincrono, token anti-stale); ricerca su nome/id/phone, raggruppamento cross-backend per persona con eventuale scelta del backend (`BackendChoiceScreen`), open-or-create per contatti sconosciuti.
+- **Contact picker (Ctrl+S)**: mostra subito le chat attive e in parallelo carica la rubrica completa dal server (`contacts.address_book`, worker asincrono, token anti-stale); ricerca su nome/id/phone, raggruppamento cross-backend per persona con eventuale scelta del backend (`BackendChoiceScreen`), open-or-create per contatti sconosciuti.
 - **Download mode (Ctrl+D)**: i click servono contenuti via HTTP invece di selezionare; esce automaticamente dopo un download.
 - **Filtri**: `Ctrl+W` cicla all→signal→whatsapp→telegram; nei filtri singoli la lista diventa flat (solo header senza chevron, badge = unread della vista filtrata); `Ctrl+U` aggiunge il filtro unread (il contatto selezionato resta "pinned" finché è aperto); `Ctrl+A` reset. Click su segmento status bar → vista unread del backend se ha unread, altrimenti filtro semplice.
 

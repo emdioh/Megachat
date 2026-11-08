@@ -1,12 +1,14 @@
-# Megachat wire contract (Python server -> Go port)
+# Megachat wire contract
 
-Reference for the Go server (`megachatd`). The TUI (`tui/`) and the web SPA
-(`web/static/`) are **not** rewritten, so every byte documented here must be
-reproduced. Sources: `server/api.py`, `server/ops/*.py`, `server/models_api.py`,
-`server/events_api.py`, `server/bus.py`, `server/socket_adapter.py`,
-`server/socket_client.py`, `web/*.py`, `docs/DESIGN_CLIENT_SERVER_SPLIT.md` §4.2.
-The machine-checked Go twin is `internal/api` (structs, constants, `Ops`, `Routes`);
-type names below refer to it. Field names are always the Python names.
+Reference for the Go server (`megachatd`). The TUI (`tui/` plus `client/`) and
+the web SPA (`web/static/`) are its clients and speak this contract; every byte
+documented here is the current protocol. Sources: `internal/api` (operations,
+models, routes, events), `internal/ops` (registry), `internal/rpc` (Unix
+socket), `internal/web` (HTTP/WS), `internal/core`, `internal/store`,
+`internal/proto/*`, and `client/socket_client.py` for the client half.
+Type and field names below are the **legacy Python names**, kept on the wire for
+compatibility; the machine-checked Go twin is `internal/api` (`Ops`, `Routes`,
+struct tags).
 
 Contents: 1 Architecture - 2 Errors - 3 Socket transport - 4 Operations -
 5 Bus events - 6 HTTP transport - 7 REST routes - 8 WebSockets - 9 Config and files -
@@ -16,9 +18,8 @@ Contents: 1 Architecture - 2 Errors - 3 Socket transport - 4 Operations -
 
 ## 1. Architecture
 
-One registry of **68 operations** (`server/api.py`, `@operation(name, request, response)`).
-Each is `(api, request) -> response`; request/response are pydantic models.
-Adapters only translate:
+One registry of **68 operations** (`internal/api/opnames.go`, validated in
+`internal/api/ops.go`). Each is `(api, request) -> response`; adapters only translate:
 
 * **Unix socket** (TUI): JSON-RPC 2.0, method = operation name (section 3).
 * **HTTP** (SPA): REST routes that call the same operations (section 7), plus
@@ -26,12 +27,11 @@ Adapters only translate:
 * **Event bus**: one in-process bus (ring of 2000 events, per-subscriber queue
   1000). Both adapters stream it (section 5).
 
-Request validation is pydantic **lax** mode unless a field is documented strict
-(`StrictStr`/`StrictBool`/`StrictInt`): `"10"` is accepted for an int, `"true"` for a
-bool, unknown members are ignored. A validation failure is always
-`invalid_request` / `"Invalid request"` (details = pydantic errors).
-Result serialisation never drops nulls (`model_dump(mode="json")`, no `exclude_none`),
-and a list/dict result is never `null`.
+Request validation is **lax** unless a field is documented strict: `"10"` is
+accepted for an int, `"true"` for a bool, unknown members are ignored. A
+validation failure is always `invalid_request` / `"Invalid request"` (details =
+the field errors). Result serialisation never drops nulls, and a list/dict result
+is never `null`.
 
 Operation behaviours that look like sync vs async do not matter to the wire; what
 matters is: they may block for seconds (timeouts in 3.4), they outlive a timed-out
@@ -251,7 +251,7 @@ Pydantic "Stripped" string fields (`str(value or "").strip()`): `ChatsMarkReadRe
 | `contacts.for_protocol` | `{protocol}` -> `[ContactWire]` | snapshot of backend contacts; `backend_down` "Backend unavailable" if no backend | T |
 | `contacts.register` | `ContactsRegisterRequest{id,display_name,protocol,extras?}` -> `ContactWire` | open-or-create ghost: sets `extras.ghost=true`, `backend.register_contact`; `invalid_request` if protocol unknown or id blank; `backend_down` | T |
 | `contacts.address_book` | `{protocols?:[...], force:false}` -> `{contacts:[ContactWire],errors:{protocol:message}}` | starts the WhatsApp LID resolver first; never fails for a bad backend | T |
-| `contacts.check_number` | `{phone}` -> `{"exists":bool\|null}` | WhatsApp REST; null when unknown/blank/no backend/failure | T |
+| `contacts.check_number` | `{phone}` -> `{"exists":bool\|null}` | WhatsApp (whatsmeow `IsOnWhatsApp`); null when unknown/blank/no backend/failure | T |
 | `contacts.avatar` | `{protocol,contact_id}` -> `BlobOut` | `not_found` "Not Found" (unknown protocol), `invalid_request` "Invalid request" (blank id), `not_found` "No profile picture" | W |
 
 `ContactWire` = `{id,display_name,protocol,cache_key("<protocol>:<id>"),last_message_ts(0),extras}`;
@@ -300,7 +300,7 @@ non-empty), `is_group: true` (group chats only).
 * Caption cleanup: for image rows and other media the `text` is blanked when it equals the
   attachment info / a typed media placeholder (`MEDIA_QUOTE_PLACEHOLDERS`) / WhatsApp synthetic
   media text; `attachment_info` is used as caption when it looks like one. See
-  `server/messages.py::_messages`, which the Go port must port verbatim.
+  `internal/messages` (the Go implementation; treat its output as normative).
 * `quote_thumb_url` (relative URL, no leading slash): `api/quote-media/<proto>/<row id>?w=96`
   when `quote_attachment_path` lives in `<CACHE_DIR>/quote-thumbs`; else
   `api/media/<proto>/<url-quoted path segments>?w=96` for an existing image/video path, or from
@@ -402,23 +402,23 @@ All blob ops return a `BlobOut {path, content_type|null, size|null, version|null
 | `media.attachment` | `{protocol,attachment_id}` -> `BlobOut` | resolved through the backend (lazy download), file must be a regular file inside the protocol's media root (symlinks/`..` resolved) else `not_found` "Not Found"; unknown protocol -> `not_found` "Not Found". `.webm` is audio only if the persisted media_kind says so | T W |
 | `media.thumbnail` | `{protocol,attachment_id,width}` -> `BlobOut` | width in {96,240,480} -> JPEG thumbnail (`immutable:true`, content-addressed cache); other width, unsupported/animated image -> the original blob; videos via ffmpeg (WhatsApp/Telegram: head/tail chunk thumbnail); `unprocessable` "Video thumbnail unavailable" | W |
 | `media.quote` | `{protocol,message_row_id,width?}` -> `BlobOut` | file from `messages.quote_attachment_path` confined to `<CACHE_DIR>/quote-thumbs` (parent == root) else `not_found`; width in 96/240/480 -> thumbnail; `internal` "Database error" | W |
-| `media.quoted_attachment` | `{protocol,contact_key,quote_timestamp?,reply_to_message_id?,quote_text:"",content_type?}` -> `{"attachment_id":str\|null}` | attachment id of the image a reply quotes (exact timestamp match first, then +-2 s etc., see `server/media.py::quoted_attachment_id`) | T |
+| `media.quoted_attachment` | `{protocol,contact_key,quote_timestamp?,reply_to_message_id?,quote_text:"",content_type?}` -> `{"attachment_id":str\|null}` | attachment id of the image a reply quotes (exact timestamp match first, then +-2 s etc., see `internal/media/paths.go::QuotedAttachmentID`) | T |
 | `download.serve_attachment` | `{protocol,attachment_id}` -> `{"url"}` | serves the file on the temporary HTTP server (port 10042, one file at a time, URL `http://<ip>:10042/<name>`); `not_found` "ERROR: Attachment file not found (id=<first 80 chars>)"; failures `backend_error` with the `ERROR: ...` string as message | T |
 | `download.serve_text` | `{text,filename:"message.txt"}` -> `{"url"}` | filename must be a plain name (non-empty, not `.`/`..`, no `/`, no NUL) else `invalid_request`; `backend_error` "ERROR: Cannot serve file: ..." | T |
-| `links.preview` | `{url}` -> `LinkPreviewOut{url,title,description,site_name,has_image}` | SSRF-guarded Open Graph fetch (`server/link_preview.py`); `invalid_request` "URL not allowed"; `not_found` "No preview" | W |
+| `links.preview` | `{url}` -> `LinkPreviewOut{url,title,description,site_name,has_image}` | SSRF-guarded Open Graph fetch (`internal/media/linkpreview.go`); `invalid_request` "URL not allowed"; `not_found` "No preview" | W |
 | `links.preview_image` | `{url}` -> `BlobOut` | only the raster image advertised by the page's own preview (bytes sniffed, no SVG), stored content-addressed; `invalid_request` "URL not allowed"; `not_found` "No preview image" | W |
 
 ### 4.5 device link
 
-State machine in `server/link.py` (passive: the frontend polls every ~2 s; sessions abandoned for 900 s
+State machine in `internal/linking/service.go` (passive: the frontend polls every ~2 s; sessions abandoned for 900 s
 are reaped; `QR_REFRESH_AFTER_S`=60). `LinkQrOut{kind: url|png|text|info|error, data}`.
 
 | op | params -> result | notes / errors | cl |
 |---|---|---|---|
 | `link.status` | `{}` -> `{"protocols":{p:{"available":bool,"account":str,"linked":bool\|null}}}` | all three protocols; no I/O; signal `linked=bool(account)`, whatsapp `linked=null`, telegram `linked=null` if absent else `not needs_pairing` | T W |
 | `link.required` | `{}` -> `{"protocols":{"whatsapp":bool}}` | WhatsApp session guard says a new QR is needed | W |
-| `link.start` | `{protocol(Literal),phone:"",device_name:"Signal-TUI-Client"}` -> `{"qr":LinkQrOut}` | cancels a link already open for the protocol; Signal spawns `signal-cli link -n <device_name>` and extracts the `sgnl://` URL; WhatsApp asks WAHA for a QR; Telegram starts the QR login. `backend_down` (protocol unavailable), `backend_error` (message shown to the user) | T W |
-| `link.poll` | `{protocol}` -> `{"state":"waiting"\|"finalize"\|"done","needs_2fa":bool,"qr":LinkQrOut\|null}` | `conflict` "No link in progress"; signal -> `finalize` when the subprocess exited 0 (else waiting); whatsapp -> `done` when WAHA status is WORKING with `me`; telegram -> needs_2fa once when a password is required; QR renewed when older than 60 s | T W |
+| `link.start` | `{protocol(Literal),phone:"",device_name:"Signal-TUI-Client"}` -> `{"qr":LinkQrOut}` | cancels a link already open for the protocol; Signal spawns `signal-cli link -n <device_name>` and extracts the `sgnl://` URL; WhatsApp starts a whatsmeow QR pairing; Telegram starts the QR login. `backend_down` (protocol unavailable), `backend_error` (message shown to the user) | T W |
+| `link.poll` | `{protocol}` -> `{"state":"waiting"\|"finalize"\|"done","needs_2fa":bool,"qr":LinkQrOut\|null}` | `conflict` "No link in progress"; signal -> `finalize` when the subprocess exited 0 (else waiting); whatsapp -> `done` when the session is linked/working with an identity; telegram -> needs_2fa once when a password is required; QR renewed when older than 60 s | T W |
 | `link.finalize` | `{protocol:"signal",phone:""}` -> `{"account":str}` | resolves the new account via `signal-cli listAccounts` and persists `signal.user_number` to config.json (atomic temp file + rename, other keys preserved; refuses an invalid existing config.json, or `SIGNAL_USER_NUMBER` selecting a different account) | T W |
 | `link.submit_2fa` | `{password}` -> `{"ok":bool}` | Telegram; `ok:false` = wrong password; never log the password | W |
 | `link.cancel` | `{protocol}` -> `{"ok":true}` | kills the subprocess; idempotent | T W |
@@ -440,7 +440,7 @@ Messages are Italian. `backend_down` "Trascrizione non configurata" = no API key
 | `transcribe.submit` | `{protocol:any,attachment_id:any}` -> `{"status":"done","text"}` / `{"status":"pending"}` | `invalid_request` (protocol not str/known, attachment_id not str/blank after strip); status `ok` record -> done; `pending` -> pending; else resolves the file via `media.attachment` (`not_found` "Allegato non trovato") and queues it | W |
 | `transcribe.set_api_key` / `config.set_openai_key` | `{provider,api_key}` / `{api_key}` -> `{"status":"ok"}` | `invalid_request` "Provider non valido" / "Chiave non valida" (not str, blank, any whitespace, > 500 chars; openai must start `sk-`, openrouter `sk-or-`, gemini >= 20 chars); `internal` "Errore di salvataggio" / "Errore di inizializzazione". Writes `config.json` `<provider>.api_key` and rebuilds the service | W |
 | `transcribe.settings` | `{}` -> `TranscribeSettingsOut` | never contains a key; `providers.<name>` = `{api_key_set,model,base_url}` (+`http_referer`,`app_title` for openrouter); top-level `api_key_set/model/base_url` = selected provider's; `language` "" if unset; `timeout` default 120; `env_overrides` | W |
-| `transcribe.set_settings` | `TranscribeSettingsRequest` (partial) -> `TranscribeSettingsOut` | only keys present are applied (`model_fields_set`); top-level `model`/`base_url` go to the provider selected by this request's `provider` else the current; validators and exact messages in `server/ops/transcribe.py::_validated_settings` (`Provider non valido`, `Modello non valido`, `Modello troppo lungo (massimo 100 caratteri)`, `Modello Gemini non valido (es. gemini-flash-latest)`, `Modello OpenRouter non valido (formato fornitore/modello)`, `URL non valido`, `URL non valido: deve iniziare con http:// o https://`, `Referer non valido...`, `Titolo non valido...`, `Lingua non valida...` (`[a-z]{2,3}` or empty), `Timeout non valido` (int 5..600, not bool)); `""` for language/base_url restores the default | W |
+| `transcribe.set_settings` | `TranscribeSettingsRequest` (partial) -> `TranscribeSettingsOut` | only keys present are applied (`model_fields_set`); top-level `model`/`base_url` go to the provider selected by this request's `provider` else the current; validators and exact messages in `internal/transcribe/settings.go::validatedSettings` (`Provider non valido`, `Modello non valido`, `Modello troppo lungo (massimo 100 caratteri)`, `Modello Gemini non valido (es. gemini-flash-latest)`, `Modello OpenRouter non valido (formato fornitore/modello)`, `URL non valido`, `URL non valido: deve iniziare con http:// o https://`, `Referer non valido...`, `Titolo non valido...`, `Lingua non valida...` (`[a-z]{2,3}` or empty), `Timeout non valido` (int 5..600, not bool)); `""` for language/base_url restores the default | W |
 | `transcribe.diagnostics` | `{}` -> `TranscribeDiagnosticsOut` | no key; `recent` = last 10 records; `[{"status":"db_error","error":...}]` if the store fails | W |
 | `transcribe.check` | `{}` -> `TranscribeCheckOut` | GET to the provider (openrouter `<base>/key` Bearer, gemini `<base>/models?pageSize=1` `x-goog-api-key`, openai `<base>/models` Bearer; timeout 20 s); missing key -> `{"ok":false,"provider","detail":"Chiave API mancante"}`; network error -> `{"ok":false,"provider","url","detail":"Errore di rete: <Type>: <msg>"}`; else `{"ok":status==200,"provider","url","http_status","detail":<redacted first 500 chars>}` | W |
 | `autotranscribe.config` | `{}` -> `{"configured":bool,"globals":{whatsapp,signal,telegram}}` | | W |
@@ -450,11 +450,11 @@ Messages are Italian. `backend_down` "Trascrizione non configurata" = no API key
 
 ### 4.7 Gmail
 
-All but `gmail.image` and `gmail.messages.get` block on IMAP/SMTP. Error mapping (`ops/gmail.py::_run`):
+All but `gmail.image` and `gmail.messages.get` block on IMAP/SMTP. Error mapping (`internal/gmail/ops.go::mapErr`):
 not configured -> `backend_down` "Gmail non configurato"; validation -> `invalid_request` (413 -> `too_large`) with
 the validator's Italian text; not found -> `not_found` "Risorsa non trovata"; upstream/transport ->
 `backend_error` "Errore di comunicazione con Gmail"; anything else -> `backend_error` "Errore Gmail". Credentials
-and upstream detail never reach messages or logs. The IMAP/SMTP logic itself is `server/gmail.py` (not restated here).
+and upstream detail never reach messages or logs. The IMAP/SMTP logic itself is `internal/gmail/` (not restated here).
 
 | op | params -> result | notes |
 |---|---|---|
@@ -661,9 +661,9 @@ Both sockets are mounted on the HTTP server (`/ws`, `/ws/v2`; the SPA connects r
 Token from, in order: `Authorization: Bearer <token>` header, else the `Sec-WebSocket-Protocol` list: the
 browser offers `["signal-tui-bearer", "signal-tui-token.<base64url(token)>"]` (base64url, padding optional;
 invalid base64/UTF-8 -> unauthorised). The server accepts the connection **with subprotocol `signal-tui-bearer`**
-when the header form was used and that protocol was offered (none otherwise). Unauthorised: the Python server
-closes *before* accepting with code 1008, which Starlette/uvicorn surfaces as an HTTP 403 handshake rejection (the
-SPA treats 1008 as "ask for the token" but otherwise reconnects; either behaviour is accepted by the SPA).
+when the header form was used and that protocol was offered (none otherwise). Unauthorised: the server
+answers the handshake with HTTP 403 (equivalent to closing *before* accepting with code 1008; the
+SPA treats 1008 as "ask for the token" but otherwise reconnects; either behaviour is accepted).
 `--web-no-auth` skips the check. `/ws/v2` additionally rejects an invalid `?since=` with 1008.
 
 ### 8.2 `/ws/v2` (typed events with resume)
@@ -681,7 +681,7 @@ SPA treats 1008 as "ask for the token" but otherwise reconnects; either behaviou
 ### 8.3 `/ws` (legacy thin frames, what the SPA consumes)
 
 One shared bus subscription fans out to every `/ws` client (no resume, live only). Each bus event is mapped by
-`web/legacy_events.py::to_legacy`; events without a mapping are skipped (and count as idle). An idle gap of >= 5 s
+`internal/web/legacy.go::toLegacy`; events without a mapping are skipped (and count as idle). An idle gap of >= 5 s
 sends `{"type":"heartbeat"}`. Per-client send timeout 0.5 s; a client that fails is dropped and closed. The SPA
 watchdog treats 10 s without any traffic as a dead socket. Client messages are read and ignored.
 
@@ -974,7 +974,7 @@ enabled adapter fails to start. Shutdown order: stop socket adapter, then web, t
 * Log: `/tmp/signal-tui.log` (append); in-memory ring of 2000 records feeds `server.logs`
   (redaction regexes: `sk-[A-Za-z0-9_-]{6,}` -> `sk-***`, `AIza...` -> `AIza***`, `Bearer token: X` / `Bearer X(8+)` -> `***`).
 * signal-cli data: `~/.local/share/signal-cli/{attachments,avatars}`; local `bin/signal-cli-*/bin/signal-cli`.
-* Ports: web 4242, download server 10042, WAHA webhook 8088, WAHA API (local) 3005.
+* Ports: web 4242, download server 10042. The legacy WAHA ports (8088/3005) are no longer used.
 
 ---
 
