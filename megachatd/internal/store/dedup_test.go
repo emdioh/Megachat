@@ -13,10 +13,6 @@ const (
 	incoming
 )
 
-func (k dedupKind) py() string {
-	return [...]string{"dedup_messages_by_id", "dedup_outgoing_attachment_mirrors", "dedup_incoming_attachment_mirrors"}[k]
-}
-
 func (k dedupKind) run(s *Store) (int, error) {
 	switch k {
 	case byID:
@@ -277,14 +273,11 @@ func TestDedupCases(t *testing.T) {
 	for _, c := range dedupCases() {
 		t.Run(c.name, func(t *testing.T) {
 			var removed int
-			s := parity(t,
-				func(t *testing.T, s *Store) {
-					for _, r := range c.rows {
-						insertRow(t, s, r)
-					}
-				},
-				c.kind.py(), nil,
-				func(s *Store) any { removed = must(c.kind.run(s)); return removed })
+			s := newStore(t)
+			for _, r := range c.rows {
+				insertRow(t, s, r)
+			}
+			removed = must(c.kind.run(s))
 			eq(t, removed, c.want)
 			if c.check != nil {
 				c.check(t, allRows(t, s))

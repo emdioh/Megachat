@@ -56,7 +56,7 @@ func TestPageGroupSenderFallback(t *testing.T) {
 	want := map[string]string{
 		"lid stranger": "Contatto WhatsApp (ID 20508603076702)",
 		"known lid":    "Ann", // the address book still wins over the placeholder
-		"phone jid":    "222", // "@c.us" keeps Python's bare number
+		"phone jid":    "222", // "@c.us" keeps the bare number
 		"lid quote":    "Bea", // the sender itself is a real name
 		"phone quote":  "Bea",
 	}
@@ -171,7 +171,7 @@ func TestWindowSnapshotGroupLIDsPlaceholder(t *testing.T) {
 	// the placeholder for the unknown one (with its bare user part), and the
 	// same placeholder for an unresolved quote author. L3 ("@c.us") is left out:
 	// page shows the bare number there while window keeps the JID, a divergence
-	// Python has too and mc-zao.5.8 does not touch.
+	// mc-zao.5.8 does not touch.
 	page := byID(e.page(map[string]any{"protocol": "whatsapp", "contact_id": waGrp}))
 	for _, id := range []string{"L1", "L2", "L4", "L5", "L7"} {
 		if got, want := page[id]["sender"], wantSenders[id]; got != want {

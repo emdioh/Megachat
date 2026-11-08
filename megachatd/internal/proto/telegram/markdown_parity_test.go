@@ -3,7 +3,9 @@ package telegram
 import (
 	"bytes"
 	"encoding/json"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"testing"
 
@@ -11,13 +13,11 @@ import (
 )
 
 // TestMarkdownParityTelethon compares parseMarkdown/unparseMarkdown with
-// telethon.extensions.markdown (what Python sent and showed). Skips when
-// python3 or telethon is unavailable.
+// telethon.extensions.markdown (what Python sent and showed). It prefers the
+// repo's .venv interpreter and skips when telethon is not installed there.
 func TestMarkdownParityTelethon(t *testing.T) {
-	if _, err := exec.LookPath("python3"); err != nil {
-		t.Skip("python3 not available")
-	}
-	if err := exec.Command("python3", "-c", "import telethon").Run(); err != nil {
+	python := pythonForTelethon(t)
+	if err := exec.Command(python, "-c", "import telethon").Run(); err != nil {
 		t.Skip("telethon not installed")
 	}
 	parseCases := []string{
@@ -54,7 +54,7 @@ func TestMarkdownParityTelethon(t *testing.T) {
 		pyUnparse[i] = []any{c.Text, es}
 	}
 	in, _ := json.Marshal(map[string]any{"parse": parseCases, "unparse": pyUnparse})
-	cmd := exec.Command("python3", "testdata/telethon_md.py")
+	cmd := exec.Command(python, "testdata/telethon_md.py")
 	cmd.Stdin = bytes.NewReader(in)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
@@ -112,6 +112,21 @@ func TestMarkdownParityTelethon(t *testing.T) {
 			t.Errorf("unparse(%q, %v)\n go: %q\n py: %q", c.Text, c.Ents, got, py.Unparse[i])
 		}
 	}
+}
+
+// pythonForTelethon prefers the repo's virtualenv interpreter, where telethon
+// is installed, and falls back to python3 on PATH.
+func pythonForTelethon(t *testing.T) string {
+	t.Helper()
+	venv, _ := filepath.Abs(filepath.Join("..", "..", "..", "..", ".venv", "bin", "python"))
+	if _, err := os.Stat(venv); err == nil {
+		return venv
+	}
+	py, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not available")
+	}
+	return py
 }
 
 func entsOut(ents []tg.MessageEntityClass) [][4]any {

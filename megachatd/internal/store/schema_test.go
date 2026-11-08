@@ -204,17 +204,7 @@ func TestFreshSchemaMatchesGolden(t *testing.T) {
 	eq(t, got.UserVersion, SchemaVersion)
 }
 
-func TestFreshSchemaMatchesPythonExactly(t *testing.T) {
-	requirePython(t)
-	s := newStore(t)
-	py, err := pyRun("init", filepath.Join(t.TempDir(), "py.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	sameDump(t, "fresh", py, goDump(t, s), true)
-}
-
-func TestPragmasMatchPython(t *testing.T) {
+func TestPragmas(t *testing.T) {
 	s := newStore(t)
 	var mode string
 	if err := s.db.QueryRowContext(ctx, "PRAGMA journal_mode").Scan(&mode); err != nil {
@@ -226,34 +216,6 @@ func TestPragmasMatchPython(t *testing.T) {
 		t.Fatal(err)
 	}
 	eq(t, bt, 5000)
-}
-
-func TestLegacyMigrationsMatchPython(t *testing.T) {
-	for _, fx := range legacyFixtures() {
-		t.Run(fx.name, func(t *testing.T) {
-			path := fixtureFile(t, fx.stmts...)
-			pyPath := filepath.Join(t.TempDir(), "py.db")
-			copyFile(t, path, pyPath)
-
-			s, err := Open(path, quiet)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer s.Close()
-			g := goDump(t, s)
-			if g.UserVersion != SchemaVersion {
-				t.Errorf("user_version = %d, want %d", g.UserVersion, SchemaVersion)
-			}
-			if !pyAvailable(t) {
-				return
-			}
-			py, err := pyRun("init", pyPath)
-			if err != nil {
-				t.Fatal(err)
-			}
-			sameDump(t, fx.name, py, g, true)
-		})
-	}
 }
 
 func TestLegacyMigrationAssertions(t *testing.T) {

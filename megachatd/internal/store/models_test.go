@@ -1,9 +1,6 @@
 package store
 
 import (
-	"bytes"
-	"encoding/json"
-	"os/exec"
 	"testing"
 )
 
@@ -114,41 +111,4 @@ func TestPickSurvivorAndMerge(t *testing.T) {
 	si, ov = pickSurvivorAndMerge(rows)
 	eq(t, si, 0)
 	eq(t, ov.get("timestamp").(int64), int64(77))
-}
-
-func TestPredicatesMatchPython(t *testing.T) {
-	requirePython(t)
-	samples := []string{
-		"", " ", "ciao", "ciao a tutti", "IMG_1303.jpg", "photo", "Image", "\U0001f5bc️ Immagine", "\U0001f3a8 Sticker",
-		"nota — \U0001f3b5 Audio", "image/png", "audio/ogg; codecs=opus", "a/b", "Media: x", "Media: x y", "media:", "MEDIA: https://h/f.ogg",
-		"Media: true_123@c.us_AB", "Media: false_x@g.us_Z", "Media: 12:34", "Media: 12:34:56", "report.pdf", "archive.tar.gz", "a b.c",
-		"sent-1.png", "/cache/sent-1.png", "dir/notsent-1", "SENT-X", "https://h/sent-1.pdf", "x", "Media: x", "name.verylongext", ".hidden",
-		"file.", "UPPER.JPG", "tab\there", " nbsp ", "Media: abc", "Media: a b", "doc.docx", "v.FLAC",
-	}
-	in, _ := json.Marshal(samples)
-	cmd := exec.Command("python3", "-I", pyScript(), "predicates")
-	cmd.Stdin = bytes.NewReader(in)
-	out, err := cmd.Output()
-	if err != nil {
-		t.Fatal(err)
-	}
-	var py []map[string]bool
-	if err := json.Unmarshal(out, &py); err != nil {
-		t.Fatal(err)
-	}
-	for i, text := range samples {
-		tx := text
-		got := map[string]bool{
-			"caption":            isCaptionLike(&tx),
-			"synthetic":          isWhatsAppSyntheticMediaText(tx, nil, false),
-			"synthetic_strict_x": isWhatsAppSyntheticMediaText(tx, strp("x"), true),
-			"mirror":             isSentMirrorAttachmentID(&tx),
-			"dup":                isDuplicateMediaIdentity(&tx, &tx),
-		}
-		for k, v := range got {
-			if py[i][k] != v {
-				t.Errorf("%s(%q): go=%v python=%v", k, text, v, py[i][k])
-			}
-		}
-	}
 }

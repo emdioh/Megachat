@@ -1,4 +1,4 @@
-"""Drives server/socket_client.py against the Go rpc server.
+"""Drives client/socket_client.py (the TUI's socket client) against the Go rpc server.
 
 usage: interop_client.py REPO_ROOT SOCKET_PATH
 Prints one JSON object per line; the line {"step":"subscribed"} tells the Go
@@ -10,8 +10,8 @@ import sys
 repo, sock = sys.argv[1], sys.argv[2]
 sys.path.insert(0, repo)
 try:
-    from server.socket_client import SocketClient
-    from server.api import ApiError
+    from client.errors import ApiError
+    from client.socket_client import SocketClient
 except Exception as exc:  # pragma: no cover
     print("import failed: %r" % (exc,), file=sys.stderr)
     sys.exit(3)

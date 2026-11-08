@@ -252,8 +252,9 @@ func TestIsCaptionLike(t *testing.T) {
 	}
 }
 
-func TestPlaceholdersMatchPython(t *testing.T) {
-	// The literals must stay byte-identical with models.py.
+func TestPlaceholdersMatchModels(t *testing.T) {
+	// The literals must stay byte-identical with models.py (the TUI's domain
+	// module, still installed alongside the Go server).
 	py, err := os.ReadFile(filepath.Join("..", "..", "..", "..", "models.py"))
 	if err != nil {
 		t.Skip("models.py not available")
@@ -262,9 +263,5 @@ func TestPlaceholdersMatchPython(t *testing.T) {
 		if !strings.Contains(string(py), `"`+v+`"`) {
 			t.Errorf("placeholder %q not found in models.py", v)
 		}
-	}
-	sig, _ := os.ReadFile(filepath.Join("..", "..", "..", "..", "protocols", "signal.py"))
-	if !strings.Contains(string(sig), `"🖼️ Image"`) {
-		t.Error("image fallback literal differs from signal.py")
 	}
 }

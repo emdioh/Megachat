@@ -91,17 +91,3 @@ func TestRecentTranscriptionsOrderAndLimit(t *testing.T) {
 	eq(t, got[1].AttachmentID, "c")
 	eq(t, len(must(s.RecentTranscriptions(ctx, 10))), 3)
 }
-
-func TestTranscriptionStoreReadableByPython(t *testing.T) {
-	requirePython(t)
-	s := newStore(t)
-	check(s.SetTranscription(ctx, Transcription{Protocol: "signal", AttachmentID: "x", Status: "ok", Text: strp("hi")}))
-	_ = s.Close()
-	py, err := pyRun("dump", s.path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	rows := py.Tables["transcriptions"]
-	eq(t, len(rows), 1)
-	eq(t, rows[0]["text"], any("hi"))
-}

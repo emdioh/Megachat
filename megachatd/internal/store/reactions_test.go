@@ -227,29 +227,3 @@ func TestPruneOrphanReactionsKeepsExistingTargets(t *testing.T) {
 	eq(t, keys[0], "second")
 	eq(t, keys[1], "idless")
 }
-
-func TestReactionPythonParity(t *testing.T) {
-	setup := func(t *testing.T, s *Store) {
-		addMsg(t, s, "signal", "contact", 1000, strp("1000"))
-		addMsg(t, s, "signal", "contact", 1002, nil)
-		must(delta(s, nil))
-		must(delta(s, func(d *ReactionDelta) {
-			d.TargetMsgID = strp("1002")
-			d.TargetTimestamp = i64p(1002)
-			d.AuthorKey = "b"
-		}))
-		must(delta(s, func(d *ReactionDelta) { d.TargetMsgID = strp("gone"); d.TargetTimestamp = i64p(7); d.AuthorKey = "c" }))
-	}
-	parity(t, setup, "prune_orphan_reactions", nil, func(s *Store) any { return must(s.PruneOrphanReactions(ctx)) })
-	parity(t, setup, "apply_reaction_delta",
-		[]any{"signal", "contact", "1000", 1000, "🔥", "alice", "Alice", false, false, 9},
-		func(s *Store) any {
-			return must(delta(s, func(d *ReactionDelta) { d.Emoji = "🔥"; d.Timestamp = 9 }))
-		})
-	parity(t, setup, "replace_reactions_snapshot",
-		[]any{"signal", "contact", "1000", 1000, []map[string]any{{"emoji": "👍", "count": 2, "is_mine": true, "author": "", "author_key": "__agg__:👍"}}, 5},
-		func(s *Store) any {
-			return must(s.ReplaceReactionsSnapshot(ctx, "signal", "contact", strp("1000"), i64p(1000),
-				[]ReactionEntry{{Emoji: "👍", Count: 2, IsMine: true, AuthorKey: "__agg__:👍"}}, 5))
-		})
-}
