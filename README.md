@@ -1012,6 +1012,36 @@ cannot run next to a server). `megachat.py` with any other arguments starts the 
 (`python3 signal_tui.py` keeps working). Stopping the server disconnects every attached TUI; they
 show a reconnect message and resync if a new server appears.
 
+### Run as a system service (systemd / OpenRC)
+
+`scripts/megachat-service.sh` installs `megachatd` as a system service that runs as the owning user,
+so `config.json` and the existing data dirs (signal-cli, whatsmeow, the Telethon session) are reused.
+The service uses the fixed socket `~/.local/state/megachat/server.sock` (a system service has no
+login session, so `$XDG_RUNTIME_DIR` is not available).
+
+```bash
+# systemd (detected from /run/systemd/system)
+sudo ./scripts/megachat-service.sh install
+./scripts/megachat-service.sh status             # unit path, enabled/active
+sudo ./scripts/megachat-service.sh uninstall     # --purge-logs: also remove /var/log/megachat.log
+
+# OpenRC / Alpine (detected from openrc-run)
+sudo ./scripts/megachat-service.sh install --init openrc
+sudo ./scripts/megachat-service.sh uninstall --init openrc
+```
+
+Defaults: name `megachat`, user `$SUDO_USER` (else the repo owner; root is refused), project dir the
+repo holding the script, binary `megachatd/bin/megachatd` (build it with `make megachatd`). Options:
+`--user USER`, `--project-dir DIR`, `--bin PATH`, `--name NAME`, and `--extra ARG` (repeatable,
+appended to `megachatd serve`, e.g. `--extra --web-port --extra 8080`). Re-running `install`
+rewrites the unit/init script and restarts the service; `--dry-run` prints what would be written and
+run without changing anything. Logs go to journald (`journalctl -u megachat`) on systemd and to
+`/var/log/<name>.log` on OpenRC.
+
+`install` refuses to continue when another server already holds the instance lock — stop it first
+with `python3 launcher.py server stop` (the script never kills it). `uninstall` never touches user
+data.
+
 ### Fast cycle (background + token)
 
 `web-signal-tui-bg` runs in the background and exports `WEB_TOKEN` to the current shell,
