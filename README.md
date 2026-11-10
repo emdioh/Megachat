@@ -895,7 +895,7 @@ sudo ./scripts/megachat-service.sh uninstall --init openrc
 ```
 
 Defaults: name `megachat`, user `$SUDO_USER` under sudo (else the invoking user, else the repo
-owner; root is refused), project dir the
+owner; root is allowed), project dir the
 repo holding the script, binary `megachatd/bin/megachatd` (build it with `make megachatd`). Options:
 `--user USER`, `--project-dir DIR`, `--bin PATH`, `--name NAME`, and `--extra ARG` (repeatable,
 appended to `megachatd serve`, e.g. `--extra --web-port --extra 8080`). Re-running `install`

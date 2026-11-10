@@ -66,7 +66,7 @@ Global options:
 Install options:
   --user USER      User to run the service as (default: $SUDO_USER under
                    sudo, else the invoking user, else the owner of the project
-                   dir).  root is refused.
+                   dir).  root is allowed.
   --project-dir DIR
                    Directory with config.json (default: the repo holding this
                    script).
@@ -157,15 +157,7 @@ resolve_service_user() {
         SERVICE_USER=$(stat -f '%Su' "$PROJECT_DIR" 2>/dev/null || true)
     fi
     [ -n "$SERVICE_USER" ] || die "cannot determine the service user; pass --user USER"
-    if [ "$SERVICE_USER" = root ]; then
-        die "refusing to run the service as root; pass --user USER"
-    fi
-    local uid
-    uid=$(id -u "$SERVICE_USER" 2>/dev/null || true)
-    [ -n "$uid" ] || die "unknown user '$SERVICE_USER'"
-    if [ "$uid" -eq 0 ]; then
-        die "refusing to run the service as root; pass --user USER"
-    fi
+    id -u "$SERVICE_USER" >/dev/null 2>&1 || die "unknown user '$SERVICE_USER'"
 }
 
 resolve_bin() {

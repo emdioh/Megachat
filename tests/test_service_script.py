@@ -38,7 +38,7 @@ def _write_stub(path: Path, content: str) -> None:
 
 
 def _non_root_user() -> pwd.struct_passwd:
-    """A user the script accepts as the service user (never root)."""
+    """A user the script accepts as the service user (any existing user)."""
     me = pwd.getpwuid(os.getuid())
     if me.pw_uid != 0:
         return me
@@ -284,18 +284,28 @@ class TestOpenRCInstall:
 
 
 class TestRefusals:
-    def test_refuses_root_as_service_user(
+    def test_accepts_root_as_service_user(
         self, tmp_path: Path, project: Path, megachatd_bin: Path, root: Path
     ):
         result = _run(
             tmp_path,
             *_install_args(root, "root", project, init="systemd", binary=megachatd_bin),
         )
+        assert result.returncode == 0, result.stderr
+        unit = root / "etc" / "systemd" / "system" / "megachat-test.service"
+        assert "User=root" in unit.read_text()
+
+    def test_unknown_user_is_refused(
+        self, tmp_path: Path, project: Path, megachatd_bin: Path, root: Path
+    ):
+        result = _run(
+            tmp_path,
+            *_install_args(
+                root, "no-such-user-mc", project, init="systemd", binary=megachatd_bin
+            ),
+        )
         assert result.returncode != 0
-        assert "root" in result.stderr
-        assert not (
-            root / "etc" / "systemd" / "system" / "megachat-test.service"
-        ).exists()
+        assert "unknown user" in result.stderr
 
     def test_missing_binary_has_clear_error(
         self, tmp_path: Path, project: Path, root: Path, service_user: pwd.struct_passwd
