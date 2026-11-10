@@ -1,6 +1,7 @@
 package whatsapp
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -8,6 +9,7 @@ import (
 	"time"
 
 	"github.com/emdioh/megachat/megachatd/internal/proto"
+	"github.com/emdioh/megachat/megachatd/internal/store"
 	"go.mau.fi/whatsmeow/proto/waCommon"
 	"go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/proto/waSyncAction"
@@ -490,14 +492,53 @@ func TestChatPresenceMapping(t *testing.T) {
 }
 
 func TestIdentityChangeNotice(t *testing.T) {
+	t.Run("no messages dropped", func(t *testing.T) {
+		e := newEnv(t)
+		e.b.RegisterContact(*newContact("391234567890@c.us", "Mario", map[string]any{"phone": "391234567890", "lid": "189025889575055@lid"}))
+		drain(e.b)
+		e.b.onIdentityChange(&events.IdentityChange{JID: types.NewJID("391234567890", types.DefaultUserServer), Timestamp: baseTime})
+		if evs := drain(e.b); len(evs) != 0 {
+			t.Fatalf("notice for a chat with no messages must be dropped: %+v", evs)
+		}
+	})
+
+	t.Run("existing message kept", func(t *testing.T) {
+		e := newEnv(t)
+		e.b.RegisterContact(*newContact("391234567890@c.us", "Mario", nil))
+		drain(e.b)
+		if _, _, err := e.st.AddMessage(context.Background(), store.NewMessage{
+			Protocol: proto.ProtocolWhatsApp, ContactNumber: "391234567890@c.us",
+			Text: "ciao", IsMine: true, Timestamp: baseTime.UnixMilli(),
+		}); err != nil {
+			t.Fatal(err)
+		}
+		e.b.onIdentityChange(&events.IdentityChange{JID: types.NewJID("391234567890", types.DefaultUserServer), Timestamp: baseTime})
+		ev := one(t, drain(e.b))
+		if ev.Payload["msg_type"] != "system" || ev.Payload["text"] != "Il tuo codice di sicurezza con Mario è cambiato." ||
+			ev.Payload["is_mine"] != false || ev.Payload["sender"] != "" {
+			t.Fatalf("notice: %+v", ev.Payload)
+		}
+	})
+
+	t.Run("twin message kept", func(t *testing.T) {
+		e := newEnv(t)
+		e.b.RegisterContact(*newContact("391234567890@c.us", "Mario", map[string]any{"phone": "391234567890", "lid": "189025889575055@lid"}))
+		drain(e.b)
+		if _, _, err := e.st.AddMessage(context.Background(), store.NewMessage{
+			Protocol: proto.ProtocolWhatsApp, ContactNumber: "189025889575055@lid",
+			Text: "ciao", IsMine: false, Timestamp: baseTime.UnixMilli(),
+		}); err != nil {
+			t.Fatal(err)
+		}
+		e.b.onIdentityChange(&events.IdentityChange{JID: types.NewJID("391234567890", types.DefaultUserServer), Timestamp: baseTime})
+		ev := one(t, drain(e.b))
+		if ev.Payload["msg_type"] != "system" {
+			t.Fatalf("twin notice: %+v", ev.Payload)
+		}
+	})
+
 	e := newEnv(t)
 	e.b.RegisterContact(*newContact("391234567890@c.us", "Mario", nil))
-	e.b.onIdentityChange(&events.IdentityChange{JID: types.NewJID("391234567890", types.DefaultUserServer), Timestamp: baseTime})
-	ev := one(t, drain(e.b))
-	if ev.Payload["msg_type"] != "system" || ev.Payload["text"] != "Il tuo codice di sicurezza con Mario è cambiato." ||
-		ev.Payload["is_mine"] != false || ev.Payload["sender"] != "" {
-		t.Fatalf("notice: %+v", ev.Payload)
-	}
 	if got := e.b.securityNoticeText("999@c.us"); got != "Il tuo codice di sicurezza con +999 è cambiato." {
 		t.Errorf("phone fallback = %q", got)
 	}

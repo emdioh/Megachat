@@ -64,6 +64,22 @@ func (s *Store) ListMessages(ctx context.Context, q MessageQuery) ([]Message, er
 	return msgs, nil
 }
 
+// HasMessages reports whether any message row exists for the protocol under
+// any of the given contact keys (a WhatsApp chat's @c.us / @lid storage keys).
+func (s *Store) HasMessages(ctx context.Context, protocol string, keys ...string) (bool, error) {
+	if len(keys) == 0 {
+		return false, nil
+	}
+	var one int
+	err := s.db.QueryRowContext(ctx,
+		"SELECT 1 FROM messages WHERE protocol = ? AND contact_number IN ("+placeholders(len(keys))+") LIMIT 1",
+		append([]any{protocol}, strArgs(keys)...)...).Scan(&one)
+	if isNoRows(err) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
 // MediaFilter restricts quoted-media lookups.
 type MediaFilter string
 
