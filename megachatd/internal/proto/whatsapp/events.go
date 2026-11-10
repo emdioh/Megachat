@@ -677,6 +677,18 @@ func (b *Backend) onIdentityChange(e *events.IdentityChange) {
 	if chat == "" || isBroadcastJID(chat) {
 		return
 	}
+	// A security-code notice must not materialise a brand-new chat: when the
+	// chat (or its @c.us / @lid twin) has no stored messages yet, drop it.
+	if b.st != nil {
+		has, err := b.st.HasMessages(context.Background(), proto.ProtocolWhatsApp, b.chatKeys(chat)...)
+		if err == nil && !has {
+			b.log.Debug("WhatsApp identity change notice dropped: chat has no messages", "chat", chat)
+			return
+		}
+		if err != nil {
+			b.log.Debug("WhatsApp identity change store lookup failed", "chat", chat, "err", err)
+		}
+	}
 	text := b.securityNoticeText(chat)
 	ts := e.Timestamp.UnixMilli()
 	if e.Timestamp.IsZero() {

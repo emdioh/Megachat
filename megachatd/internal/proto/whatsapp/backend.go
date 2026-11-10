@@ -67,6 +67,7 @@ type Config interface {
 type Store interface {
 	LoadCache(ctx context.Context, protocol string) (map[string][]store.Message, error)
 	AddMessage(ctx context.Context, m store.NewMessage) (id int64, inserted bool, err error)
+	HasMessages(ctx context.Context, protocol string, keys ...string) (bool, error)
 	UpdateMessageID(ctx context.Context, protocol, contact, text string, isMine bool, timestamp int64, msgID string) (bool, error)
 	UpdateMessageAttachmentID(ctx context.Context, protocol, contact, msgID string, timestamp int64, attachmentID string, expected *string) (bool, error)
 	UpdateMessageAttachmentInfo(ctx context.Context, protocol, contact, msgID string, timestamp int64, info string) (bool, error)
