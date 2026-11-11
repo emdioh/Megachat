@@ -250,11 +250,15 @@ func (b *Backend) ingestConversation(ctx context.Context, cli waClient, conv *wa
 	b.cmu.Lock()
 	if m := b.chats[chat]; m != nil {
 		m.Unread = keep
-		if conv.Archived != nil {
-			m.Archived = conv.GetArchived()
-		}
+	}
+	var archEv *proto.Event
+	if conv.Archived != nil {
+		archEv = b.applyArchivedLocked(chat, conv.GetArchived())
 	}
 	b.cmu.Unlock()
+	if archEv != nil {
+		b.enqueueEvent(*archEv)
+	}
 	if unreadKnown {
 		b.noteUnreadSnapshot(chat, key, keep, unreadTS)
 	}

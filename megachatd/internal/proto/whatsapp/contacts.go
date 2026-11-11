@@ -1005,8 +1005,10 @@ func (b *Backend) RefreshContacts(ctx context.Context, force bool) proto.Address
 	}
 	b.cmu.RLock()
 	before := make(map[string]string, len(b.contacts))
+	beforeArch := make(map[string]bool, len(b.contacts))
 	for _, c := range b.contacts {
 		before[c.ID] = c.DisplayName
+		beforeArch[c.ID] = exBool(c, "archived")
 	}
 	b.cmu.RUnlock()
 	if err := b.refreshChatRegistry(ctx, true); err != nil {
@@ -1030,11 +1032,21 @@ func (b *Backend) RefreshContacts(ctx context.Context, force bool) proto.Address
 			renamed = append(renamed, c)
 		}
 	}
+	sent := map[*proto.Contact]bool{}
 	for _, c := range newC {
+		sent[c] = true
 		b.enqueueEvent(contactUpdateEvent(c))
 	}
 	for _, c := range renamed {
+		sent[c] = true
 		b.enqueueEvent(contactUpdateEvent(c))
+	}
+	// An archive flag moved by the refresh (the phone archived or unarchived
+	// the chat) must reach the clients too, or the SPA keeps the old section.
+	for _, c := range b.contacts {
+		if old, ok := beforeArch[c.ID]; ok && old != exBool(c, "archived") && !sent[c] {
+			b.enqueueEvent(contactUpdateEvent(c))
+		}
 	}
 	res.NewContacts = cloneContacts(newC)
 	res.RenamedContacts = cloneContacts(renamed)
@@ -1050,25 +1062,66 @@ func (b *Backend) reapplyAddressBookNames() {
 	b.cmu.Unlock()
 }
 
-// setChatArchivedLocal is _apply_chat_archived: flags the contact and notifies.
+// chatTwinsLocked lists the ids that name the same chat as id: id itself, the
+// listed contact it resolves to and that contact's @lid / @c.us forms. The
+// archive flag is per chat on the phone, but whatsmeow and the history sync key
+// it by either JID while the contact list shows only the folded survivor.
+func (b *Backend) chatTwinsLocked(id string) []string {
+	out := []string{id}
+	add := func(x string) {
+		if x == "" {
+			return
+		}
+		for _, o := range out {
+			if o == x {
+				return
+			}
+		}
+		out = append(out, x)
+	}
+	c := b.byJID[id]
+	if c == nil {
+		return out
+	}
+	add(c.ID)
+	add(exStr(c, "lid"))
+	if p := exStr(c, "phone"); p != "" {
+		add(p + "@c.us")
+		add(b.phoneToLID(p))
+	}
+	return out
+}
+
+// setChatArchivedLocal is _apply_chat_archived: flags the chat (every JID form
+// of it) and the listed contact, and notifies.
 func (b *Backend) setChatArchivedLocal(contactID string, archived bool) {
 	b.cmu.Lock()
-	if m := b.chats[contactID]; m != nil {
-		m.Archived = archived
-	} else {
-		b.chats[contactID] = &chatMeta{Archived: archived}
+	ev := b.applyArchivedLocked(contactID, archived)
+	b.cmu.Unlock()
+	if ev != nil {
+		b.enqueueEvent(*ev)
 	}
-	c := b.byJID[contactID]
-	if c == nil {
-		b.cmu.Unlock()
-		return
+}
+
+// applyArchivedLocked sets the flag on the chat registry entries of all twins
+// of id and on the listed contact; it returns a contact.updated when the
+// contact's flag changed.
+func (b *Backend) applyArchivedLocked(id string, archived bool) *proto.Event {
+	for _, t := range b.chatTwinsLocked(id) {
+		if m := b.chats[t]; m != nil {
+			m.Archived = archived
+		} else if t == id {
+			b.chats[t] = &chatMeta{Archived: archived}
+		}
 	}
-	if exBool(c, "archived") == archived {
-		b.cmu.Unlock()
-		return
+	c := b.byJID[id]
+	if c == nil || exBool(c, "archived") == archived {
+		return nil
+	}
+	if c.Extras == nil {
+		c.Extras = map[string]any{}
 	}
 	c.Extras["archived"] = archived
 	ev := contactUpdateEvent(c)
-	b.cmu.Unlock()
-	b.enqueueEvent(ev)
+	return &ev
 }

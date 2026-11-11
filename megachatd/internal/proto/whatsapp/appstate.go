@@ -113,20 +113,31 @@ func (b *Backend) syncArchiveFlags(ctx context.Context) {
 		ids = append(ids, id)
 	}
 	b.cmu.RUnlock()
+	done := map[string]bool{}
 	for _, id := range ids {
-		j, err := JIDFromWAHA(id)
-		if err != nil {
+		if done[id] {
 			continue
 		}
-		ls, err := d.ChatSettings.GetChatSettings(ctx, j)
-		if err != nil || !ls.Found {
-			continue
+		b.cmu.RLock()
+		twins := b.chatTwinsLocked(id)
+		b.cmu.RUnlock()
+		// The flag is per chat: any JID form of it may carry the settings row
+		// (whatsmeow keys by whatever the phone sent, @lid or phone).
+		for _, t := range twins {
+			done[t] = true
 		}
-		b.cmu.Lock()
-		if m := b.chats[id]; m != nil && m.Archived != ls.Archived {
-			m.Archived = ls.Archived
+		for _, t := range twins {
+			j, err := JIDFromWAHA(t)
+			if err != nil {
+				continue
+			}
+			ls, err := d.ChatSettings.GetChatSettings(ctx, j)
+			if err != nil || !ls.Found {
+				continue
+			}
+			b.setChatArchivedLocal(id, ls.Archived)
+			break
 		}
-		b.cmu.Unlock()
 	}
 }
 
@@ -187,11 +198,7 @@ func (b *Backend) seedArchivedChats(ctx context.Context) {
 			}
 			b.noteChat(id, 0, name)
 		}
-		b.cmu.Lock()
-		if m := b.chats[id]; m != nil {
-			m.Archived = true
-		}
-		b.cmu.Unlock()
+		b.setChatArchivedLocal(id, true)
 	}
 }
 
