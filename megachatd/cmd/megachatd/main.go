@@ -19,17 +19,61 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"syscall"
 
+	"github.com/emdioh/megachat/megachatd"
+	"github.com/emdioh/megachat/megachatd/internal/api"
 	"github.com/emdioh/megachat/megachatd/internal/config"
 	"github.com/emdioh/megachat/megachatd/internal/core"
 	"github.com/emdioh/megachat/megachatd/internal/rpc"
 )
 
-// Version is the server version (overridable with -ldflags "-X main.Version=...").
-var Version = "0.1.0-go"
+// Version is the server version. Empty by default: it then comes from the
+// embedded megachatd/VERSION file (see displayVersion). CI may override it with
+// -ldflags "-X main.Version=...".
+var Version = ""
+
+// displayVersion is the version reported everywhere (version command, rpc.hello,
+// runtime file, GET /health): the release version plus the short git commit the
+// binary was built from when known, e.g. "0.2.1 (abc1234)".
+func displayVersion() string {
+	v := Version
+	if v == "" {
+		v = megachatd.Version()
+	}
+	if rev := vcsRevision(); rev != "" {
+		v += " (" + rev + ")"
+	}
+	return v
+}
+
+// vcsRevision is the 7-char commit stamped by `go build` inside a git checkout
+// ("+dirty" when the tree was modified); "" when unavailable.
+func vcsRevision() string {
+	bi, ok := debug.ReadBuildInfo()
+	if !ok {
+		return ""
+	}
+	rev, dirty := "", false
+	for _, s := range bi.Settings {
+		switch s.Key {
+		case "vcs.revision":
+			rev = s.Value
+		case "vcs.modified":
+			dirty = s.Value == "true"
+		}
+	}
+	if len(rev) > 7 {
+		rev = rev[:7]
+	}
+	if rev != "" && dirty {
+		rev += "+dirty"
+	}
+	return rev
+}
 
 // LogFileEnv overrides the log file (Python: fixed /tmp/signal-tui.log).
 const LogFileEnv = "MEGACHAT_LOG_FILE"
@@ -60,7 +104,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	case "config":
 		return runConfig(args[1:], stdout, stderr)
 	case "version", "--version", "-version":
-		fmt.Fprintln(stdout, "megachatd", Version)
+		fmt.Fprintln(stdout, "megachatd", displayVersion())
 		return 0
 	case "help", "-h", "--help":
 		usage(stdout)
@@ -179,6 +223,7 @@ func serve(args []string, stdout, stderr io.Writer, hooks *serveHooks) int {
 	if !ok {
 		return int(code)
 	}
+	api.ServerVersion = displayVersion()
 	exe, _ := os.Executable()
 	cfg := config.New()
 	cfg.ProjectDir = ResolveProjectDir(sa.projectDir, cfg.Env, exe)
@@ -235,7 +280,7 @@ func serve(args []string, stdout, stderr io.Writer, hooks *serveHooks) int {
 	if running.Failed {
 		exit = 1
 	} else {
-		log.Info("Megachat server running", "lock", cfg.LockFile(), "version", Version)
+		log.Info("Megachat server running", "lock", cfg.LockFile(), "version", displayVersion())
 		if hooks != nil && hooks.ready != nil {
 			hooks.ready(running, stopFn)
 		}

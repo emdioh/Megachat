@@ -124,8 +124,11 @@ that envelope errors (-32600/-32700) are still sent (with id null).
 * Runtime file `server.json` next to the socket (`server.sock` -> `server.json`,
   mode `0600`, written atomically via temp file + rename **after** the socket
   listens, removed on shutdown only if still ours; `RuntimeFile`):
-  `{"pid":int,"socket":str,"version":"0.1.0","api_version":1,"started_at":float}`.
+  `{"pid":int,"socket":str,"version":"0.2.1 (abc1234)","api_version":1,"started_at":float}`.
   The Python client uses `pid`/`started_at` to detect a server restart.
+  `version` (also `rpc.hello` `server_version`, `GET /health` `version`, `megachatd version`) is the release
+  version embedded from `megachatd/VERSION` (or `-ldflags "-X main.Version=..."`), followed by the short git
+  commit when the binary was built in a checkout: `"0.2.1 (abc1234)"`. Informational: clients must not parse it.
 * Single-instance lock: `/tmp/signal-tui.lock` (or `$MEGACHAT_LOCK_FILE`), holds the
   pid, guarded by `flock` on `<lock>.guard`.
 
@@ -157,7 +160,7 @@ Built-ins (cannot be shadowed by an operation):
 
 | method | params | result |
 |---|---|---|
-| `rpc.hello` | - | `{"api_version":1,"server_version":"0.1.0","operations":[sorted names]}` (`HelloResult`). Clients call it first and refuse an `api_version` they do not know (`IncompatibleServer`). |
+| `rpc.hello` | - | `{"api_version":1,"server_version":"0.2.1 (abc1234)","operations":[sorted names]}` (`HelloResult`). Clients call it first and refuse an `api_version` they do not know (`IncompatibleServer`). |
 | `server.ping` | - | `{"pong":true,"ts":<float>}` |
 | `events.subscribe` | `{"since"?:int>=0}` | `{"subscribed":true,"last_seq":int}`; error -32602 `since must be an integer >= 0` (bool/negative/non-int); `not_supported` "This server has no event bus" without a bus |
 | `events.unsubscribe` | - | `{"subscribed":false}` (idempotent) |
@@ -537,7 +540,7 @@ Server: `127.0.0.1:4242` by default (`web.host` may be a comma list or JSON list
   and `/index.html` carry `Cache-Control: no-cache`; other static files use default caching. Files: `index.html`,
   `app.js`, `gmail.js`, `message_cache.js`, `outbox.js`, `reconcile.js`, `logs.js`, `style.css`, `gmail.css`,
   `logs.css`, `teams-skin.css`, `manifest.json`, `icon.svg`.
-* `GET /health` (no auth): `{"status":"ok","port":<int>,"auth_required":<bool>}`.
+* `GET /health` (no auth): `{"status":"ok","port":<int>,"auth_required":<bool>,"version":<str>}` (`version` = the server version, see below; the SPA shows it in Impostazioni).
 * Ops errors -> `{"detail":message}` with the status of section 2.1. Typed query/path params that fail FastAPI
   validation -> `422` (bad `proto` outside signal|whatsapp|telegram, non-int `limit`/`since`/`uid`/`w`, missing
   required query param, non-bool `refresh`; bools accept `true/false/1/0/yes/no/on/off`).

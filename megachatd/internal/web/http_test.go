@@ -42,7 +42,7 @@ func TestAuth(t *testing.T) {
 	resp, body := e.do(t, "GET", "/health", "", "Authorization", "")
 	var h api.HealthResponse
 	_ = json.Unmarshal([]byte(body), &h)
-	if resp.StatusCode != 200 || h.Status != "ok" || !h.AuthRequired {
+	if resp.StatusCode != 200 || h.Status != "ok" || !h.AuthRequired || h.Version == "" || h.Version != api.ServerVersion {
 		t.Error(body)
 	}
 }

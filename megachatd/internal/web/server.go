@@ -265,7 +265,7 @@ func (s *Server) buildHandler() http.Handler {
 	r := chi.NewRouter()
 	s.routes(r)
 	r.Get(api.RouteHealth, func(w http.ResponseWriter, req *http.Request) {
-		writeJSON(w, 200, api.HealthResponse{Status: "ok", Port: s.port, AuthRequired: s.authRequired})
+		writeJSON(w, 200, api.HealthResponse{Status: "ok", Port: s.port, AuthRequired: s.authRequired, Version: api.ServerVersion})
 	})
 	r.Get(api.RouteWS, s.handleWS)
 	r.Get(api.RouteWSV2, s.handleWSV2)

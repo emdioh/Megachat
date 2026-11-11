@@ -35,6 +35,7 @@ type HealthResponse struct {
 	Status       string `json:"status"`
 	Port         int    `json:"port"`
 	AuthRequired bool   `json:"auth_required"`
+	Version      string `json:"version"`
 }
 
 // ---- WebSocket /ws (legacy frames) ----------------------------------------------

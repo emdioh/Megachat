@@ -283,6 +283,11 @@ class SignalTUI(
         """On startup, start poll worker and backend connections in parallel."""
         self._chat_log = self.query_one("#chat-log", Vertical)
         self._install_sigint_on_loop()
+        # Server version in the header (rpc.hello), so an outdated server shows.
+        info = getattr(self.client, "server_info", None)
+        version = info.get("server_version") if isinstance(info, dict) else None
+        if isinstance(version, str) and version:
+            self.sub_title = f"server {version}"
         # Settings (thumbnail sizes, picker options) come from the server in a
         # worker; the defaults serve until they arrive.
         self._start_server_config_fetch()

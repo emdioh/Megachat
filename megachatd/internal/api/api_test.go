@@ -121,7 +121,7 @@ var handWritten = map[string]string{
 	"frame.gmail_unread":    `{"unread":3,"new_mail":true}`,
 	"frame.heartbeat":       `{"type":"heartbeat"}`,
 	"v2.error":              `{"type":"error","payload":{"reason":"invalid_subscribe"}}`,
-	"health":                `{"status":"ok","port":4242,"auth_required":true}`,
+	"health":                `{"status":"ok","port":4242,"auth_required":true,"version":"0.2.1"}`,
 	"http.error":            `{"detail":"Invalid request"}`,
 	"http.validation":       `{"detail":[{"type":"literal_error","loc":["query","proto"],"msg":"Input should be 'signal', 'whatsapp' or 'telegram'","input":"irc","ctx":{"expected":"'signal', 'whatsapp' or 'telegram'"}}]}`,
 	// JSON-RPC envelopes.
@@ -131,10 +131,10 @@ var handWritten = map[string]string{
 	"rpc.invalid":     `{"jsonrpc":"2.0","id":3,"error":{"code":-32602,"message":"Invalid request","data":{"code":"invalid_request","message":"Invalid request","details":[{"type":"missing","loc":["protocol"],"msg":"Field required"}]}}}`,
 	"rpc.event":       `{"jsonrpc":"2.0","method":"event","params":{"seq":5,"type":"typing","payload":{"protocol":"signal","contact_id":"+1","action":"STARTED"},"ts":1700000000.1}}`,
 	"rpc.heartbeat":   `{"jsonrpc":"2.0","method":"heartbeat","params":{"ts":1700000000.1}}`,
-	"rpc.hello":       `{"api_version":1,"server_version":"0.1.0","operations":["chats.archive","server.status"]}`,
+	"rpc.hello":       `{"api_version":1,"server_version":"0.2.1","operations":["chats.archive","server.status"]}`,
 	"rpc.subscribe":   `{"subscribed":true,"last_seq":12}`,
 	"rpc.unsubscribe": `{"subscribed":false}`,
-	"runtime":         `{"pid":123,"socket":"/run/user/1000/megachat/server.sock","version":"0.1.0","api_version":1,"started_at":1700000000.25}`,
+	"runtime":         `{"pid":123,"socket":"/run/user/1000/megachat/server.sock","version":"0.2.1","api_version":1,"started_at":1700000000.25}`,
 	// Requests (socket params / REST bodies).
 	"req.messages_send": `{"protocol":"signal","contact_id":"+1","text":"hi","client_msg_id":"c1","quote_timestamp":1000,
 		"quote_author":"+2","quote_message":"x","quote_content_type":"image/png","quote_attachment_id":"a.png","retry":false,

@@ -176,6 +176,20 @@ def server_pid() -> int | None:
     return pid if _pid_alive(pid) else None
 
 
+def _runtime_version(pid: int, socket_path: Path | None = None) -> str | None:
+    """Version the running server *pid* wrote in its runtime file, if any."""
+    paths = [socket_path] if socket_path else candidate_socket_paths()
+    for sp in paths:
+        try:
+            data = json.loads(runtime_file_path(sp).read_text("utf-8"))
+            ver = data.get("version")
+        except (OSError, ValueError, AttributeError):
+            continue
+        if isinstance(ver, str) and ver and data.get("pid") == pid:
+            return ver
+    return None
+
+
 def _socket_server() -> tuple[Path, int] | None:
     """``(socket, pid)`` of a server that published its runtime file, if alive.
 
@@ -436,7 +450,9 @@ def status() -> int:
             socket_path, pid = found
     if pid is not None:
         where = f", socket {socket_path}" if socket_path else ""
-        print(f"Server: ATTIVO (pid {pid}, megachatd{where})")
+        ver = _runtime_version(pid, socket_path)
+        what = f"megachatd {ver}" if ver else "megachatd"
+        print(f"Server: ATTIVO (pid {pid}, {what}{where})")
     else:
         print("Server: spento")
     print(

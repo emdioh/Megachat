@@ -3,7 +3,14 @@ package api
 import (
 	"encoding/json"
 	"path/filepath"
+
+	"github.com/emdioh/megachat/megachatd"
 )
+
+// ServerVersion is the informational server version (clients must not parse
+// it): the embedded megachatd/VERSION, which the binary's main refines at
+// startup with the git commit ("0.2.1 (abc1234)").
+var ServerVersion = megachatd.Version()
 
 // Wire constants of the Unix-socket adapter (server/socket_adapter.py).
 const (
@@ -12,8 +19,6 @@ const (
 	// APIVersion is the wire protocol version announced by rpc.hello. Clients
 	// refuse any other value.
 	APIVersion = 1
-	// ServerVersion is the informational server version (clients must not parse it).
-	ServerVersion = "0.1.0"
 
 	MaxLineBytes              = 16 * 1024 * 1024
 	DefaultTimeoutSeconds     = 120.0

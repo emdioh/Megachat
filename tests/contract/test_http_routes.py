@@ -77,7 +77,9 @@ def test_samples_cover_every_route():
 def test_health(go_server: Server):
     r = go_server.get("/health", token=None)
     assert r.status == 200
-    assert r.json() == {"status": "ok", "port": go_server.port, "auth_required": True}
+    body = r.json()
+    assert isinstance(body.pop("version"), str)
+    assert body == {"status": "ok", "port": go_server.port, "auth_required": True}
 
 
 @pytest.mark.parametrize("method,path,body", SAMPLES, ids=[f"{m} {p.split('?')[0]}" for m, p, _ in SAMPLES])

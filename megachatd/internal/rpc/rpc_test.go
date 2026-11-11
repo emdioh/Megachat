@@ -167,7 +167,7 @@ func TestHelloPingAndCalls(t *testing.T) {
 	c := e.dial()
 	c.sendRaw(`{"jsonrpc":"2.0","id":"a","method":"rpc.hello"}` + "\n")
 	got := c.recvLine()
-	if !strings.HasPrefix(got, `{"jsonrpc":"2.0","id":"a","result":{"api_version":1,"server_version":"0.1.0","operations":["test.big","test.block","test.boom"`) {
+	if !strings.HasPrefix(got, `{"jsonrpc":"2.0","id":"a","result":{"api_version":1,"server_version":"`+api.ServerVersion+`","operations":["test.big","test.block","test.boom"`) {
 		t.Fatalf("hello: %s", got)
 	}
 	r := c.call("server.ping", nil)
@@ -639,7 +639,7 @@ func TestPermissionsAndRuntimeFile(t *testing.T) {
 	b, _ := os.ReadFile(rt)
 	var rf api.RuntimeFile
 	if err := json.Unmarshal(b, &rf); err != nil || rf.PID != os.Getpid() || rf.Socket != e.path ||
-		rf.APIVersion != 1 || rf.Version != "0.1.0" || rf.StartedAt <= 0 {
+		rf.APIVersion != 1 || rf.Version != api.ServerVersion || rf.StartedAt <= 0 {
 		t.Fatal(string(b), err)
 	}
 	e.s.Close()

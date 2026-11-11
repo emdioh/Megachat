@@ -4761,7 +4761,22 @@ document.querySelector("#open-settings").addEventListener("click", () => {
   loadTranscriptionConfig();
   loadTranscriptionSettings();
   loadAutoTranscribeConfig();
+  loadServerVersion();
 });
+// Server version (from the unauthenticated /health): lets the user check
+// whether the running server is up to date.
+async function loadServerVersion() {
+  const el = document.querySelector("#server-version");
+  if (!el) return;
+  try {
+    const response = await fetch("health");
+    const data = response.ok ? await response.json() : null;
+    el.textContent = data && data.version ? `Megachat ${data.version}` : "";
+    el.hidden = !el.textContent;
+  } catch {
+    el.hidden = true;
+  }
+}
 document.querySelector("#close-settings-dialog").addEventListener("click", () => elements.settingsDialog.close());
 elements.cacheSizeSelect.value = String(state.cacheSize);
 elements.cacheSizeSelect.addEventListener("change", () => {
