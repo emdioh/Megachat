@@ -224,6 +224,7 @@ func serve(args []string, stdout, stderr io.Writer, hooks *serveHooks) int {
 		return int(code)
 	}
 	api.ServerVersion = displayVersion()
+	fmt.Fprintf(stdout, "Megachat %s\n", api.ServerVersion)
 	exe, _ := os.Executable()
 	cfg := config.New()
 	cfg.ProjectDir = ResolveProjectDir(sa.projectDir, cfg.Env, exe)

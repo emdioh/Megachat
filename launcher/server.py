@@ -410,6 +410,8 @@ def start_all(
         die(f"Impossibile avviare il server: {exc}")
         return 1
     if up:
+        pid = server_pid()
+        ver = _runtime_version(pid) if pid is not None else None
         if opts.no_web:
             ok("Server attivo (senza Web UI)")
         else:
@@ -418,6 +420,8 @@ def start_all(
                 print("   Token Web UI: disattivato (--web-no-auth)")
             elif print_token:
                 print(f"   Token Web UI: {_read_web_token()}")
+        if ver:
+            print(f"   Versione:     megachatd {ver}")
         print("   Log:          tail -f /tmp/signal-tui.log")
         print("   Stop:         python3 launcher.py server stop")
         print("   Interattivo:  python3 megachat.py  (si collega al server)")
